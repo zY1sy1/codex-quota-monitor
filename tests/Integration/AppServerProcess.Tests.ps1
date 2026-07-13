@@ -474,6 +474,127 @@ Describe 'App Server JSONL process transport' {
         ($stderr.Line -join "`n") | Should -Not -Match '(?i)FAKE_|person@example|bearer|access[_-]?token|authorization|cookie|email|secret'
     }
 
+    It 'wholesale-redacts sensitive-key and Unicode-email diagnostics without splitting surrogate pairs' {
+        $transport = Start-TestFakeAppServer -StderrRecordLimit 11 -DiagnosticLineLimit 32
+        Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 1650 -Method 'test/safetyDiagnostics' -Params $null)
+
+        Wait-TestCondition -Description 'safety diagnostics and completion response' -Condition {
+            $snapshot = @($transport.Queue.ToArray())
+            @($snapshot | Where-Object Stream -EQ 'stderr').Count -eq 11 -and
+                @($snapshot | Where-Object { Test-RecordHasId -Record $_ -Id 1650 }).Count -eq 1
+        }
+
+        $stderr = @(Receive-AppServerRecord -Transport $transport | Where-Object Stream -EQ 'stderr')
+        $stderr.Count | Should -Be 11
+        @($stderr | Where-Object Line -EQ '[REDACTED]').Count | Should -Be 10
+        ($stderr.Line -join [Environment]::NewLine) | Should -Not -Match '(?i)FAKE_|用户@|例子|client[_-]?secret|password|passwd|credential|private[_-]?key|session|user[_-]?email'
+
+        $capped = @($stderr | Where-Object { $_.Line.StartsWith('A') })[0].Line
+        $capped.Length | Should -BeLessOrEqual 32
+        $characters = $capped.ToCharArray()
+        for ($index = 0; $index -lt $characters.Length; $index++) {
+            if ([char]::IsHighSurrogate($characters[$index])) {
+                ($index + 1) | Should -BeLessThan $characters.Length
+                [char]::IsLowSurrogate($characters[$index + 1]) | Should -BeTrue
+            }
+            elseif ([char]::IsLowSurrogate($characters[$index])) {
+                $index | Should -BeGreaterThan 0
+                [char]::IsHighSurrogate($characters[$index - 1]) | Should -BeTrue
+            }
+        }
+    }
+
+    It 'does not enqueue a callback that reaches the capture lock after StopAccepting returns' {
+        $captureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(10, 10, 128)
+        $lateRecord = [CodexQuotaMonitor.ProcessTransport.AppServerRecord]::new(
+            'stdout',
+            '{"id":999}',
+            [DateTimeOffset]::UtcNow
+        )
+        $enqueueMethod = $captureState.GetType().GetMethod(
+            'EnqueueBounded',
+            [Reflection.BindingFlags]'Instance,NonPublic'
+        )
+
+        $captureState.StopAccepting()
+        $null = $enqueueMethod.Invoke($captureState, @($lateRecord))
+
+        $captureState.Queue.Count | Should -Be 0
+    }
+
+    It 'loads the capture types atomically across first-time parallel dot-sources in a fresh process' {
+        $probePath = Join-Path $TestDrive 'parallel-type-load-probe.ps1'
+        $probeScript = @'
+param([Parameter(Mandatory)][string]$TargetPath)
+$ErrorActionPreference = 'Stop'
+if ($null -ne ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+    [Console]::Error.WriteLine('capture type was already loaded before the probe')
+    exit 19
+}
+
+$errors = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+$gate = [Threading.Barrier]::new(16)
+try {
+    $null = 1..16 | ForEach-Object -Parallel {
+        $path = $using:TargetPath
+        $sharedErrors = $using:errors
+        $sharedGate = $using:gate
+        $null = $sharedGate.SignalAndWait([TimeSpan]::FromSeconds(15))
+        try {
+            . $path
+        }
+        catch {
+            $sharedErrors.Enqueue($_.Exception.ToString())
+        }
+    } -ThrottleLimit 16
+}
+finally {
+    $gate.Dispose()
+}
+
+if (-not $errors.IsEmpty) {
+    [Console]::Error.WriteLine(($errors.ToArray() -join [Environment]::NewLine))
+    exit 17
+}
+if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+    [Console]::Error.WriteLine('capture type was not loaded')
+    exit 18
+}
+'@
+        Set-Content -LiteralPath $probePath -Value $probeScript -Encoding utf8NoBOM
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $script:PwshPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        foreach ($argument in @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath,
+                '-TargetPath', $script:AppServerProcessPath
+            )) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $probe = [Diagnostics.Process]::new()
+        $probe.StartInfo = $startInfo
+        try {
+            $null = $probe.Start()
+            $stdoutTask = $probe.StandardOutput.ReadToEndAsync()
+            $stderrTask = $probe.StandardError.ReadToEndAsync()
+            if (-not $probe.WaitForExit(30000)) {
+                $probe.Kill($true)
+                throw 'Parallel first-load probe timed out.'
+            }
+
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $probe.ExitCode | Should -Be 0 -Because "fresh type-load stderr: $stderr stdout: $stdout"
+        }
+        finally {
+            $probe.Dispose()
+        }
+    }
+
     It 'bounds stdout independently and Receive-AppServerRecord drains at most Maximum without blocking' {
         $transport = Start-TestFakeAppServer -StdoutRecordLimit 3 -StderrRecordLimit 2
         Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 47 -Method 'test/stdoutBurst' -Params ([ordered]@{ count = 8 }))
@@ -500,12 +621,19 @@ Describe 'App Server JSONL process transport' {
 
 Describe 'Codex executable discovery' {
     It 'prefers codex.exe and does not probe later sources after finding it' {
+        $codexExe = Join-Path $TestDrive 'commands\codex.exe'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $codexExe) -Force
+        $null = New-Item -ItemType File -Path $codexExe
         $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
         Mock Get-Command {
             param($Name)
             $script:DiscoveryCalls.Add("command:$Name")
             if ($Name -eq 'codex.exe') {
-                return [pscustomobject]@{ Path = 'C:\tools\codex.exe'; Source = 'C:\tools\codex.exe' }
+                return [pscustomobject]@{
+                    Path = $codexExe
+                    Source = $codexExe
+                    CommandType = [Management.Automation.CommandTypes]::Application
+                }
             }
         }
         Mock Get-AppxPackage { throw 'Appx discovery should not run.' }
@@ -514,27 +642,113 @@ Describe 'Codex executable discovery' {
 
         $result.Status | Should -BeExactly 'Found'
         $result.Found | Should -BeTrue
-        $result.ExecutablePath | Should -BeExactly 'C:\tools\codex.exe'
+        $result.ExecutablePath | Should -BeExactly $codexExe
         @($script:DiscoveryCalls) | Should -Be @('command:codex.exe')
         Should -Invoke Get-AppxPackage -Times 0 -Exactly
     }
 
     It 'checks codex after codex.exe before consulting the package' {
+        $codexScript = Join-Path $TestDrive 'commands\codex.ps1'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $codexScript) -Force
+        $null = New-Item -ItemType File -Path $codexScript
         $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
         Mock Get-Command {
             param($Name)
             $script:DiscoveryCalls.Add("command:$Name")
             if ($Name -eq 'codex') {
-                return [pscustomobject]@{ Path = 'C:\tools\codex.cmd'; Source = 'C:\tools\codex.cmd' }
+                return [pscustomobject]@{
+                    Path = $codexScript
+                    Source = $codexScript
+                    CommandType = [Management.Automation.CommandTypes]::ExternalScript
+                }
             }
         }
         Mock Get-AppxPackage { throw 'Appx discovery should not run.' }
 
         $result = Find-CodexExecutable
 
-        $result.ExecutablePath | Should -BeExactly 'C:\tools\codex.cmd'
+        $result.ExecutablePath | Should -BeExactly $codexScript
         @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
         Should -Invoke Get-AppxPackage -Times 0 -Exactly
+    }
+
+    It 'skips a nonexistent codex.exe command result and continues to codex' {
+        $missingExe = Join-Path $TestDrive 'missing\codex.exe'
+        $codexScript = Join-Path $TestDrive 'valid\codex.ps1'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $codexScript) -Force
+        $null = New-Item -ItemType File -Path $codexScript
+        $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
+        Mock Get-Command {
+            param($Name)
+            $script:DiscoveryCalls.Add("command:$Name")
+            if ($Name -eq 'codex.exe') {
+                return [pscustomobject]@{
+                    Path = $missingExe
+                    Source = $missingExe
+                    CommandType = [Management.Automation.CommandTypes]::Application
+                }
+            }
+
+            return [pscustomobject]@{
+                Path = $codexScript
+                Source = $codexScript
+                CommandType = [Management.Automation.CommandTypes]::ExternalScript
+            }
+        }
+        Mock Get-AppxPackage { throw 'Appx discovery should not run.' }
+
+        $result = Find-CodexExecutable
+
+        $result.ExecutablePath | Should -BeExactly $codexScript
+        @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
+        Should -Invoke Get-AppxPackage -Times 0 -Exactly
+    }
+
+    It 'skips nonexistent command results and falls through to the Appx executable' {
+        $installLocation = Join-Path $TestDrive 'Fallback Package'
+        $packagedExecutable = Join-Path $installLocation 'app\resources\codex.exe'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $packagedExecutable) -Force
+        $null = New-Item -ItemType File -Path $packagedExecutable
+        $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
+        Mock Get-Command {
+            param($Name)
+            $script:DiscoveryCalls.Add("command:$Name")
+            return [pscustomobject]@{
+                Path = Join-Path $TestDrive "missing\$Name"
+                Source = Join-Path $TestDrive "also-missing\$Name"
+                CommandType = [Management.Automation.CommandTypes]::Application
+            }
+        }
+        Mock Get-AppxPackage { [pscustomobject]@{ InstallLocation = $installLocation } }
+
+        $result = Find-CodexExecutable
+
+        $result.Source | Should -BeExactly 'AppxPackage'
+        $result.ExecutablePath | Should -BeExactly $packagedExecutable
+        @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
+    }
+
+    It 'ignores existing command paths from nonlaunchable command types' {
+        $nonlaunchable = Join-Path $TestDrive 'nonlaunchable\codex.exe'
+        $installLocation = Join-Path $TestDrive 'Launchable Package'
+        $packagedExecutable = Join-Path $installLocation 'app\resources\codex.exe'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $nonlaunchable) -Force
+        $null = New-Item -ItemType File -Path $nonlaunchable
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $packagedExecutable) -Force
+        $null = New-Item -ItemType File -Path $packagedExecutable
+        Mock Get-Command {
+            [pscustomobject]@{
+                Path = $nonlaunchable
+                Source = $nonlaunchable
+                CommandType = [Management.Automation.CommandTypes]::Function
+            }
+        }
+        Mock Get-AppxPackage { [pscustomobject]@{ InstallLocation = $installLocation } }
+
+        $result = Find-CodexExecutable
+
+        $result.Source | Should -BeExactly 'AppxPackage'
+        $result.ExecutablePath | Should -BeExactly $packagedExecutable
     }
 
     It 'uses the packaged Codex path only after both command probes miss' {

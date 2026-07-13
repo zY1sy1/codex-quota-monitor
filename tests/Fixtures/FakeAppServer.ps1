@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 while (($line = [Console]::In.ReadLine()) -ne $null) {
     if ($Scenario -eq 'Malformed') {
@@ -96,6 +97,24 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
             [Console]::Error.WriteLine('Authorization: Bearer FAKE_BEARER_VALUE')
             [Console]::Error.Flush()
             [Console]::Out.WriteLine((@{ id = $message.id; result = @{ emitted = 6 } } | ConvertTo-Json -Depth 20 -Compress))
+            [Console]::Out.Flush()
+        }
+
+        'test/safetyDiagnostics' {
+            [Console]::Error.WriteLine('ordinary overflow diagnostic')
+            [Console]::Error.WriteLine('client_secret=FAKE_CLIENT_SNAKE')
+            [Console]::Error.WriteLine('clientSecret=FAKE_CLIENT_CAMEL')
+            [Console]::Error.WriteLine('password=FAKE_PASSWORD')
+            [Console]::Error.WriteLine('passwd=FAKE_PASSWD')
+            [Console]::Error.WriteLine('credential=FAKE_CREDENTIAL')
+            [Console]::Error.WriteLine('private_key=FAKE_PRIVATE_KEY')
+            [Console]::Error.WriteLine('session=FAKE_SESSION')
+            [Console]::Error.WriteLine('user_email=用户@例子.公司')
+            [Console]::Error.WriteLine('{\"client_secret\":\"FAKE_ESCAPED\"} tail=FAKE_TAIL')
+            [Console]::Error.WriteLine('contact 用户@例子.公司')
+            [Console]::Error.WriteLine((('A' * 19) + [char]::ConvertFromUtf32(0x1F600) + ('Z' * 100)))
+            [Console]::Error.Flush()
+            [Console]::Out.WriteLine((@{ id = $message.id; result = @{ emitted = 12 } } | ConvertTo-Json -Depth 20 -Compress))
             [Console]::Out.Flush()
         }
 

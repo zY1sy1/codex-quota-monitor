@@ -1,5 +1,23 @@
-if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
-    Add-Type -TypeDefinition @'
+$typeLoadMutex = [System.Threading.Mutex]::new(
+    $false,
+    'Local\CodexQuotaMonitor.AppServerProcess.TypeLoad.v1'
+)
+$typeLoadMutexAcquired = $false
+
+try {
+    try {
+        $typeLoadMutexAcquired = $typeLoadMutex.WaitOne(30000)
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        $typeLoadMutexAcquired = $true
+    }
+
+    if (-not $typeLoadMutexAcquired) {
+        throw [System.TimeoutException]::new('Timed out while initializing the App Server transport types.')
+    }
+
+    if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+        Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -28,16 +46,8 @@ namespace CodexQuotaMonitor.ProcessTransport
         private const string Redacted = "[REDACTED]";
         private const string Truncated = " [truncated]";
 
-        private static readonly Regex AuthorizationPattern = new Regex(
-            @"\bauthorization\b[""']?\s*[:=]\s*.*",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-        private static readonly Regex CookiePattern = new Regex(
-            @"\bcookie\b[""']?\s*[:=]\s*.*",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-        private static readonly Regex NamedSecretPattern = new Regex(
-            @"\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|e-?mail|secret)\b[""']?\s*[:=]\s*(?:""[^""]*""|'[^']*'|[^\s,;]+)",
+        private static readonly Regex SensitiveKeyPattern = new Regex(
+            @"\b(?:authorization|access(?:_|-)?token|refresh(?:_|-)?token|api(?:_|-)?key|cookie|(?:user(?:_|-)?)?e(?:_|-)?mail|client(?:_|-)?secret|password|passwd|credentials?|private(?:_|-)?key|session|secret)\b",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly Regex BearerPattern = new Regex(
@@ -45,7 +55,7 @@ namespace CodexQuotaMonitor.ProcessTransport
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly Regex EmailPattern = new Regex(
-            @"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+            @"[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}.\-]+\.[\p{L}]{2,}",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly Regex TokenPattern = new Regex(
@@ -104,7 +114,10 @@ namespace CodexQuotaMonitor.ProcessTransport
 
         public void StopAccepting()
         {
-            accepting = false;
+            lock (syncRoot)
+            {
+                accepting = false;
+            }
         }
 
         public bool TryBeginStop()
@@ -126,6 +139,11 @@ namespace CodexQuotaMonitor.ProcessTransport
         {
             lock (syncRoot)
             {
+                if (!accepting)
+                {
+                    return;
+                }
+
                 Queue.Enqueue(record);
                 int limit = record.Stream == "stdout" ? StdoutLimit : StderrLimit;
                 while (CountStream(record.Stream) > limit)
@@ -182,12 +200,14 @@ namespace CodexQuotaMonitor.ProcessTransport
         {
             int preliminaryLimit = Math.Max(maximumLength, Math.Min(65536, maximumLength * 4));
             string sanitized = line.Length > preliminaryLimit ? line.Substring(0, preliminaryLimit) : line;
-            sanitized = AuthorizationPattern.Replace(sanitized, Redacted);
-            sanitized = CookiePattern.Replace(sanitized, Redacted);
-            sanitized = NamedSecretPattern.Replace(sanitized, Redacted);
-            sanitized = BearerPattern.Replace(sanitized, Redacted);
-            sanitized = EmailPattern.Replace(sanitized, Redacted);
-            sanitized = TokenPattern.Replace(sanitized, Redacted);
+            if (SensitiveKeyPattern.IsMatch(sanitized) ||
+                BearerPattern.IsMatch(sanitized) ||
+                EmailPattern.IsMatch(sanitized) ||
+                TokenPattern.IsMatch(sanitized))
+            {
+                return Redacted;
+            }
+
             return CapLine(sanitized, maximumLength);
         }
 
@@ -198,17 +218,33 @@ namespace CodexQuotaMonitor.ProcessTransport
                 return line;
             }
 
+            int contentLength;
+            string suffix;
             if (maximumLength <= Truncated.Length)
             {
-                return line.Substring(0, maximumLength);
+                contentLength = maximumLength;
+                suffix = String.Empty;
+            }
+            else
+            {
+                contentLength = maximumLength - Truncated.Length;
+                suffix = Truncated;
             }
 
-            return line.Substring(0, maximumLength - Truncated.Length) + Truncated;
+            if (contentLength > 0 &&
+                contentLength < line.Length &&
+                Char.IsHighSurrogate(line[contentLength - 1]) &&
+                Char.IsLowSurrogate(line[contentLength]))
+            {
+                contentLength--;
+            }
+
+            return line.Substring(0, contentLength) + suffix;
         }
     }
 }
 '@
-}
+    }
 
 function New-AppServerStartErrorRecord {
     param(
@@ -268,26 +304,43 @@ function Find-CodexExecutable {
     param()
 
     foreach ($commandName in @('codex.exe', 'codex')) {
-        $command = $null
+        $commands = @()
         try {
-            $command = @(Get-Command -Name $commandName -ErrorAction SilentlyContinue)[0]
+            $commands = @(Get-Command -Name $commandName -ErrorAction SilentlyContinue)
         }
         catch {
-            $command = $null
+            $commands = @()
         }
 
-        if ($null -ne $command) {
-            $path = Get-ObjectField -InputObject $command -Name 'Path'
-            if ([string]::IsNullOrWhiteSpace([string]$path)) {
-                $path = Get-ObjectField -InputObject $command -Name 'Source'
+        foreach ($command in $commands) {
+            $commandType = Get-ObjectField -InputObject $command -Name 'CommandType'
+            if ($commandType -notin @(
+                    [Management.Automation.CommandTypes]::Application,
+                    [Management.Automation.CommandTypes]::ExternalScript
+                )) {
+                continue
             }
 
-            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
-                return [pscustomobject][ordered]@{
-                    Status = 'Found'
-                    Found = $true
-                    ExecutablePath = [string]$path
-                    Source = "Command:$commandName"
+            $candidatePaths = @(
+                Get-ObjectField -InputObject $command -Name 'Path'
+                Get-ObjectField -InputObject $command -Name 'Source'
+            )
+            $seenPaths = [Collections.Generic.HashSet[string]]::new(
+                [StringComparer]::OrdinalIgnoreCase
+            )
+            foreach ($path in $candidatePaths) {
+                $path = [string]$path
+                if ([string]::IsNullOrWhiteSpace($path) -or -not $seenPaths.Add($path)) {
+                    continue
+                }
+
+                if (Test-Path -LiteralPath $path -PathType Leaf) {
+                    return [pscustomobject][ordered]@{
+                        Status = 'Found'
+                        Found = $true
+                        ExecutablePath = $path
+                        Source = "Command:$commandName"
+                    }
                 }
             }
         }
@@ -607,4 +660,12 @@ function Stop-AppServerProcess {
             $Transport.CaptureState.CompleteStop()
         }
     }
+}
+}
+finally {
+    if ($typeLoadMutexAcquired) {
+        try { $typeLoadMutex.ReleaseMutex() } catch {}
+    }
+
+    $typeLoadMutex.Dispose()
 }
