@@ -341,6 +341,269 @@ Describe 'Write-MonitorLog' {
         $rotated.Event | Should -BeExactly 'unicode-byte-1'
     }
 
+    It 'derives one stable path-scoped Local mutex name from the normalized log path' {
+        $path = Join-Path $TestDrive 'mutex-name\monitor.log'
+        $relativePath = [IO.Path]::GetRelativePath((Get-Location).Path, $path)
+
+        $absoluteName = Get-MonitorLogMutexName -Path $path
+        $relativeName = Get-MonitorLogMutexName -Path $relativePath
+
+        $absoluteName | Should -BeExactly $relativeName
+        $absoluteName | Should -Match '^Local\\CodexQuotaMonitor\.Log\.[0-9A-F]{64}$'
+        $absoluteName | Should -Not -Match ([regex]::Escape($path))
+    }
+
+    It 'times out with a constant sanitized error while another thread owns the log mutex' {
+        $path = Join-Path $TestDrive 'mutex-timeout\monitor.log'
+        $mutex = [Threading.Mutex]::new($false, (Get-MonitorLogMutexName -Path $path))
+        $ownsMutex = $mutex.WaitOne(1000)
+        $job = $null
+        try {
+            $ownsMutex | Should -BeTrue
+            $job = Start-ThreadJob -ArgumentList $loggingScript, $path -ScriptBlock {
+                param($ScriptPath, $LogPath)
+                . $ScriptPath
+                try {
+                    $acquired = Enter-MonitorLogMutex -Path $LogPath -TimeoutMilliseconds 75
+                    try { 'unexpectedly acquired' } finally { Exit-MonitorLogMutex -Mutex $acquired }
+                }
+                catch {
+                    $_.Exception.Message
+                }
+            }
+            $null = Wait-Job -Job $job -Timeout 5
+            $message = Receive-Job -Job $job -ErrorAction Stop
+
+            $message | Should -BeExactly 'Timed out waiting for monitor log persistence.'
+            $message | Should -Not -Match ([regex]::Escape($path))
+        }
+        finally {
+            if ($ownsMutex) {
+                $mutex.ReleaseMutex()
+            }
+            $mutex.Dispose()
+            if ($null -ne $job) {
+                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'recovers an abandoned log mutex and releases it for the next owner' {
+        $path = Join-Path $TestDrive 'abandoned\monitor.log'
+        $mutexName = Get-MonitorLogMutexName -Path $path
+        $observer = [Threading.Mutex]::new($false, $mutexName)
+        $holderScript = Join-Path $TestDrive 'abandon-log-mutex.ps1'
+        [IO.File]::WriteAllText($holderScript, @'
+param([string]$Name)
+$mutex = [Threading.Mutex]::new($false, $Name)
+$null = $mutex.WaitOne()
+[Environment]::Exit(0)
+'@, [Text.UTF8Encoding]::new($false))
+        try {
+            & (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -NonInteractive -File $holderScript $mutexName
+            $LASTEXITCODE | Should -Be 0
+
+            $acquired = Enter-MonitorLogMutex -Path $path -TimeoutMilliseconds 1000
+            Exit-MonitorLogMutex -Mutex $acquired
+            $next = Enter-MonitorLogMutex -Path $path -TimeoutMilliseconds 1000
+            try {
+                $next | Should -BeOfType ([Threading.Mutex])
+            }
+            finally {
+                Exit-MonitorLogMutex -Mutex $next
+            }
+        }
+        finally {
+            $observer.Dispose()
+        }
+    }
+
+    It 'serializes four concurrent first and append writers without losing valid JSON lines' {
+        $directory = Join-Path $TestDrive 'concurrent-append'
+        $writerCount = 4
+        $entriesPerWriter = 12
+        $ready = [Threading.CountdownEvent]::new($writerCount)
+        $gate = [Threading.ManualResetEventSlim]::new($false)
+        $jobs = @()
+        try {
+            foreach ($writer in 0..($writerCount - 1)) {
+                $jobs += Start-ThreadJob -ThrottleLimit $writerCount -ArgumentList @(
+                    $loggingScript,
+                    $directory,
+                    $writer,
+                    $entriesPerWriter,
+                    $ready,
+                    $gate
+                ) -ScriptBlock {
+                    param($ScriptPath, $LogDirectory, $Writer, $EntryCount, $ReadyEvent, $GateEvent)
+                    . $ScriptPath
+                    $null = $ReadyEvent.Signal()
+                    if (-not $GateEvent.Wait(5000)) {
+                        throw 'Concurrent writer gate timed out.'
+                    }
+                    foreach ($sequence in 0..($EntryCount - 1)) {
+                        Write-MonitorLog -LogDirectory $LogDirectory -Level 'Info' -Event 'concurrent.append' -Data ([ordered]@{
+                            Writer = [long]$Writer
+                            Sequence = [long]$sequence
+                            Padding = 'x' * 64
+                        }) -Now ([DateTimeOffset]'2026-07-14T00:00:00Z').AddMilliseconds(($Writer * 100) + $sequence) -MaximumBytes 1MB
+                    }
+                }
+            }
+
+            $ready.Wait(10000) | Should -BeTrue
+            $gate.Set()
+            $completed = @(Wait-Job -Job $jobs -Timeout 30)
+            $completed.Count | Should -Be $writerCount
+            @($jobs | Where-Object State -NE 'Completed').Count | Should -Be 0
+            foreach ($job in $jobs) {
+                Receive-Job -Job $job -ErrorAction Stop | Out-Null
+            }
+        }
+        finally {
+            $gate.Set()
+            $jobs | Stop-Job -ErrorAction SilentlyContinue
+            $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+            $ready.Dispose()
+            $gate.Dispose()
+        }
+
+        $path = Join-Path $directory 'monitor.log'
+        $lines = @([IO.File]::ReadAllLines($path, [Text.UTF8Encoding]::new($false, $true)))
+        $lines.Count | Should -Be ($writerCount * $entriesPerWriter)
+        $actual = @($lines | ForEach-Object {
+            $record = $_ | ConvertFrom-Json -ErrorAction Stop
+            "$($record.Data.Writer):$($record.Data.Sequence)"
+        }) | Sort-Object
+        $expected = @(foreach ($writer in 0..($writerCount - 1)) {
+            foreach ($sequence in 0..($entriesPerWriter - 1)) {
+                "${writer}:$sequence"
+            }
+        }) | Sort-Object
+        $actual | Should -Be $expected
+        @(Get-ChildItem -LiteralPath $directory -File).Name | Should -Be @('monitor.log')
+    }
+
+    It 'serializes concurrent low-threshold rotations into six complete retained entries' {
+        $directory = Join-Path $TestDrive 'concurrent-rotation'
+        foreach ($sequence in 1..2) {
+            Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'concurrent.rotation' -Data ([ordered]@{
+                Sequence = [long]$sequence
+                Padding = 'x' * 65536
+            }) -Now ([DateTimeOffset]'2026-07-14T00:00:00Z').AddSeconds($sequence) -MaximumBytes 128 -RetainedFiles 5
+        }
+
+        $writerCount = 4
+        $ready = [Threading.CountdownEvent]::new($writerCount)
+        $gate = [Threading.ManualResetEventSlim]::new($false)
+        $jobs = @()
+        try {
+            foreach ($offset in 0..($writerCount - 1)) {
+                $sequence = $offset + 3
+                $jobs += Start-ThreadJob -ThrottleLimit $writerCount -ArgumentList @(
+                    $loggingScript,
+                    $directory,
+                    $sequence,
+                    $ready,
+                    $gate
+                ) -ScriptBlock {
+                    param($ScriptPath, $LogDirectory, $Sequence, $ReadyEvent, $GateEvent)
+                    . $ScriptPath
+                    $null = $ReadyEvent.Signal()
+                    if (-not $GateEvent.Wait(5000)) {
+                        throw 'Rotating writer gate timed out.'
+                    }
+                    Write-MonitorLog -LogDirectory $LogDirectory -Level 'Info' -Event 'concurrent.rotation' -Data ([ordered]@{
+                        Sequence = [long]$Sequence
+                        Padding = 'x' * 65536
+                    }) -Now ([DateTimeOffset]'2026-07-14T00:00:00Z').AddSeconds($Sequence) -MaximumBytes 128 -RetainedFiles 5
+                }
+            }
+
+            $ready.Wait(10000) | Should -BeTrue
+            $gate.Set()
+            $completed = @(Wait-Job -Job $jobs -Timeout 30)
+            $completed.Count | Should -Be $writerCount
+            @($jobs | Where-Object State -NE 'Completed').Count | Should -Be 0
+            foreach ($job in $jobs) {
+                Receive-Job -Job $job -ErrorAction Stop | Out-Null
+            }
+        }
+        finally {
+            $gate.Set()
+            $jobs | Stop-Job -ErrorAction SilentlyContinue
+            $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+            $ready.Dispose()
+            $gate.Dispose()
+        }
+
+        $expectedNames = @('monitor.log') + @(1..5 | ForEach-Object { "monitor.$_.log" })
+        $files = @(Get-ChildItem -LiteralPath $directory -File)
+        @($files.Name | Sort-Object) | Should -Be @($expectedNames | Sort-Object)
+        $sequences = foreach ($file in $files) {
+            $bytes = [IO.File]::ReadAllBytes($file.FullName)
+            $bytes[-1] | Should -Be 10
+            if ($bytes.Length -ge 3) {
+                [Convert]::ToHexString($bytes[0..2]) | Should -Not -BeExactly 'EFBBBF'
+            }
+            $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            $text | Should -Not -Match "`r"
+            @($text -split "`n" | Where-Object Length -GT 0).Count | Should -Be 1
+            ($text | ConvertFrom-Json -ErrorAction Stop).Data.Sequence
+        }
+        @($sequences | Sort-Object) | Should -Be @(1..6)
+        @($files.Name | Where-Object { $_ -match '\.(tmp|backup)' }).Count | Should -Be 0
+    }
+
+    It 'keeps current and archives intact when a real archive destination replacement fails' {
+        $directory = Join-Path $TestDrive 'rotation-failure'
+        $currentPath = Join-Path $directory 'monitor.log'
+        $archivePath = Join-Path $directory 'monitor.1.log'
+        Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'rotation.seed' -Data ([ordered]@{
+            Sequence = [long]1
+            Padding = 'x' * 256
+        }) -MaximumBytes 4096 -RetainedFiles 1
+        Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'rotation.seed' -Data ([ordered]@{
+            Sequence = [long]2
+            Padding = 'x' * 256
+        }) -MaximumBytes 128 -RetainedFiles 1
+        $currentBefore = [IO.File]::ReadAllBytes($currentPath)
+        $archiveBefore = [IO.File]::ReadAllBytes($archivePath)
+        $archiveLock = [IO.FileStream]::new(
+            $archivePath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::None
+        )
+        $caught = $null
+        try {
+            try {
+                Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'rotation.trigger' -Data ([ordered]@{
+                    Sequence = [long]3
+                    Padding = 'x' * 256
+                }) -MaximumBytes 128 -RetainedFiles 1
+                throw 'Expected the locked archive replacement to fail.'
+            }
+            catch {
+                $caught = $_
+            }
+
+            $caught.Exception.Message | Should -BeExactly 'Failed to persist monitor log entry.'
+            ($caught | Out-String) | Should -Not -Match ([regex]::Escape($directory))
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($currentPath)) |
+                Should -BeExactly ([Convert]::ToBase64String($currentBefore))
+        }
+        finally {
+            $archiveLock.Dispose()
+        }
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($archivePath)) |
+            Should -BeExactly ([Convert]::ToBase64String($archiveBefore))
+        $allText = @([IO.File]::ReadAllText($currentPath), [IO.File]::ReadAllText($archivePath)) -join "`n"
+        $allText | Should -Not -Match 'rotation\.trigger|"Sequence":3'
+        @(Get-ChildItem -LiteralPath $directory -File | Where-Object Name -Match '\.(tmp|backup)\.').Count | Should -Be 0
+    }
+
     It 'rejects sensitive field names without writing the rejected key or value anywhere' -ForEach @(
         @{ Key = 'accessToken'; Value = 'secret-token-value' }
         @{ Key = 'AUTHORIZATION'; Value = 'Bearer hidden-value' }

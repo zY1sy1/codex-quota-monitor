@@ -41,6 +41,253 @@ function Test-MonitorLogScalarValue {
     return $false
 }
 
+function Get-MonitorLogMutexName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path
+    )
+
+    $normalizedPath = [IO.Path]::GetFullPath($Path).ToUpperInvariant()
+    $pathBytes = [Text.UTF8Encoding]::new($false).GetBytes($normalizedPath)
+    $hashBytes = [Security.Cryptography.SHA256]::HashData($pathBytes)
+    return 'Local\CodexQuotaMonitor.Log.' + [Convert]::ToHexString($hashBytes)
+}
+
+function Enter-MonitorLogMutex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Parameter(Position = 1)]
+        [ValidateRange(1, 60000)]
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $mutex = [Threading.Mutex]::new($false, (Get-MonitorLogMutexName -Path $Path))
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+
+        if (-not $acquired) {
+            throw [TimeoutException]::new('Timed out waiting for monitor log persistence.')
+        }
+
+        return $mutex
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-MonitorLogMutex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [Threading.Mutex]$Mutex
+    )
+
+    try {
+        $Mutex.ReleaseMutex()
+    }
+    finally {
+        $Mutex.Dispose()
+    }
+}
+
+function Remove-MonitorLogTemporaryFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path
+    )
+
+    [IO.File]::Delete($Path)
+}
+
+function Remove-MonitorLogBackupFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path
+    )
+
+    [IO.File]::Delete($Path)
+}
+
+function Write-MonitorLogTemporaryBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Parameter(Mandatory, Position = 1)]
+        [byte[]]$Bytes
+    )
+
+    $stream = [IO.FileStream]::new(
+        $Path,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None,
+        4096,
+        [IO.FileOptions]::WriteThrough
+    )
+    try {
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Copy-MonitorLogTemporaryFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory, Position = 1)]
+        [string]$TemporaryPath
+    )
+
+    $source = [IO.FileStream]::new(
+        $SourcePath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        $temporary = [IO.FileStream]::new(
+            $TemporaryPath,
+            [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None,
+            4096,
+            [IO.FileOptions]::WriteThrough
+        )
+        try {
+            $source.CopyTo($temporary)
+            $temporary.Flush($true)
+        }
+        finally {
+            $temporary.Dispose()
+        }
+    }
+    finally {
+        $source.Dispose()
+    }
+}
+
+function Complete-MonitorLogAtomicFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$TemporaryPath,
+
+        [Parameter(Mandatory, Position = 1)]
+        [string]$DestinationPath,
+
+        [Parameter(Mandatory, Position = 2)]
+        [string]$BackupPath
+    )
+
+    if ([IO.File]::Exists($DestinationPath)) {
+        [IO.File]::Replace($TemporaryPath, $DestinationPath, $BackupPath, $true)
+    }
+    else {
+        [IO.File]::Move($TemporaryPath, $DestinationPath)
+    }
+}
+
+function Copy-MonitorLogFileAtomic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory, Position = 1)]
+        [string]$DestinationPath
+    )
+
+    $directory = [IO.Path]::GetDirectoryName($DestinationPath)
+    $fileName = [IO.Path]::GetFileName($DestinationPath)
+    $temporaryId = [Guid]::NewGuid().ToString('N')
+    $temporaryPath = Join-Path $directory ".$fileName.$temporaryId.tmp"
+    $backupPath = Join-Path $directory ".$fileName.$temporaryId.backup.tmp"
+    try {
+        Copy-MonitorLogTemporaryFile -SourcePath $SourcePath -TemporaryPath $temporaryPath
+        Complete-MonitorLogAtomicFile -TemporaryPath $temporaryPath -DestinationPath $DestinationPath -BackupPath $backupPath
+    }
+    finally {
+        if ([IO.File]::Exists($temporaryPath)) {
+            try {
+                Remove-MonitorLogTemporaryFile -Path $temporaryPath
+            }
+            catch {
+                # Temporary cleanup is best effort; the source was never removed.
+            }
+        }
+        if ([IO.File]::Exists($backupPath)) {
+            try {
+                Remove-MonitorLogBackupFile -Path $backupPath
+            }
+            catch {
+                # A committed target remains authoritative if backup cleanup fails.
+            }
+        }
+    }
+}
+
+function Write-MonitorLogFileAtomic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Parameter(Mandatory, Position = 1)]
+        [byte[]]$Bytes
+    )
+
+    $directory = [IO.Path]::GetDirectoryName($Path)
+    $fileName = [IO.Path]::GetFileName($Path)
+    $temporaryId = [Guid]::NewGuid().ToString('N')
+    $temporaryPath = Join-Path $directory ".$fileName.$temporaryId.tmp"
+    $backupPath = Join-Path $directory ".$fileName.$temporaryId.backup.tmp"
+    try {
+        Write-MonitorLogTemporaryBytes -Path $temporaryPath -Bytes $Bytes
+        Complete-MonitorLogAtomicFile -TemporaryPath $temporaryPath -DestinationPath $Path -BackupPath $backupPath
+    }
+    finally {
+        if ([IO.File]::Exists($temporaryPath)) {
+            try {
+                Remove-MonitorLogTemporaryFile -Path $temporaryPath
+            }
+            catch {
+                # Temporary cleanup is best effort; the previous target remains authoritative.
+            }
+        }
+        if ([IO.File]::Exists($backupPath)) {
+            try {
+                Remove-MonitorLogBackupFile -Path $backupPath
+            }
+            catch {
+                # A committed target remains authoritative if backup cleanup fails.
+            }
+        }
+    }
+}
+
 function Invoke-MonitorLogRotation {
     [CmdletBinding()]
     param(
@@ -51,18 +298,8 @@ function Invoke-MonitorLogRotation {
         [int]$RetainedFiles
     )
 
-    $currentPath = Join-Path $LogDirectory 'monitor.log'
     if ($RetainedFiles -eq 0) {
-        if ([IO.File]::Exists($currentPath)) {
-            [IO.File]::Delete($currentPath)
-        }
-
         return
-    }
-
-    $oldestPath = Join-Path $LogDirectory "monitor.$RetainedFiles.log"
-    if ([IO.File]::Exists($oldestPath)) {
-        [IO.File]::Delete($oldestPath)
     }
 
     for ($index = $RetainedFiles - 1; $index -ge 1; $index--) {
@@ -72,18 +309,13 @@ function Invoke-MonitorLogRotation {
         }
 
         $destination = Join-Path $LogDirectory "monitor.$($index + 1).log"
-        if ([IO.File]::Exists($destination)) {
-            [IO.File]::Delete($destination)
-        }
-        [IO.File]::Move($source, $destination)
+        Copy-MonitorLogFileAtomic -SourcePath $source -DestinationPath $destination
     }
 
+    $currentPath = Join-Path $LogDirectory 'monitor.log'
     if ([IO.File]::Exists($currentPath)) {
         $firstRotatedPath = Join-Path $LogDirectory 'monitor.1.log'
-        if ([IO.File]::Exists($firstRotatedPath)) {
-            [IO.File]::Delete($firstRotatedPath)
-        }
-        [IO.File]::Move($currentPath, $firstRotatedPath)
+        Copy-MonitorLogFileAtomic -SourcePath $currentPath -DestinationPath $firstRotatedPath
     }
 }
 
@@ -191,26 +423,42 @@ function Write-MonitorLog {
     $fullDirectory = [IO.Path]::GetFullPath($LogDirectory)
     $null = [IO.Directory]::CreateDirectory($fullDirectory)
     $currentPath = Join-Path $fullDirectory 'monitor.log'
-    if ([IO.File]::Exists($currentPath)) {
-        $currentLength = ([IO.FileInfo]$currentPath).Length
-        if ($lineBytes.LongLength -gt ($MaximumBytes - $currentLength)) {
-            Invoke-MonitorLogRotation -LogDirectory $fullDirectory -RetainedFiles $RetainedFiles
+    $mutex = Enter-MonitorLogMutex -Path $currentPath
+    try {
+        try {
+            $rotate = $false
+            if ([IO.File]::Exists($currentPath)) {
+                $currentLength = ([IO.FileInfo]$currentPath).Length
+                $rotate = $lineBytes.LongLength -gt ($MaximumBytes - $currentLength)
+            }
+
+            if ($rotate) {
+                Invoke-MonitorLogRotation -LogDirectory $fullDirectory -RetainedFiles $RetainedFiles
+                Write-MonitorLogFileAtomic -Path $currentPath -Bytes $lineBytes
+                return
+            }
+
+            $stream = [IO.FileStream]::new(
+                $currentPath,
+                [IO.FileMode]::Append,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::Read,
+                4096,
+                [IO.FileOptions]::WriteThrough
+            )
+            try {
+                $stream.Write($lineBytes, 0, $lineBytes.Length)
+                $stream.Flush($true)
+            }
+            finally {
+                $stream.Dispose()
+            }
+        }
+        catch {
+            throw [IO.IOException]::new('Failed to persist monitor log entry.')
         }
     }
-
-    $stream = [IO.FileStream]::new(
-        $currentPath,
-        [IO.FileMode]::Append,
-        [IO.FileAccess]::Write,
-        [IO.FileShare]::Read,
-        4096,
-        [IO.FileOptions]::WriteThrough
-    )
-    try {
-        $stream.Write($lineBytes, 0, $lineBytes.Length)
-        $stream.Flush($true)
-    }
     finally {
-        $stream.Dispose()
+        Exit-MonitorLogMutex -Mutex $mutex
     }
 }
