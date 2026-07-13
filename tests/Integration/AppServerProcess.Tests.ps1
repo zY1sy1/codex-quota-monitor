@@ -1,6 +1,8 @@
 BeforeAll {
-    . "$PSScriptRoot\..\..\companion\Private\ObjectAccess.ps1"
-    . "$PSScriptRoot\..\..\companion\Private\JsonRpc.ps1"
+    $script:ObjectAccessPath = (Resolve-Path -LiteralPath "$PSScriptRoot\..\..\companion\Private\ObjectAccess.ps1").Path
+    $script:JsonRpcPath = (Resolve-Path -LiteralPath "$PSScriptRoot\..\..\companion\Private\JsonRpc.ps1").Path
+    . $script:ObjectAccessPath
+    . $script:JsonRpcPath
     $script:AppServerProcessPath = (Resolve-Path -LiteralPath "$PSScriptRoot\..\..\companion\Private\AppServerProcess.ps1").Path
     . $script:AppServerProcessPath
 
@@ -88,7 +90,7 @@ BeforeAll {
 
     function Start-TestFakeAppServer {
         param(
-            [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize')]
+            [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes')]
             [string]$Scenario = 'Happy',
 
             [string]$ServerPath = $script:FakeAppServerPath,
@@ -219,6 +221,135 @@ Describe 'App Server JSONL process transport' {
         $transport.ExitCode | Should -Be 17
     }
 
+    It 'serializes concurrent sends into intact one-line JSON frames' {
+        $transport = Start-TestFakeAppServer
+        $sendErrors = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+        $sendGate = [Threading.Barrier]::new(16)
+
+        try {
+            $null = 0..31 | ForEach-Object -Parallel {
+                $jsonRpcPath = $using:JsonRpcPath
+                $appServerProcessPath = $using:AppServerProcessPath
+                $sharedTransport = $using:transport
+                $sharedErrors = $using:sendErrors
+                $sharedGate = $using:sendGate
+                . $jsonRpcPath
+                . $appServerProcessPath
+                $null = $sharedGate.SignalAndWait([TimeSpan]::FromSeconds(10))
+                try {
+                    Send-AppServerMessage -Transport $sharedTransport -Message (
+                        New-RpcRequest -Id (1000 + $_) -Method 'test/echo' -Params ([ordered]@{ sequence = $_ })
+                    )
+                }
+                catch {
+                    $sharedErrors.Enqueue($_.Exception.Message)
+                }
+            } -ThrottleLimit 16
+        }
+        finally {
+            $sendGate.Dispose()
+        }
+
+        @($sendErrors.ToArray()).Count | Should -Be 0
+        $seen = [Collections.Generic.HashSet[int]]::new()
+        Wait-TestCondition -Description 'all concurrent echo responses' -TimeoutMilliseconds 10000 -Condition {
+            foreach ($record in @(Receive-AppServerRecord -Transport $transport)) {
+                if ($record.Stream -ne 'stdout') {
+                    continue
+                }
+
+                try {
+                    $response = $record.Line | ConvertFrom-Json
+                    if ($response.id -ge 1000 -and $response.id -lt 1032 -and
+                        $response.result.sequence -eq ($response.id - 1000)) {
+                        $null = $seen.Add([int]$response.id)
+                    }
+                }
+                catch {
+                    throw "Corrupt JSONL frame: $($record.Line)"
+                }
+            }
+
+            return $seen.Count -eq 32
+        }
+        $seen.Count | Should -Be 32
+    }
+
+    It 'returns only success or a sanitized TransportClosed error when send races Stop' {
+        $transport = Start-TestFakeAppServer
+        $gate = [Threading.Barrier]::new(2)
+        $results = [Collections.Concurrent.ConcurrentQueue[object]]::new()
+
+        try {
+            $null = @('Send', 'Stop') | ForEach-Object -Parallel {
+                $operation = $_
+                $jsonRpcPath = $using:JsonRpcPath
+                $appServerProcessPath = $using:AppServerProcessPath
+                $sharedTransport = $using:transport
+                $sharedGate = $using:gate
+                $sharedResults = $using:results
+                . $jsonRpcPath
+                . $appServerProcessPath
+                $null = $sharedGate.SignalAndWait([TimeSpan]::FromSeconds(10))
+                if ($operation -eq 'Send') {
+                    try {
+                        Send-AppServerMessage -Transport $sharedTransport -Message (
+                            New-RpcRequest -Id 1500 -Method 'test/echo' -Params ([ordered]@{ sequence = 500 })
+                        )
+                        $sharedResults.Enqueue([pscustomobject]@{ Operation = 'Send'; Status = 'Sent'; Category = $null; Message = $null })
+                    }
+                    catch {
+                        $sharedResults.Enqueue([pscustomobject]@{
+                                Operation = 'Send'
+                                Status = 'Closed'
+                                Category = $_.Exception.Data['AppServerErrorCategory']
+                                Message = $_.Exception.Message
+                            })
+                    }
+                }
+                else {
+                    Stop-AppServerProcess -Transport $sharedTransport
+                    $sharedResults.Enqueue([pscustomobject]@{ Operation = 'Stop'; Disposed = $sharedTransport.Disposed })
+                }
+            } -ThrottleLimit 2
+        }
+        finally {
+            $gate.Dispose()
+        }
+
+        $sendResult = @($results.ToArray() | Where-Object Operation -EQ 'Send')[0]
+        $stopResult = @($results.ToArray() | Where-Object Operation -EQ 'Stop')[0]
+        $sendResult.Status | Should -BeIn @('Sent', 'Closed')
+        if ($sendResult.Status -eq 'Closed') {
+            $sendResult.Category | Should -BeExactly 'TransportClosed'
+            $sendResult.Message | Should -BeExactly 'The App Server process transport is closed.'
+        }
+        $stopResult.Disposed | Should -BeTrue
+    }
+
+    It 'sanitizes send after natural process exit as TransportClosed' {
+        $transport = Start-TestFakeAppServer -Scenario ExitAfterInitialize
+        Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 1501 -Method 'initialize' -Params $null)
+        $null = Wait-TestRecord -Transport $transport -Description 'initialize before natural exit' -Predicate {
+            param($candidate)
+            Test-RecordHasId -Record $candidate -Id 1501
+        }
+        Wait-TestCondition -Description 'natural server exit' -Condition { $transport.Process.HasExited }
+
+        try {
+            Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 1502 -Method 'test/echo' -Params $null)
+            throw 'Expected send after process exit to fail.'
+        }
+        catch {
+            $sendError = $_
+        }
+
+        $sendError.Exception.Data['AppServerErrorCategory'] | Should -BeExactly 'TransportClosed'
+        $sendError.FullyQualifiedErrorId | Should -Match '^AppServerProcess\.TransportClosed'
+        $sendError.Exception.Message | Should -BeExactly 'The App Server process transport is closed.'
+        $transport.StdinClosed | Should -BeTrue
+    }
+
     It 'kills only its owned stubborn child and lets a clean fake server exit on stdin close' {
         $survivor = Start-TestFakeAppServer
         $stubbornScript = '[Console]::In.ReadToEnd(); while ($true) { [Threading.Thread]::Sleep(50) }'
@@ -238,14 +369,17 @@ Describe 'App Server JSONL process transport' {
         $survivor.Disposed | Should -BeTrue
     }
 
-    It 'allows only one concurrent caller to own shutdown and disposal' {
+    It 'makes a losing concurrent Stop wait until the owner completes' {
         $calls = [Collections.Concurrent.ConcurrentQueue[string]]::new()
         $process = [pscustomobject]@{
             Calls = $calls
-            HasExited = $true
+            HasExited = $false
             ExitCode = 0
         }
-        $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { return $true }
+        $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
+            [Threading.Thread]::Sleep(150)
+            return $true
+        }
         $process | Add-Member -MemberType ScriptMethod -Name CancelOutputRead -Value { $this.Calls.Enqueue('CancelOutputRead') }
         $process | Add-Member -MemberType ScriptMethod -Name CancelErrorRead -Value { $this.Calls.Enqueue('CancelErrorRead') }
         $process | Add-Member -MemberType ScriptMethod -Name remove_OutputDataReceived -Value { param($Handler) $this.Calls.Enqueue('RemoveOutput') }
@@ -262,32 +396,30 @@ Describe 'App Server JSONL process transport' {
             OutputHandler = $null
             ErrorHandler = $null
             StdinWriter = $writer
+            IoLock = [object]::new()
             StoppedValue = $false
-            StopBarrier = [Threading.Barrier]::new(2)
             Disposed = $false
             StdinClosed = $false
             WasKilled = $false
             ExitCode = $null
         }
-        $transport | Add-Member -MemberType ScriptProperty -Name Stopped -Value {
-            if (-not $this.StopBarrier.SignalAndWait([TimeSpan]::FromSeconds(5))) {
-                throw 'Concurrent stop callers did not reach the gate.'
-            }
-
-            return $this.StoppedValue
-        } -SecondValue {
-            $this.StoppedValue = [bool]$args[0]
-        }
+        $transport | Add-Member -MemberType AliasProperty -Name Stopped -Value StoppedValue
         $errors = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+        $returnStates = [Collections.Concurrent.ConcurrentQueue[bool]]::new()
+        $startGate = [Threading.Barrier]::new(2)
 
         try {
             $null = 1..2 | ForEach-Object -Parallel {
                 $appServerProcessPath = $using:AppServerProcessPath
                 $sharedTransport = $using:transport
                 $sharedErrors = $using:errors
+                $sharedReturnStates = $using:returnStates
+                $sharedStartGate = $using:startGate
                 . $appServerProcessPath
+                $null = $sharedStartGate.SignalAndWait([TimeSpan]::FromSeconds(10))
                 try {
-                    Stop-AppServerProcess -Transport $sharedTransport
+                    Stop-AppServerProcess -Transport $sharedTransport -TimeoutMilliseconds 3000
+                    $sharedReturnStates.Enqueue([bool]$sharedTransport.Disposed)
                 }
                 catch {
                     $sharedErrors.Enqueue($_.Exception.Message)
@@ -295,12 +427,30 @@ Describe 'App Server JSONL process transport' {
             } -ThrottleLimit 2
         }
         finally {
-            $transport.StopBarrier.Dispose()
+            $startGate.Dispose()
         }
 
         @($errors.ToArray()).Count | Should -Be 0
+        @($returnStates.ToArray()) | Should -Be @($true, $true)
         @($calls.ToArray() | Where-Object { $_ -eq 'ProcessDispose' }).Count | Should -Be 1
         @($calls.ToArray() | Where-Object { $_ -eq 'WriterClose' }).Count | Should -Be 1
+    }
+
+    It 'returns within one shutdown deadline when a descendant retains inherited pipes' {
+        $transport = Start-TestFakeAppServer -Scenario InheritedPipes
+        Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 1600 -Method 'initialize' -Params $null)
+        $null = Wait-TestRecord -Transport $transport -Description 'response before inherited-pipe exit' -Predicate {
+            param($candidate)
+            Test-RecordHasId -Record $candidate -Id 1600
+        }
+        Wait-TestCondition -Description 'parent exit with inherited pipes' -Condition { $transport.Process.HasExited }
+
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        Stop-AppServerProcess -Transport $transport -TimeoutMilliseconds 250
+        $stopwatch.Stop()
+
+        $stopwatch.ElapsedMilliseconds | Should -BeLessThan 750
+        $transport.Disposed | Should -BeTrue
     }
 
     It 'redacts and length-caps stderr before enforcing its injected record bound' {

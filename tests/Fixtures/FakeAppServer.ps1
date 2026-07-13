@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize')]
+    [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes')]
     [string]$Scenario = 'Happy'
 )
 
@@ -10,6 +10,12 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         [Console]::Out.WriteLine('{broken')
         [Console]::Out.Flush()
         continue
+    }
+
+    if ($line.Length -eq 0) {
+        [Console]::Error.WriteLine('empty JSONL frame')
+        [Console]::Error.Flush()
+        exit 23
     }
 
     $message = $line | ConvertFrom-Json
@@ -27,6 +33,20 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 
             if ($Scenario -eq 'ExitAfterInitialize') {
                 exit 17
+            }
+
+            if ($Scenario -eq 'InheritedPipes') {
+                $startInfo = [Diagnostics.ProcessStartInfo]::new()
+                $startInfo.FileName = Join-Path $PSHOME 'pwsh.exe'
+                $startInfo.UseShellExecute = $false
+                $startInfo.CreateNoWindow = $true
+                $startInfo.ArgumentList.Add('-NoLogo')
+                $startInfo.ArgumentList.Add('-NoProfile')
+                $startInfo.ArgumentList.Add('-NonInteractive')
+                $startInfo.ArgumentList.Add('-Command')
+                $startInfo.ArgumentList.Add('[Threading.Thread]::Sleep(2500)')
+                $null = [Diagnostics.Process]::Start($startInfo)
+                exit 0
             }
         }
 
@@ -86,6 +106,14 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
             }
 
             [Console]::Out.WriteLine((@{ id = $message.id; result = @{ emitted = $count } } | ConvertTo-Json -Depth 20 -Compress))
+            [Console]::Out.Flush()
+        }
+
+        'test/echo' {
+            [Console]::Out.WriteLine((@{
+                        id = $message.id
+                        result = @{ sequence = $message.params.sequence }
+                    } | ConvertTo-Json -Depth 20 -Compress))
             [Console]::Out.Flush()
         }
     }

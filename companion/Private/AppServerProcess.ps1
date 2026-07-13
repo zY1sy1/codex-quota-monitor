@@ -53,6 +53,7 @@ namespace CodexQuotaMonitor.ProcessTransport
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private readonly object syncRoot = new object();
+        private readonly ManualResetEventSlim stopCompleted = new ManualResetEventSlim(false);
         private volatile bool accepting = true;
         private int stopStarted;
 
@@ -109,6 +110,16 @@ namespace CodexQuotaMonitor.ProcessTransport
         public bool TryBeginStop()
         {
             return Interlocked.CompareExchange(ref stopStarted, 1, 0) == 0;
+        }
+
+        public void CompleteStop()
+        {
+            stopCompleted.Set();
+        }
+
+        public bool WaitForStop(int milliseconds)
+        {
+            return stopCompleted.Wait(milliseconds);
         }
 
         private void EnqueueBounded(AppServerRecord record)
@@ -223,6 +234,17 @@ function New-AppServerStartErrorRecord {
         $exception,
         "AppServerProcess.$Category",
         $errorCategory,
+        $null
+    )
+}
+
+function New-AppServerTransportClosedErrorRecord {
+    $exception = [InvalidOperationException]::new('The App Server process transport is closed.')
+    $exception.Data['AppServerErrorCategory'] = 'TransportClosed'
+    return [Management.Automation.ErrorRecord]::new(
+        $exception,
+        'AppServerProcess.TransportClosed',
+        [Management.Automation.ErrorCategory]::ResourceUnavailable,
         $null
     )
 }
@@ -415,6 +437,7 @@ function Start-AppServerProcess {
         ErrorHandler = $errorHandler
         CallbackResources = @($outputHandler, $errorHandler)
         StdinWriter = $stdinWriter
+        IoLock = [object]::new()
         StdoutRecordLimit = $StdoutRecordLimit
         StderrRecordLimit = $StderrRecordLimit
         DiagnosticLineLimit = $DiagnosticLineLimit
@@ -451,14 +474,48 @@ function Send-AppServerMessage {
         [object]$Message
     )
 
-    if ($Transport.Stopped -or $Transport.Disposed) {
-        throw [InvalidOperationException]::new('The App Server process transport is stopped.')
-    }
-
     $line = [string](ConvertTo-JsonLine -Message $Message)
     $line = $line.TrimEnd([char]13, [char]10) + [string][char]10
-    $Transport.StdinWriter.Write($line)
-    $Transport.StdinWriter.Flush()
+    $lockTaken = $false
+    try {
+        [Threading.Monitor]::Enter($Transport.IoLock, [ref]$lockTaken)
+
+        if ($Transport.Stopped -or $Transport.Disposed -or $Transport.StdinClosed) {
+            throw (New-AppServerTransportClosedErrorRecord)
+        }
+
+        $hasExited = $true
+        try { $hasExited = $Transport.Process.HasExited } catch { $hasExited = $true }
+        if ($hasExited) {
+            try { $Transport.StdinWriter.Close() } catch {}
+            $Transport.StdinClosed = $true
+            throw (New-AppServerTransportClosedErrorRecord)
+        }
+
+        try {
+            $Transport.StdinWriter.Write($line)
+            $Transport.StdinWriter.Flush()
+        }
+        catch [IO.IOException] {
+            try { $Transport.StdinWriter.Close() } catch {}
+            $Transport.StdinClosed = $true
+            throw (New-AppServerTransportClosedErrorRecord)
+        }
+        catch [ObjectDisposedException] {
+            $Transport.StdinClosed = $true
+            throw (New-AppServerTransportClosedErrorRecord)
+        }
+        catch [InvalidOperationException] {
+            try { $Transport.StdinWriter.Close() } catch {}
+            $Transport.StdinClosed = $true
+            throw (New-AppServerTransportClosedErrorRecord)
+        }
+    }
+    finally {
+        if ($lockTaken) {
+            [Threading.Monitor]::Exit($Transport.IoLock)
+        }
+    }
 }
 
 function Stop-AppServerProcess {
@@ -466,27 +523,51 @@ function Stop-AppServerProcess {
     param(
         [Parameter(Mandatory)]
         [AllowNull()]
-        [object]$Transport
+        [object]$Transport,
+
+        [ValidateRange(1, 60000)]
+        [int]$TimeoutMilliseconds = 2000
     )
 
-    if ($null -eq $Transport -or -not $Transport.CaptureState.TryBeginStop()) {
+    if ($null -eq $Transport) {
         return
     }
 
-    $Transport.Stopped = $true
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    if (-not $Transport.CaptureState.TryBeginStop()) {
+        $remaining = [Math]::Max(0, $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds)
+        if ($remaining -gt 0) {
+            $null = $Transport.CaptureState.WaitForStop($remaining)
+        }
+        return
+    }
+
     $process = $Transport.Process
     $stdinWriter = $Transport.StdinWriter
 
     try {
-        if (-not $Transport.StdinClosed -and $null -ne $stdinWriter) {
-            try { $stdinWriter.Close() } catch {}
-            $Transport.StdinClosed = $true
+        $ioLockTaken = $false
+        try {
+            [Threading.Monitor]::Enter($Transport.IoLock, [ref]$ioLockTaken)
+            $Transport.Stopped = $true
+            if (-not $Transport.StdinClosed -and $null -ne $stdinWriter) {
+                try { $stdinWriter.Close() } catch {}
+                $Transport.StdinClosed = $true
+            }
+        }
+        finally {
+            if ($ioLockTaken) {
+                [Threading.Monitor]::Exit($Transport.IoLock)
+            }
         }
 
         $hasExited = $false
         try { $hasExited = $process.HasExited } catch { $hasExited = $true }
         if (-not $hasExited) {
-            try { $hasExited = $process.WaitForExit(2000) } catch { $hasExited = $false }
+            $remaining = [Math]::Max(0, $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds)
+            if ($remaining -gt 0) {
+                try { $hasExited = $process.WaitForExit($remaining) } catch { $hasExited = $false }
+            }
         }
 
         if (-not $hasExited) {
@@ -494,28 +575,36 @@ function Stop-AppServerProcess {
                 if (-not $process.HasExited) {
                     $process.Kill($true)
                     $Transport.WasKilled = $true
-                    $null = $process.WaitForExit(2000)
                 }
             }
             catch {}
+
+            $remaining = [Math]::Max(0, $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds)
+            if ($remaining -gt 0) {
+                try { $null = $process.WaitForExit($remaining) } catch {}
+            }
         }
 
         try {
             if ($process.HasExited) {
-                $process.WaitForExit()
                 $Transport.ExitCode = $process.ExitCode
             }
         }
         catch {}
     }
     finally {
-        $Transport.CaptureState.StopAccepting()
-        try { $process.CancelOutputRead() } catch {}
-        try { $process.CancelErrorRead() } catch {}
-        try { $process.remove_OutputDataReceived($Transport.OutputHandler) } catch {}
-        try { $process.remove_ErrorDataReceived($Transport.ErrorHandler) } catch {}
-        try { $stdinWriter.Dispose() } catch {}
-        try { $process.Dispose() } catch {}
-        $Transport.Disposed = $true
+        try {
+            $Transport.CaptureState.StopAccepting()
+            try { $process.CancelOutputRead() } catch {}
+            try { $process.CancelErrorRead() } catch {}
+            try { $process.remove_OutputDataReceived($Transport.OutputHandler) } catch {}
+            try { $process.remove_ErrorDataReceived($Transport.ErrorHandler) } catch {}
+            try { $stdinWriter.Dispose() } catch {}
+            try { $process.Dispose() } catch {}
+            $Transport.Disposed = $true
+        }
+        finally {
+            $Transport.CaptureState.CompleteStop()
+        }
     }
 }
