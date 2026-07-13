@@ -4,7 +4,7 @@ BeforeAll {
         . $script:SingleInstancePath
     }
 
-    $script:PwshPath = 'C:\Users\335\AppData\Local\Microsoft\WindowsApps\pwsh.exe'
+    $script:PwshPath = (Get-Process -Id $PID).Path
 
     function New-TestMonitorPrefix {
         return 'Local\CodexQuotaMonitor.Tests.{0}' -f [guid]::NewGuid().ToString('N')
@@ -147,6 +147,42 @@ exit 0
             $Process.Dispose()
         }
     }
+
+    function Invoke-TestInNewRunspaceThread {
+        param(
+            [Parameter(Mandatory)]
+            [scriptblock]$ScriptBlock,
+
+            [object[]]$ArgumentList = @()
+        )
+
+        $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.ApartmentState = [Threading.ApartmentState]::STA
+        $runspace.ThreadOptions = [Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
+        $powershell = $null
+        try {
+            $runspace.Open()
+            $powershell = [PowerShell]::Create()
+            $powershell.Runspace = $runspace
+            $null = $powershell.AddScript($ScriptBlock.ToString())
+            foreach ($argument in $ArgumentList) {
+                $null = $powershell.AddArgument($argument)
+            }
+
+            $output = @($powershell.Invoke())
+            if ($powershell.HadErrors -and $output.Count -eq 0) {
+                $messages = @($powershell.Streams.Error | ForEach-Object { $_.Exception.Message }) -join '; '
+                throw "New-thread runspace failed: $messages"
+            }
+            return $output
+        }
+        finally {
+            if ($null -ne $powershell) {
+                $powershell.Dispose()
+            }
+            $runspace.Dispose()
+        }
+    }
 }
 
 Describe 'monitor single-instance lifecycle' {
@@ -160,6 +196,9 @@ Describe 'monitor single-instance lifecycle' {
             $primary.Mutex | Should -BeOfType ([Threading.Mutex])
             $primary.ActivateEvent | Should -BeOfType ([Threading.EventWaitHandle])
             $primary.ExitEvent | Should -BeOfType ([Threading.EventWaitHandle])
+            $primary.OwnerThreadId | Should -Be ([Environment]::CurrentManagedThreadId)
+            $primary.OwnerToken | Should -BeOfType ([guid])
+            $primary.OwnerToken | Should -Not -Be ([guid]::Empty)
 
             $activate = Enter-MonitorInstance -Prefix $prefix -Signal Activate
             $activate.IsPrimary | Should -BeFalse
@@ -364,5 +403,117 @@ Describe 'monitor single-instance lifecycle' {
         }
 
         $stopwatch.ElapsedMilliseconds | Should -BeLessThan 2000
+    }
+
+    It 'replaces a stale disposed-handle owner record and does not let the old token erase the replacement' {
+        $prefix = New-TestMonitorPrefix
+        $old = Enter-MonitorInstance -Prefix $prefix -Signal None
+        $replacement = $null
+        try {
+            $old.Mutex.Dispose()
+
+            $replacement = Enter-MonitorInstance -Prefix $prefix -Signal None
+            $replacement.IsPrimary | Should -BeTrue
+            $replacement.OwnerToken | Should -Not -Be $old.OwnerToken
+
+            Remove-MonitorOwnerRecord -Prefix $prefix -OwnerToken $old.OwnerToken | Should -BeFalse
+            $script:MonitorOwnedInstancePrefixes[$prefix].OwnerToken | Should -Be $replacement.OwnerToken
+
+            { Close-MonitorInstance -Instance $old } | Should -Throw
+            $old.Closed | Should -BeFalse
+
+            $secondary = Enter-MonitorInstance -Prefix $prefix -Signal Activate
+            try {
+                $secondary.IsPrimary | Should -BeFalse
+                $replacement.ActivateEvent.WaitOne(2000) | Should -BeTrue
+            }
+            finally {
+                Close-MonitorInstance -Instance $secondary
+            }
+        }
+        finally {
+            if ($null -ne $replacement -and -not $replacement.Closed) {
+                Close-MonitorInstance -Instance $replacement
+            }
+            if ($null -ne $old.ActivateEvent) {
+                $old.ActivateEvent.Dispose()
+            }
+            if ($null -ne $old.ExitEvent) {
+                $old.ExitEvent.Dispose()
+            }
+        }
+    }
+
+    It 'recovers an owner whose dedicated runspace thread died in the same AppDomain' {
+        $prefix = New-TestMonitorPrefix
+        $metadata = @(Invoke-TestInNewRunspaceThread -ScriptBlock {
+            param($SingleInstancePath, $Prefix)
+            . $SingleInstancePath
+            $instance = Enter-MonitorInstance -Prefix $Prefix -Signal None
+            [pscustomobject]@{
+                IsPrimary = $instance.IsPrimary
+                OwnerThreadId = $instance.OwnerThreadId
+                OwnerToken = $instance.OwnerToken
+            }
+        } -ArgumentList @($script:SingleInstancePath, $prefix))[0]
+
+        $metadata.IsPrimary | Should -BeTrue
+        $record = $script:MonitorOwnedInstancePrefixes[$prefix]
+        $record | Should -BeOfType ([pscustomobject])
+        $record.OwnerThread.IsAlive | Should -BeFalse
+
+        $takeover = Enter-MonitorInstance -Prefix $prefix -Signal None
+        try {
+            $takeover.IsPrimary | Should -BeTrue
+            $takeover.OwnerToken | Should -Not -Be $metadata.OwnerToken
+        }
+        finally {
+            Close-MonitorInstance -Instance $takeover
+        }
+    }
+
+    It 'rejects wrong-thread close before changing handles, registry, or Closed state' {
+        $prefix = New-TestMonitorPrefix
+        $primary = Enter-MonitorInstance -Prefix $prefix -Signal None
+        try {
+            $closeResult = @(Invoke-TestInNewRunspaceThread -ScriptBlock {
+                param($SingleInstancePath, $Instance)
+                . $SingleInstancePath
+                try {
+                    Close-MonitorInstance -Instance $Instance
+                    [pscustomobject]@{ Status = 'Closed'; ErrorType = $null }
+                }
+                catch {
+                    [pscustomobject]@{ Status = 'Threw'; ErrorType = $_.Exception.GetType().FullName }
+                }
+            } -ArgumentList @($script:SingleInstancePath, $primary))[0]
+
+            $closeResult.Status | Should -BeExactly 'Threw'
+            $closeResult.ErrorType | Should -BeExactly ([InvalidOperationException].FullName)
+            $primary.Closed | Should -BeFalse
+            $primary.Mutex.SafeWaitHandle.IsClosed | Should -BeFalse
+            $primary.ActivateEvent.SafeWaitHandle.IsClosed | Should -BeFalse
+            $primary.ExitEvent.SafeWaitHandle.IsClosed | Should -BeFalse
+            $script:MonitorOwnedInstancePrefixes[$prefix].OwnerToken | Should -Be $primary.OwnerToken
+
+            $primary.ActivateEvent.Set() | Should -BeTrue
+            $primary.ActivateEvent.WaitOne(2000) | Should -BeTrue
+
+            $secondary = Enter-MonitorInstance -Prefix $prefix -Signal Activate
+            try {
+                $secondary.IsPrimary | Should -BeFalse
+                $primary.ActivateEvent.WaitOne(2000) | Should -BeTrue
+            }
+            finally {
+                Close-MonitorInstance -Instance $secondary
+            }
+        }
+        finally {
+            if (-not $primary.Closed) {
+                Close-MonitorInstance -Instance $primary
+            }
+        }
+
+        $primary.Closed | Should -BeTrue
     }
 }

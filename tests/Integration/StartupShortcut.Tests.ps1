@@ -34,13 +34,17 @@ BeforeAll {
 }
 
 Describe 'PowerShell executable resolution' {
-    It 'probes and prefers the stable current-user WindowsApps alias' {
+    It 'prefers the stable current-user WindowsApps alias when valid and otherwise returns a valid fallback' {
         $expected = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\pwsh.exe'
-        Test-Path -LiteralPath $expected -PathType Leaf | Should -BeTrue
 
         $resolved = Resolve-MonitorPwshPath -ProbeTimeoutMilliseconds 5000
 
-        $resolved | Should -BeExactly ([IO.Path]::GetFullPath($expected))
+        if (Test-MonitorPwshExecutable -Path $expected -TimeoutMilliseconds 5000) {
+            $resolved | Should -BeExactly ([IO.Path]::GetFullPath($expected))
+        }
+        else {
+            [IO.Path]::IsPathFullyQualified($resolved) | Should -BeTrue
+        }
         Test-MonitorPwshExecutable -Path $resolved -TimeoutMilliseconds 5000 | Should -BeTrue
     }
 
@@ -52,6 +56,16 @@ Describe 'PowerShell executable resolution' {
         [IO.Path]::IsPathFullyQualified($resolved) | Should -BeTrue
         Test-Path -LiteralPath $resolved -PathType Leaf | Should -BeTrue
         Test-MonitorPwshExecutable -Path $resolved -TimeoutMilliseconds 5000 | Should -BeTrue
+    }
+
+    It 'rejects Windows PowerShell 5.1 even when that host exits successfully' {
+        $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
+            Set-ItResult -Skipped -Because 'Windows PowerShell 5.1 is unavailable on this host.'
+            return
+        }
+
+        Test-MonitorPwshExecutable -Path $windowsPowerShell -TimeoutMilliseconds 5000 | Should -BeFalse
     }
 }
 

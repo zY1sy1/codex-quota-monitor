@@ -18,15 +18,26 @@ function Test-MonitorPwshExecutable {
 
     $process = $null
     try {
+        $probeMarker = 'CODEX_QUOTA_MONITOR_PWSH_CORE_7'
+        $probeCommand = @"
+if (`$PSVersionTable.PSEdition -eq 'Core' -and `$PSVersionTable.PSVersion.Major -ge 7) {
+    [Console]::Out.Write('$probeMarker')
+    exit 0
+}
+exit 17
+"@
+
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = [IO.Path]::GetFullPath($Path)
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
         $startInfo.ArgumentList.Add('-NoLogo')
         $startInfo.ArgumentList.Add('-NoProfile')
         $startInfo.ArgumentList.Add('-Command')
-        $startInfo.ArgumentList.Add('exit 0')
+        $startInfo.ArgumentList.Add($probeCommand)
 
         $process = [Diagnostics.Process]::new()
         $process.StartInfo = $startInfo
@@ -34,6 +45,8 @@ function Test-MonitorPwshExecutable {
             return $false
         }
 
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutMilliseconds)) {
             try {
                 $process.Kill($true)
@@ -44,7 +57,9 @@ function Test-MonitorPwshExecutable {
             return $false
         }
 
-        return $process.ExitCode -eq 0
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $null = $stderrTask.GetAwaiter().GetResult()
+        return $process.ExitCode -eq 0 -and $stdout -ceq $probeMarker
     }
     catch {
         return $false

@@ -1,17 +1,122 @@
-$monitorRegistryKey = 'CodexQuotaMonitor.SingleInstance.OwnedPrefixes.v1'
+$monitorRegistryKey = 'CodexQuotaMonitor.SingleInstance.OwnedPrefixes.v2'
 $monitorRegistryLock = [string]::Intern("$monitorRegistryKey.Lock")
 [Threading.Monitor]::Enter($monitorRegistryLock)
 try {
     $monitorRegistry = [AppDomain]::CurrentDomain.GetData($monitorRegistryKey)
-    if ($monitorRegistry -isnot [Collections.Concurrent.ConcurrentDictionary[string, byte]]) {
+    if ($monitorRegistry -isnot [Collections.Concurrent.ConcurrentDictionary[string, object]]) {
         $monitorRegistry =
-            [Collections.Concurrent.ConcurrentDictionary[string, byte]]::new([StringComparer]::Ordinal)
+            [Collections.Concurrent.ConcurrentDictionary[string, object]]::new([StringComparer]::Ordinal)
         [AppDomain]::CurrentDomain.SetData($monitorRegistryKey, $monitorRegistry)
     }
     $script:MonitorOwnedInstancePrefixes = $monitorRegistry
 }
 finally {
     [Threading.Monitor]::Exit($monitorRegistryLock)
+}
+
+function Test-MonitorOwnerRecordIsCurrentThreadLive {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Record
+    )
+
+    if ($null -eq $Record) {
+        return $false
+    }
+
+    $ownerThread = $Record.PSObject.Properties['OwnerThread'].Value
+    $mutex = $Record.PSObject.Properties['Mutex'].Value
+    if (
+        $null -eq $ownerThread -or
+        $null -eq $mutex -or
+        -not [object]::ReferenceEquals($ownerThread, [Threading.Thread]::CurrentThread) -or
+        -not $ownerThread.IsAlive
+    ) {
+        return $false
+    }
+
+    try {
+        return -not $mutex.SafeWaitHandle.IsClosed -and -not $mutex.SafeWaitHandle.IsInvalid
+    }
+    catch [ObjectDisposedException] {
+        return $false
+    }
+}
+
+function Set-MonitorOwnerRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Prefix,
+
+        [Parameter(Mandatory)]
+        [guid]$OwnerToken,
+
+        [Parameter(Mandatory)]
+        [Threading.Mutex]$Mutex
+    )
+
+    $record = [pscustomobject]@{
+        OwnerToken = $OwnerToken
+        OwnerThreadId = [Environment]::CurrentManagedThreadId
+        OwnerThread = [Threading.Thread]::CurrentThread
+        Mutex = $Mutex
+    }
+
+    $previous = $null
+    [Threading.Monitor]::Enter($monitorRegistryLock)
+    try {
+        $null = $script:MonitorOwnedInstancePrefixes.TryGetValue($Prefix, [ref]$previous)
+        $script:MonitorOwnedInstancePrefixes[$Prefix] = $record
+    }
+    finally {
+        [Threading.Monitor]::Exit($monitorRegistryLock)
+    }
+
+    if (
+        $null -ne $previous -and
+        $previous.PSObject.Properties['OwnerToken'].Value -ne $OwnerToken
+    ) {
+        $previousMutex = $previous.PSObject.Properties['Mutex'].Value
+        if ($null -ne $previousMutex -and -not [object]::ReferenceEquals($previousMutex, $Mutex)) {
+            try {
+                $previousMutex.Dispose()
+            }
+            catch [ObjectDisposedException] {
+            }
+        }
+    }
+
+    return $record
+}
+
+function Remove-MonitorOwnerRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Prefix,
+
+        [Parameter(Mandatory)]
+        [guid]$OwnerToken
+    )
+
+    [Threading.Monitor]::Enter($monitorRegistryLock)
+    try {
+        $current = $null
+        if (-not $script:MonitorOwnedInstancePrefixes.TryGetValue($Prefix, [ref]$current)) {
+            return $false
+        }
+        if ($current.PSObject.Properties['OwnerToken'].Value -ne $OwnerToken) {
+            return $false
+        }
+
+        $removed = $null
+        return $script:MonitorOwnedInstancePrefixes.TryRemove($Prefix, [ref]$removed)
+    }
+    finally {
+        [Threading.Monitor]::Exit($monitorRegistryLock)
+    }
 }
 
 function Assert-MonitorInstancePrefix {
@@ -286,6 +391,8 @@ function Enter-MonitorInstance {
     $exitEvent = $null
     $ownsMutex = $false
     $registered = $false
+    $ownerToken = [guid]::Empty
+    $ownerRecord = $null
     try {
         $mutexResult = New-MonitorInstanceMutex -Name $Prefix -CompatibilityMode:$CompatibilityMode
         $mutex = $mutexResult.Handle
@@ -293,8 +400,11 @@ function Enter-MonitorInstance {
         $ownsMutex = $createdNew
 
         # createdNew is authoritative during normal startup. WaitOne is used only
-        # to recover an unowned or abandoned object, never for a locally owned name.
-        if (-not $createdNew -and -not $script:MonitorOwnedInstancePrefixes.ContainsKey($Prefix)) {
+        # to recover an unowned or abandoned object, never for this thread's live owner.
+        $existingRecord = $null
+        $null = $script:MonitorOwnedInstancePrefixes.TryGetValue($Prefix, [ref]$existingRecord)
+        $isCurrentThreadReentry = Test-MonitorOwnerRecordIsCurrentThreadLive -Record $existingRecord
+        if (-not $createdNew -and -not $isCurrentThreadReentry) {
             try {
                 $ownsMutex = $mutex.WaitOne(0)
             }
@@ -304,11 +414,9 @@ function Enter-MonitorInstance {
         }
 
         if ($ownsMutex) {
-            $registered = $script:MonitorOwnedInstancePrefixes.TryAdd($Prefix, [byte]0)
-            if (-not $registered) {
-                $mutex.ReleaseMutex()
-                $ownsMutex = $false
-            }
+            $ownerToken = [guid]::NewGuid()
+            $ownerRecord = Set-MonitorOwnerRecord -Prefix $Prefix -OwnerToken $ownerToken -Mutex $mutex
+            $registered = $true
         }
 
         if (-not $ownsMutex) {
@@ -339,6 +447,9 @@ function Enter-MonitorInstance {
                 ExitEvent = $null
                 Prefix = $Prefix
                 OwnsMutex = $false
+                OwnerThreadId = $null
+                OwnerToken = $null
+                OwnerThread = $null
                 Closed = $true
             }
         }
@@ -366,6 +477,9 @@ function Enter-MonitorInstance {
             ExitEvent = $exitEvent
             Prefix = $Prefix
             OwnsMutex = $true
+            OwnerThreadId = [int]$ownerRecord.OwnerThreadId
+            OwnerToken = [guid]$ownerRecord.OwnerToken
+            OwnerThread = $ownerRecord.OwnerThread
             Closed = $false
         }
     }
@@ -376,16 +490,15 @@ function Enter-MonitorInstance {
         if ($null -ne $activateEvent) {
             $activateEvent.Dispose()
         }
-        if ($registered) {
-            $removed = [byte]0
-            $null = $script:MonitorOwnedInstancePrefixes.TryRemove($Prefix, [ref]$removed)
-        }
         if ($ownsMutex -and $null -ne $mutex) {
             try {
                 $mutex.ReleaseMutex()
             }
             catch [Threading.SynchronizationLockException] {
             }
+        }
+        if ($registered) {
+            $null = Remove-MonitorOwnerRecord -Prefix $Prefix -OwnerToken $ownerToken
         }
         if ($null -ne $mutex) {
             $mutex.Dispose()
@@ -406,46 +519,48 @@ function Close-MonitorInstance {
         return
     }
 
-    $releaseError = $null
-    try {
-        if ($null -ne $Instance.PSObject.Properties['ExitEvent'] -and $null -ne $Instance.ExitEvent) {
-            $Instance.ExitEvent.Dispose()
-        }
-        if ($null -ne $Instance.PSObject.Properties['ActivateEvent'] -and $null -ne $Instance.ActivateEvent) {
-            $Instance.ActivateEvent.Dispose()
-        }
+    $ownsMutex =
+        $null -ne $Instance.PSObject.Properties['OwnsMutex'] -and
+        [bool]$Instance.OwnsMutex
+    if ($ownsMutex) {
+        $ownerThreadId = $Instance.PSObject.Properties['OwnerThreadId'].Value
+        $ownerThread = $Instance.PSObject.Properties['OwnerThread'].Value
         if (
-            $null -ne $Instance.PSObject.Properties['OwnsMutex'] -and
-            [bool]$Instance.OwnsMutex -and
-            $null -ne $Instance.PSObject.Properties['Mutex'] -and
-            $null -ne $Instance.Mutex
+            $ownerThreadId -ne [Environment]::CurrentManagedThreadId -or
+            $null -eq $ownerThread -or
+            -not [object]::ReferenceEquals($ownerThread, [Threading.Thread]::CurrentThread)
         ) {
-            try {
-                $Instance.Mutex.ReleaseMutex()
-            }
-            catch {
-                $releaseError = $_.Exception
-            }
+            throw [InvalidOperationException]::new(
+                'A monitor instance must be closed by the thread that acquired its mutex.'
+            )
         }
-    }
-    finally {
-        if ($null -ne $Instance.PSObject.Properties['Mutex'] -and $null -ne $Instance.Mutex) {
-            $Instance.Mutex.Dispose()
+
+        if ($null -eq $Instance.PSObject.Properties['Mutex'] -or $null -eq $Instance.Mutex) {
+            throw [InvalidOperationException]::new('The primary monitor instance has no mutex handle.')
         }
-        if (
-            $null -ne $Instance.PSObject.Properties['IsPrimary'] -and
-            [bool]$Instance.IsPrimary -and
-            $null -ne $Instance.PSObject.Properties['Prefix']
-        ) {
-            $removed = [byte]0
-            $null = $script:MonitorOwnedInstancePrefixes.TryRemove([string]$Instance.Prefix, [ref]$removed)
+        $ownerToken = $Instance.PSObject.Properties['OwnerToken'].Value
+        if ($ownerToken -isnot [guid] -or $ownerToken -eq [guid]::Empty) {
+            throw [InvalidOperationException]::new('The primary monitor instance has no owner token.')
         }
-        if ($null -ne $closedProperty) {
-            $Instance.Closed = $true
-        }
+
+        # Releasing first permits a replacement to acquire and publish its token.
+        # Conditional cleanup below cannot remove that replacement record.
+        $Instance.Mutex.ReleaseMutex()
+        $Instance.OwnsMutex = $false
+
+        $null = Remove-MonitorOwnerRecord -Prefix ([string]$Instance.Prefix) -OwnerToken $ownerToken
     }
 
-    if ($null -ne $releaseError) {
-        throw $releaseError
+    if ($null -ne $Instance.PSObject.Properties['ExitEvent'] -and $null -ne $Instance.ExitEvent) {
+        $Instance.ExitEvent.Dispose()
+    }
+    if ($null -ne $Instance.PSObject.Properties['ActivateEvent'] -and $null -ne $Instance.ActivateEvent) {
+        $Instance.ActivateEvent.Dispose()
+    }
+    if ($null -ne $Instance.PSObject.Properties['Mutex'] -and $null -ne $Instance.Mutex) {
+        $Instance.Mutex.Dispose()
+    }
+    if ($null -ne $closedProperty) {
+        $Instance.Closed = $true
     }
 }
