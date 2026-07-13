@@ -1,0 +1,521 @@
+if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+using System.Threading;
+
+namespace CodexQuotaMonitor.ProcessTransport
+{
+    public sealed class AppServerRecord
+    {
+        public AppServerRecord(string stream, string line, DateTimeOffset receivedAt)
+        {
+            Stream = stream;
+            Line = line;
+            ReceivedAt = receivedAt;
+        }
+
+        public string Stream { get; private set; }
+        public string Line { get; private set; }
+        public DateTimeOffset ReceivedAt { get; private set; }
+    }
+
+    public sealed class CaptureState
+    {
+        private const string Redacted = "[REDACTED]";
+        private const string Truncated = " [truncated]";
+
+        private static readonly Regex AuthorizationPattern = new Regex(
+            @"\bauthorization\b[""']?\s*[:=]\s*.*",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex CookiePattern = new Regex(
+            @"\bcookie\b[""']?\s*[:=]\s*.*",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex NamedSecretPattern = new Regex(
+            @"\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|e-?mail|secret)\b[""']?\s*[:=]\s*(?:""[^""]*""|'[^']*'|[^\s,;]+)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex BearerPattern = new Regex(
+            @"\bbearer\s+[A-Za-z0-9._~+/=-]+",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex EmailPattern = new Regex(
+            @"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex TokenPattern = new Regex(
+            @"\b(?:sk|sess)-[A-Za-z0-9_-]+\b",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private readonly object syncRoot = new object();
+        private volatile bool accepting = true;
+        private int stopStarted;
+
+        public CaptureState(int stdoutLimit, int stderrLimit, int diagnosticLineLimit)
+        {
+            StdoutLimit = stdoutLimit;
+            StderrLimit = stderrLimit;
+            DiagnosticLineLimit = diagnosticLineLimit;
+            Queue = new ConcurrentQueue<object>();
+        }
+
+        public ConcurrentQueue<object> Queue { get; private set; }
+        public int StdoutLimit { get; private set; }
+        public int StderrLimit { get; private set; }
+        public int DiagnosticLineLimit { get; private set; }
+
+        public DataReceivedEventHandler CreateHandler(string stream)
+        {
+            return delegate(object sender, DataReceivedEventArgs eventArgs)
+            {
+                if (!accepting || eventArgs.Data == null)
+                {
+                    return;
+                }
+
+                string line = stream == "stderr"
+                    ? SanitizeDiagnostic(eventArgs.Data, DiagnosticLineLimit)
+                    : eventArgs.Data;
+
+                EnqueueBounded(new AppServerRecord(stream, line, DateTimeOffset.UtcNow));
+            };
+        }
+
+        public object[] Drain(int maximum)
+        {
+            var records = new List<object>(maximum);
+            lock (syncRoot)
+            {
+                object record;
+                while (records.Count < maximum && Queue.TryDequeue(out record))
+                {
+                    records.Add(record);
+                }
+            }
+
+            return records.ToArray();
+        }
+
+        public void StopAccepting()
+        {
+            accepting = false;
+        }
+
+        public bool TryBeginStop()
+        {
+            return Interlocked.CompareExchange(ref stopStarted, 1, 0) == 0;
+        }
+
+        private void EnqueueBounded(AppServerRecord record)
+        {
+            lock (syncRoot)
+            {
+                Queue.Enqueue(record);
+                int limit = record.Stream == "stdout" ? StdoutLimit : StderrLimit;
+                while (CountStream(record.Stream) > limit)
+                {
+                    if (!RemoveOldest(record.Stream))
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        private int CountStream(string stream)
+        {
+            int count = 0;
+            foreach (object item in Queue)
+            {
+                var record = item as AppServerRecord;
+                if (record != null && String.Equals(record.Stream, stream, StringComparison.Ordinal))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private bool RemoveOldest(string stream)
+        {
+            var retained = new List<object>();
+            bool removed = false;
+            object item;
+            while (Queue.TryDequeue(out item))
+            {
+                var record = item as AppServerRecord;
+                if (!removed && record != null && String.Equals(record.Stream, stream, StringComparison.Ordinal))
+                {
+                    removed = true;
+                    continue;
+                }
+
+                retained.Add(item);
+            }
+
+            foreach (object retainedItem in retained)
+            {
+                Queue.Enqueue(retainedItem);
+            }
+
+            return removed;
+        }
+
+        private static string SanitizeDiagnostic(string line, int maximumLength)
+        {
+            int preliminaryLimit = Math.Max(maximumLength, Math.Min(65536, maximumLength * 4));
+            string sanitized = line.Length > preliminaryLimit ? line.Substring(0, preliminaryLimit) : line;
+            sanitized = AuthorizationPattern.Replace(sanitized, Redacted);
+            sanitized = CookiePattern.Replace(sanitized, Redacted);
+            sanitized = NamedSecretPattern.Replace(sanitized, Redacted);
+            sanitized = BearerPattern.Replace(sanitized, Redacted);
+            sanitized = EmailPattern.Replace(sanitized, Redacted);
+            sanitized = TokenPattern.Replace(sanitized, Redacted);
+            return CapLine(sanitized, maximumLength);
+        }
+
+        private static string CapLine(string line, int maximumLength)
+        {
+            if (line.Length <= maximumLength)
+            {
+                return line;
+            }
+
+            if (maximumLength <= Truncated.Length)
+            {
+                return line.Substring(0, maximumLength);
+            }
+
+            return line.Substring(0, maximumLength - Truncated.Length) + Truncated;
+        }
+    }
+}
+'@
+}
+
+function New-AppServerStartErrorRecord {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('MissingExecutable', 'AccessDenied', 'StartFailed')]
+        [string]$Category
+    )
+
+    $message = switch ($Category) {
+        'MissingExecutable' { 'The Codex App Server executable was not found.' }
+        'AccessDenied' { 'Access to the Codex App Server executable was denied.' }
+        default { 'The Codex App Server process could not be started.' }
+    }
+    $errorCategory = switch ($Category) {
+        'MissingExecutable' { [Management.Automation.ErrorCategory]::ObjectNotFound }
+        'AccessDenied' { [Management.Automation.ErrorCategory]::PermissionDenied }
+        default { [Management.Automation.ErrorCategory]::OpenError }
+    }
+
+    $exception = [InvalidOperationException]::new($message)
+    $exception.Data['AppServerErrorCategory'] = $Category
+    return [Management.Automation.ErrorRecord]::new(
+        $exception,
+        "AppServerProcess.$Category",
+        $errorCategory,
+        $null
+    )
+}
+
+function Get-AppServerRootException {
+    param(
+        [Parameter(Mandatory)]
+        [Exception]$Exception
+    )
+
+    $current = $Exception
+    while ($null -ne $current.InnerException) {
+        $current = $current.InnerException
+    }
+
+    return $current
+}
+
+function Find-CodexExecutable {
+    [CmdletBinding()]
+    param()
+
+    foreach ($commandName in @('codex.exe', 'codex')) {
+        $command = $null
+        try {
+            $command = @(Get-Command -Name $commandName -ErrorAction SilentlyContinue)[0]
+        }
+        catch {
+            $command = $null
+        }
+
+        if ($null -ne $command) {
+            $path = Get-ObjectField -InputObject $command -Name 'Path'
+            if ([string]::IsNullOrWhiteSpace([string]$path)) {
+                $path = Get-ObjectField -InputObject $command -Name 'Source'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                return [pscustomobject][ordered]@{
+                    Status = 'Found'
+                    Found = $true
+                    ExecutablePath = [string]$path
+                    Source = "Command:$commandName"
+                }
+            }
+        }
+    }
+
+    $packages = @()
+    try {
+        $packages = @(Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue)
+    }
+    catch {
+        $packages = @()
+    }
+
+    foreach ($package in $packages) {
+        $installLocation = [string](Get-ObjectField -InputObject $package -Name 'InstallLocation')
+        if ([string]::IsNullOrWhiteSpace($installLocation)) {
+            continue
+        }
+
+        $candidate = Join-Path $installLocation 'app\resources\codex.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [pscustomobject][ordered]@{
+                Status = 'Found'
+                Found = $true
+                ExecutablePath = $candidate
+                Source = 'AppxPackage'
+            }
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        Status = 'Missing'
+        Found = $false
+        ExecutablePath = $null
+        Source = $null
+    }
+}
+
+function Start-AppServerProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExecutablePath,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$ArgumentList,
+
+        [string]$WorkingDirectory,
+
+        [ValidateRange(1, 1000000)]
+        [int]$StdoutRecordLimit = 1000,
+
+        [ValidateRange(1, 1000000)]
+        [int]$StderrRecordLimit = 200,
+
+        [ValidateRange(32, 65536)]
+        [int]$DiagnosticLineLimit = 2048
+    )
+
+    if ([IO.Path]::IsPathFullyQualified($ExecutablePath) -and
+        -not (Test-Path -LiteralPath $ExecutablePath)) {
+        throw (New-AppServerStartErrorRecord -Category MissingExecutable)
+    }
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $ExecutablePath
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
+    $startInfo.StandardInputEncoding = $utf8WithoutBom
+    $startInfo.StandardOutputEncoding = $utf8WithoutBom
+    $startInfo.StandardErrorEncoding = $utf8WithoutBom
+
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        $startInfo.WorkingDirectory = $WorkingDirectory
+    }
+
+    foreach ($argument in @($ArgumentList)) {
+        $startInfo.ArgumentList.Add([string]$argument)
+    }
+
+    $captureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(
+        $StdoutRecordLimit,
+        $StderrRecordLimit,
+        $DiagnosticLineLimit
+    )
+    $outputHandler = $captureState.CreateHandler('stdout')
+    $errorHandler = $captureState.CreateHandler('stderr')
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $process.add_OutputDataReceived($outputHandler)
+    $process.add_ErrorDataReceived($errorHandler)
+    $started = $false
+
+    try {
+        $started = $process.Start()
+        if (-not $started) {
+            throw [InvalidOperationException]::new('Process.Start returned false.')
+        }
+
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
+        $stdinWriter = $process.StandardInput
+        $stdinWriter.AutoFlush = $false
+    }
+    catch {
+        $rootException = Get-AppServerRootException -Exception $_.Exception
+        $category = if ($rootException -is [UnauthorizedAccessException] -or
+            ($rootException -is [ComponentModel.Win32Exception] -and $rootException.NativeErrorCode -eq 5)) {
+            'AccessDenied'
+        }
+        elseif ($rootException -is [ComponentModel.Win32Exception] -and $rootException.NativeErrorCode -in @(2, 3)) {
+            'MissingExecutable'
+        }
+        else {
+            'StartFailed'
+        }
+
+        $captureState.StopAccepting()
+        try { $process.remove_OutputDataReceived($outputHandler) } catch {}
+        try { $process.remove_ErrorDataReceived($errorHandler) } catch {}
+        if ($started) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill($true)
+                    $null = $process.WaitForExit(2000)
+                }
+            }
+            catch {}
+        }
+        $process.Dispose()
+
+        throw (New-AppServerStartErrorRecord -Category $category)
+    }
+
+    return [pscustomobject][ordered]@{
+        Process = $process
+        Queue = $captureState.Queue
+        CaptureState = $captureState
+        OutputHandler = $outputHandler
+        ErrorHandler = $errorHandler
+        CallbackResources = @($outputHandler, $errorHandler)
+        StdinWriter = $stdinWriter
+        StdoutRecordLimit = $StdoutRecordLimit
+        StderrRecordLimit = $StderrRecordLimit
+        DiagnosticLineLimit = $DiagnosticLineLimit
+        Stopped = $false
+        Disposed = $false
+        StdinClosed = $false
+        WasKilled = $false
+        ExitCode = $null
+    }
+}
+
+function Receive-AppServerRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Transport,
+
+        [ValidateRange(1, [int]::MaxValue)]
+        [int]$Maximum = 100
+    )
+
+    foreach ($record in $Transport.CaptureState.Drain($Maximum)) {
+        Write-Output $record
+    }
+}
+
+function Send-AppServerMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Transport,
+
+        [Parameter(Mandatory)]
+        [object]$Message
+    )
+
+    if ($Transport.Stopped -or $Transport.Disposed) {
+        throw [InvalidOperationException]::new('The App Server process transport is stopped.')
+    }
+
+    $line = [string](ConvertTo-JsonLine -Message $Message)
+    $line = $line.TrimEnd([char]13, [char]10) + [string][char]10
+    $Transport.StdinWriter.Write($line)
+    $Transport.StdinWriter.Flush()
+}
+
+function Stop-AppServerProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Transport
+    )
+
+    if ($null -eq $Transport -or -not $Transport.CaptureState.TryBeginStop()) {
+        return
+    }
+
+    $Transport.Stopped = $true
+    $process = $Transport.Process
+    $stdinWriter = $Transport.StdinWriter
+
+    try {
+        if (-not $Transport.StdinClosed -and $null -ne $stdinWriter) {
+            try { $stdinWriter.Close() } catch {}
+            $Transport.StdinClosed = $true
+        }
+
+        $hasExited = $false
+        try { $hasExited = $process.HasExited } catch { $hasExited = $true }
+        if (-not $hasExited) {
+            try { $hasExited = $process.WaitForExit(2000) } catch { $hasExited = $false }
+        }
+
+        if (-not $hasExited) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill($true)
+                    $Transport.WasKilled = $true
+                    $null = $process.WaitForExit(2000)
+                }
+            }
+            catch {}
+        }
+
+        try {
+            if ($process.HasExited) {
+                $process.WaitForExit()
+                $Transport.ExitCode = $process.ExitCode
+            }
+        }
+        catch {}
+    }
+    finally {
+        $Transport.CaptureState.StopAccepting()
+        try { $process.CancelOutputRead() } catch {}
+        try { $process.CancelErrorRead() } catch {}
+        try { $process.remove_OutputDataReceived($Transport.OutputHandler) } catch {}
+        try { $process.remove_ErrorDataReceived($Transport.ErrorHandler) } catch {}
+        try { $stdinWriter.Dispose() } catch {}
+        try { $process.Dispose() } catch {}
+        $Transport.Disposed = $true
+    }
+}
