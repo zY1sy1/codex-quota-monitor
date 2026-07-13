@@ -167,4 +167,379 @@ Describe 'monitor settings persistence' {
         [IO.File]::ReadAllText($existingEvidence) | Should -BeExactly 'older evidence'
         [IO.File]::ReadAllText("$existingEvidence.1") | Should -BeExactly 'newer broken evidence'
     }
+
+    It 'preserves empty and single-item collection identity in the raw field accessor' -ForEach @(
+        @{ Name = 'empty'; Value = [object[]]@(); ExpectedCount = 0 }
+        @{ Name = 'single'; Value = [object[]]@(1); ExpectedCount = 1 }
+    ) {
+        $document = [ordered]@{ Field = $Value }
+
+        $actual = Get-MonitorSettingsField -InputObject $document -Name 'Field'
+
+        [object]::ReferenceEquals($actual, $Value) | Should -BeTrue
+        $actual.GetType() | Should -Be ([object[]])
+        $actual.Count | Should -Be $ExpectedCount
+    }
+
+    It 'quarantines arrays in every scalar JSON setting without collapsing them' -ForEach @(
+        @{ Name = 'schema-single'; Json = '{"SchemaVersion":[1],"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'schema-empty'; Json = '{"SchemaVersion":[],"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'left-single'; Json = '{"SchemaVersion":1,"Window":{"Left":[20],"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'top-empty'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":[],"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'topmost-single'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":null,"Topmost":[true],"Visible":true},"Startup":true}' }
+        @{ Name = 'visible-empty'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":[]},"Startup":true}' }
+        @{ Name = 'startup-single'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":[true]}' }
+    ) {
+        $path = Join-Path $TestDrive "array-$Name\settings.json"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        [IO.File]::WriteAllText($path, $Json, [Text.UTF8Encoding]::new($false))
+
+        $settings = Read-MonitorSettings -Path $path -Now ([DateTimeOffset]'2026-07-14T00:00:00Z')
+
+        Test-Path -LiteralPath $path | Should -BeFalse
+        Test-Path -LiteralPath "$path.corrupt-20260714T000000000Z" -PathType Leaf | Should -BeTrue
+        $settings.Window.Topmost | Should -BeTrue
+    }
+
+    It 'rejects Boolean, string, and nonintegral schema coercions' -ForEach @(
+        @{ Name = 'schema-boolean'; Json = '{"SchemaVersion":true,"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'schema-string'; Json = '{"SchemaVersion":"1","Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'schema-double'; Json = '{"SchemaVersion":1.0,"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'left-boolean'; Json = '{"SchemaVersion":1,"Window":{"Left":true,"Top":null,"Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'top-string'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":"20","Topmost":true,"Visible":true},"Startup":true}' }
+        @{ Name = 'topmost-number'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":null,"Topmost":1,"Visible":true},"Startup":true}' }
+        @{ Name = 'visible-string'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":"true"},"Startup":true}' }
+        @{ Name = 'startup-number'; Json = '{"SchemaVersion":1,"Window":{"Left":null,"Top":null,"Topmost":true,"Visible":true},"Startup":1}' }
+    ) {
+        $path = Join-Path $TestDrive "coercion-$Name\settings.json"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        [IO.File]::WriteAllText($path, $Json, [Text.UTF8Encoding]::new($false))
+
+        $null = Read-MonitorSettings -Path $path -Now ([DateTimeOffset]'2026-07-14T00:00:00Z')
+
+        Test-Path -LiteralPath $path | Should -BeFalse
+        Test-Path -LiteralPath "$path.corrupt-20260714T000000000Z" -PathType Leaf | Should -BeTrue
+    }
+
+    It 'rejects programmatic collections in every scalar setting before writing' -ForEach @(
+        @{ Name = 'schema'; Field = 'SchemaVersion'; Value = [object[]]@(1) }
+        @{ Name = 'left'; Field = 'Left'; Value = [Collections.ArrayList]@(20) }
+        @{ Name = 'top'; Field = 'Top'; Value = [Collections.Generic.List[int]]@(30) }
+        @{ Name = 'topmost'; Field = 'Topmost'; Value = [object[]]@($true) }
+        @{ Name = 'visible'; Field = 'Visible'; Value = [object[]]@() }
+        @{ Name = 'startup'; Field = 'Startup'; Value = [object[]]@($true) }
+    ) {
+        $path = Join-Path $TestDrive "write-collection-$Name\settings.json"
+        $settings = New-DefaultSettings
+        if ($Field -eq 'SchemaVersion' -or $Field -eq 'Startup') {
+            $settings[$Field] = $Value
+        }
+        else {
+            $settings.Window[$Field] = $Value
+        }
+
+        { Write-MonitorSettings -Path $path -Settings $settings } |
+            Should -Throw -ExpectedMessage 'Settings do not match the supported schema.'
+        Test-Path -LiteralPath $path | Should -BeFalse
+    }
+
+    It 'returns and rewrites only canonical allowlisted fields from valid JSON' {
+        $path = Join-Path $TestDrive 'canonical-read\settings.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        $tokenSentinel = 'token-sentinel-must-disappear'
+        $emailSentinel = 'email-sentinel@example.invalid'
+        $json = '{"SchemaVersion":1,"accessToken":"' + $tokenSentinel + '","Window":{"Left":20,"Top":30,"Topmost":false,"Visible":true,"Email":"' + $emailSentinel + '"},"Startup":false,"Future":{"Value":1}}'
+        [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
+
+        $settings = Read-MonitorSettings -Path $path
+        $returned = $settings | ConvertTo-Json -Depth 5 -Compress
+        $persisted = [IO.File]::ReadAllText($path)
+        $fileObject = $persisted | ConvertFrom-Json
+
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Window,Startup'
+        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Left,Top,Topmost,Visible'
+        $returned | Should -Not -Match ([regex]::Escape($tokenSentinel))
+        $returned | Should -Not -Match ([regex]::Escape($emailSentinel))
+        $persisted | Should -Not -Match ([regex]::Escape($tokenSentinel))
+        $persisted | Should -Not -Match ([regex]::Escape($emailSentinel))
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.corrupt-*').Count | Should -Be 0
+    }
+
+    It 'persists only canonical allowlisted fields from a caller document' {
+        $path = Join-Path $TestDrive 'canonical-write\settings.json'
+        $settings = New-DefaultSettings
+        $settings['accessToken'] = 'caller-token-sentinel'
+        $settings['Future'] = [ordered]@{ Value = 1 }
+        $settings.Window['Email'] = 'caller-email-sentinel@example.invalid'
+
+        Write-MonitorSettings -Path $path -Settings $settings
+
+        $persisted = [IO.File]::ReadAllText($path)
+        $fileObject = $persisted | ConvertFrom-Json
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Window,Startup'
+        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Left,Top,Topmost,Visible'
+        $persisted | Should -Not -Match 'caller-token-sentinel|caller-email-sentinel'
+    }
+
+    It 'derives one stable path-scoped Local mutex name from normalized paths' {
+        $path = Join-Path $TestDrive 'mutex-name\settings.json'
+        $relativePath = [IO.Path]::GetRelativePath((Get-Location).Path, $path)
+
+        $absoluteName = Get-MonitorSettingsMutexName -Path $path
+        $relativeName = Get-MonitorSettingsMutexName -Path $relativePath
+
+        $absoluteName | Should -BeExactly $relativeName
+        $absoluteName | Should -Match '^Local\\CodexQuotaMonitor\.Settings\.[0-9A-F]{64}$'
+        $absoluteName | Should -Not -Match ([regex]::Escape($path))
+    }
+
+    It 'holds a writer behind the path mutex until the owner releases it' {
+        $path = Join-Path $TestDrive 'mutex-block\settings.json'
+        $mutex = [Threading.Mutex]::new($false, (Get-MonitorSettingsMutexName -Path $path))
+        $started = [Threading.ManualResetEventSlim]::new($false)
+        $job = $null
+        $ownsMutex = $false
+        try {
+            $ownsMutex = $mutex.WaitOne(1000)
+            $ownsMutex | Should -BeTrue
+            $job = Start-ThreadJob -ArgumentList $settingsScript, $path, $started -ScriptBlock {
+                param($ScriptPath, $SettingsPath, $StartedEvent)
+                . $ScriptPath
+                $settings = New-DefaultSettings
+                $settings.Window['Left'] = [long]123
+                $StartedEvent.Set()
+                Write-MonitorSettings -Path $SettingsPath -Settings $settings
+            }
+            $started.Wait(5000) | Should -BeTrue
+            Start-Sleep -Milliseconds 150
+
+            $job.State | Should -Be 'Running'
+            Test-Path -LiteralPath $path | Should -BeFalse
+        }
+        finally {
+            if ($ownsMutex) {
+                $mutex.ReleaseMutex()
+            }
+            $mutex.Dispose()
+            $started.Dispose()
+        }
+
+        $null = Wait-Job -Job $job -Timeout 10
+        $job.State | Should -Be 'Completed'
+        Receive-Job -Job $job -ErrorAction Stop | Out-Null
+        Remove-Job -Job $job -Force
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Left | Should -Be 123
+    }
+
+    It 'times out with a constant sanitized error while another thread owns the mutex' {
+        $path = Join-Path $TestDrive 'mutex-timeout\settings.json'
+        $mutex = [Threading.Mutex]::new($false, (Get-MonitorSettingsMutexName -Path $path))
+        $ownsMutex = $mutex.WaitOne(1000)
+        $job = $null
+        try {
+            $job = Start-ThreadJob -ArgumentList $settingsScript, $path -ScriptBlock {
+                param($ScriptPath, $SettingsPath)
+                . $ScriptPath
+                try {
+                    $acquired = Enter-MonitorSettingsMutex -Path $SettingsPath -TimeoutMilliseconds 75
+                    try { 'unexpectedly acquired' } finally { Exit-MonitorSettingsMutex -Mutex $acquired }
+                }
+                catch {
+                    $_.Exception.Message
+                }
+            }
+            $null = Wait-Job -Job $job -Timeout 5
+            $message = Receive-Job -Job $job -ErrorAction Stop
+
+            $message | Should -BeExactly 'Timed out waiting for monitor settings persistence.'
+            $message | Should -Not -Match ([regex]::Escape($path))
+        }
+        finally {
+            if ($ownsMutex) {
+                $mutex.ReleaseMutex()
+            }
+            $mutex.Dispose()
+            if ($null -ne $job) {
+                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'treats an abandoned path mutex as acquired and remains usable' {
+        $path = Join-Path $TestDrive 'abandoned\settings.json'
+        $mutexName = Get-MonitorSettingsMutexName -Path $path
+        $observer = [Threading.Mutex]::new($false, $mutexName)
+        $holderScript = Join-Path $TestDrive 'abandon-mutex.ps1'
+        [IO.File]::WriteAllText($holderScript, @'
+param([string]$Name)
+$mutex = [Threading.Mutex]::new($false, $Name)
+$null = $mutex.WaitOne()
+[Environment]::Exit(0)
+'@, [Text.UTF8Encoding]::new($false))
+        try {
+            & (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -NonInteractive -File $holderScript $mutexName
+            $LASTEXITCODE | Should -Be 0
+
+            $acquired = Enter-MonitorSettingsMutex -Path $path -TimeoutMilliseconds 1000
+            try {
+                $acquired | Should -BeOfType ([Threading.Mutex])
+            }
+            finally {
+                Exit-MonitorSettingsMutex -Mutex $acquired
+            }
+        }
+        finally {
+            $observer.Dispose()
+        }
+    }
+
+    It 'serializes concurrent first writes and replacements into complete canonical documents' {
+        $path = Join-Path $TestDrive 'concurrent\settings.json'
+        foreach ($wave in 0..1) {
+            $count = 4
+            $ready = [Threading.CountdownEvent]::new($count)
+            $gate = [Threading.ManualResetEventSlim]::new($false)
+            $jobs = @()
+            try {
+                foreach ($index in 0..($count - 1)) {
+                    $jobs += Start-ThreadJob -ArgumentList $settingsScript, $path, $wave, $index, $ready, $gate -ScriptBlock {
+                        param($ScriptPath, $SettingsPath, $Wave, $Index, $ReadyEvent, $GateEvent)
+                        . $ScriptPath
+                        $settings = New-DefaultSettings
+                        $settings.Window['Left'] = [long](($Wave * 100) + $Index)
+                        $settings.Window['Top'] = [long](-$Index)
+                        $settings['Future'] = 'must-not-persist'
+                        $ReadyEvent.Signal()
+                        if (-not $GateEvent.Wait(5000)) {
+                            throw 'Writer gate timed out.'
+                        }
+                        Write-MonitorSettings -Path $SettingsPath -Settings $settings
+                    }
+                }
+
+                $ready.Wait(10000) | Should -BeTrue
+                $gate.Set()
+                $completed = @(Wait-Job -Job $jobs -Timeout 15)
+                $completed.Count | Should -Be $count
+                @($jobs | Where-Object State -NE 'Completed').Count | Should -Be 0
+                foreach ($job in $jobs) {
+                    Receive-Job -Job $job -ErrorAction Stop | Out-Null
+                }
+            }
+            finally {
+                $gate.Set()
+                $jobs | Stop-Job -ErrorAction SilentlyContinue
+                $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+                $ready.Dispose()
+                $gate.Dispose()
+            }
+        }
+
+        $persisted = [IO.File]::ReadAllText($path)
+        $fileObject = $persisted | ConvertFrom-Json
+        $fileObject.Window.Left | Should -BeIn (100..103)
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Window,Startup'
+        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Left,Top,Topmost,Visible'
+        $persisted | Should -Not -Match 'must-not-persist'
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
+    }
+
+    It 'does not let a racing reader quarantine a newly committed valid writer document' {
+        $path = Join-Path $TestDrive 'reader-writer-race\settings.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        $corruptEvidence = '{ original corrupt evidence'
+        [IO.File]::WriteAllText($path, $corruptEvidence, [Text.UTF8Encoding]::new($false))
+        $writerReady = [Threading.ManualResetEventSlim]::new($false)
+        $writerGate = [Threading.ManualResetEventSlim]::new($false)
+        $writerDone = [Threading.ManualResetEventSlim]::new($false)
+        $script:ReaderRaceWriterGate = $writerGate
+        $script:ReaderRaceWriterDone = $writerDone
+        $script:WriterFinishedDuringParse = $null
+        $job = Start-ThreadJob -ArgumentList $settingsScript, $path, $writerReady, $writerGate, $writerDone -ScriptBlock {
+            param($ScriptPath, $SettingsPath, $ReadyEvent, $GateEvent, $DoneEvent)
+            . $ScriptPath
+            $ReadyEvent.Set()
+            $null = $GateEvent.Wait(5000)
+            try {
+                $settings = New-DefaultSettings
+                $settings.Window['Left'] = [long]777
+                Write-MonitorSettings -Path $SettingsPath -Settings $settings
+            }
+            finally {
+                $DoneEvent.Set()
+            }
+        }
+        try {
+            $writerReady.Wait(5000) | Should -BeTrue
+            Mock ConvertFrom-Json {
+                $script:ReaderRaceWriterGate.Set()
+                $script:WriterFinishedDuringParse = $script:ReaderRaceWriterDone.Wait(500)
+                throw [FormatException]::new('Synthetic invalid JSON.')
+            }
+
+            $settings = Read-MonitorSettings -Path $path -Now ([DateTimeOffset]'2026-07-14T00:00:00Z')
+            $null = Wait-Job -Job $job -Timeout 10
+            Receive-Job -Job $job -ErrorAction Stop | Out-Null
+
+            $script:WriterFinishedDuringParse | Should -BeFalse
+            $settings.Window.Topmost | Should -BeTrue
+            Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
+            [IO.File]::ReadAllText($path) | Should -Match '"Left":777'
+            [IO.File]::ReadAllText("$path.corrupt-20260714T000000000Z") | Should -BeExactly $corruptEvidence
+        }
+        finally {
+            $writerGate.Set()
+            $job | Stop-Job -ErrorAction SilentlyContinue
+            $job | Remove-Job -Force -ErrorAction SilentlyContinue
+            $writerReady.Dispose()
+            $writerGate.Dispose()
+            $writerDone.Dispose()
+            Remove-Variable ReaderRaceWriterGate, ReaderRaceWriterDone, WriterFinishedDuringParse -Scope Script -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'does not report failure after a committed replacement when backup cleanup fails' {
+        $path = Join-Path $TestDrive 'cleanup-failure\settings.json'
+        $first = New-DefaultSettings
+        $first.Window['Left'] = [long]1
+        Write-MonitorSettings -Path $path -Settings $first
+        $second = New-DefaultSettings
+        $second.Window['Left'] = [long]2
+        Mock Remove-MonitorSettingsBackupFile { throw [IO.IOException]::new('Synthetic cleanup failure.') }
+
+        { Write-MonitorSettings -Path $path -Settings $second } | Should -Not -Throw
+
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Left | Should -Be 2
+        Should -Invoke Remove-MonitorSettingsBackupFile -Times 1 -Exactly
+        Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.backup.tmp' |
+            ForEach-Object { [IO.File]::Delete($_.FullName) }
+    }
+
+    It 'preserves the existing target ACL across replacement on Windows when supported' {
+        $path = Join-Path $TestDrive 'acl\settings.json'
+        $first = New-DefaultSettings
+        Write-MonitorSettings -Path $path -Settings $first
+        try {
+            $acl = Get-Acl -LiteralPath $path
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $identity,
+                [Security.AccessControl.FileSystemRights]::ReadAttributes,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+            $null = $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $path -AclObject $acl
+            $before = (Get-Acl -LiteralPath $path).Sddl
+        }
+        catch {
+            Set-ItResult -Skipped -Because "ACL setup is unavailable: $($_.Exception.GetType().Name)"
+            return
+        }
+
+        $second = New-DefaultSettings
+        $second.Window['Left'] = [long]55
+        Write-MonitorSettings -Path $path -Settings $second
+
+        (Get-Acl -LiteralPath $path).Sddl | Should -BeExactly $before
+    }
 }

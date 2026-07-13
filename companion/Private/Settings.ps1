@@ -75,11 +75,28 @@ function Get-MonitorSettingsField {
         [string]$Name
     )
 
+    $value = $null
     if ($InputObject -is [System.Collections.IDictionary]) {
-        return ([System.Collections.IDictionary]$InputObject)[$Name]
+        $value = ([System.Collections.IDictionary]$InputObject)[$Name]
+    }
+    else {
+        $value = $InputObject.PSObject.Properties[$Name].Value
     }
 
-    return $InputObject.PSObject.Properties[$Name].Value
+    Write-Output -NoEnumerate -InputObject $value
+}
+
+function Test-MonitorSettingsCollection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    return $null -ne $Value -and
+        $Value -is [System.Collections.IEnumerable] -and
+        $Value -isnot [string]
 }
 
 function Test-MonitorSettingsFiniteNumber {
@@ -90,7 +107,8 @@ function Test-MonitorSettingsFiniteNumber {
         [object]$Value
     )
 
-    if ($null -eq $Value -or $Value.GetType().IsEnum) {
+    if ($null -eq $Value -or $Value.GetType().IsEnum -or
+        (Test-MonitorSettingsCollection -Value $Value)) {
         return $false
     }
 
@@ -121,7 +139,44 @@ function Test-MonitorSettingsFiniteNumber {
     return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
 }
 
-function Test-MonitorSettingsDocument {
+function Test-MonitorSettingsSchemaVersion {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value -or $Value.GetType().IsEnum -or
+        (Test-MonitorSettingsCollection -Value $Value)) {
+        return $false
+    }
+
+    if ([Type]::GetTypeCode($Value.GetType()) -notin @(
+        [TypeCode]::SByte,
+        [TypeCode]::Byte,
+        [TypeCode]::Int16,
+        [TypeCode]::UInt16,
+        [TypeCode]::Int32,
+        [TypeCode]::UInt32,
+        [TypeCode]::Int64,
+        [TypeCode]::UInt64
+    )) {
+        return $false
+    }
+
+    try {
+        return [Convert]::ToDecimal(
+            $Value,
+            [Globalization.CultureInfo]::InvariantCulture
+        ) -eq 1
+    }
+    catch {
+        return $false
+    }
+}
+
+function ConvertTo-CanonicalMonitorSettings {
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)]
@@ -130,56 +185,130 @@ function Test-MonitorSettingsDocument {
     )
 
     if (-not (Test-MonitorSettingsObject -Value $Settings)) {
-        return $false
+        return $null
     }
-
     foreach ($name in @('SchemaVersion', 'Window', 'Startup')) {
         if (-not (Test-MonitorSettingsHasField -InputObject $Settings -Name $name)) {
-            return $false
+            return $null
         }
     }
 
     $schemaVersion = Get-MonitorSettingsField -InputObject $Settings -Name 'SchemaVersion'
-    if (-not (Test-MonitorSettingsFiniteNumber -Value $schemaVersion)) {
-        return $false
-    }
-    try {
-        if ([Convert]::ToDecimal($schemaVersion, [Globalization.CultureInfo]::InvariantCulture) -ne 1) {
-            return $false
-        }
-    }
-    catch {
-        return $false
+    if (-not (Test-MonitorSettingsSchemaVersion -Value $schemaVersion)) {
+        return $null
     }
 
     $window = Get-MonitorSettingsField -InputObject $Settings -Name 'Window'
     if (-not (Test-MonitorSettingsObject -Value $window)) {
-        return $false
+        return $null
     }
     foreach ($name in @('Left', 'Top', 'Topmost', 'Visible')) {
         if (-not (Test-MonitorSettingsHasField -InputObject $window -Name $name)) {
-            return $false
+            return $null
         }
     }
 
-    foreach ($name in @('Left', 'Top')) {
-        $coordinate = Get-MonitorSettingsField -InputObject $window -Name $name
-        if ($null -ne $coordinate -and -not (Test-MonitorSettingsFiniteNumber -Value $coordinate)) {
-            return $false
-        }
+    $left = Get-MonitorSettingsField -InputObject $window -Name 'Left'
+    $top = Get-MonitorSettingsField -InputObject $window -Name 'Top'
+    if ($null -ne $left -and -not (Test-MonitorSettingsFiniteNumber -Value $left)) {
+        return $null
+    }
+    if ($null -ne $top -and -not (Test-MonitorSettingsFiniteNumber -Value $top)) {
+        return $null
     }
 
-    foreach ($value in @(
-        (Get-MonitorSettingsField -InputObject $window -Name 'Topmost'),
-        (Get-MonitorSettingsField -InputObject $window -Name 'Visible'),
-        (Get-MonitorSettingsField -InputObject $Settings -Name 'Startup')
-    )) {
-        if ($value -isnot [bool]) {
-            return $false
-        }
+    $topmost = Get-MonitorSettingsField -InputObject $window -Name 'Topmost'
+    $visible = Get-MonitorSettingsField -InputObject $window -Name 'Visible'
+    $startup = Get-MonitorSettingsField -InputObject $Settings -Name 'Startup'
+    if ($topmost -isnot [bool] -or $visible -isnot [bool] -or $startup -isnot [bool]) {
+        return $null
     }
 
-    return $true
+    $canonical = [ordered]@{
+        SchemaVersion = [int]1
+        Window = [ordered]@{
+            Left = $left
+            Top = $top
+            Topmost = [bool]$topmost
+            Visible = [bool]$visible
+        }
+        Startup = [bool]$startup
+    }
+    Write-Output -NoEnumerate -InputObject $canonical
+}
+
+function Test-MonitorSettingsDocument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Settings
+    )
+
+    return $null -ne (ConvertTo-CanonicalMonitorSettings -Settings $Settings)
+}
+
+function Get-MonitorSettingsMutexName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path
+    )
+
+    $normalizedPath = [IO.Path]::GetFullPath($Path).ToUpperInvariant()
+    $pathBytes = [Text.UTF8Encoding]::new($false).GetBytes($normalizedPath)
+    $hashBytes = [Security.Cryptography.SHA256]::HashData($pathBytes)
+    return 'Local\CodexQuotaMonitor.Settings.' + [Convert]::ToHexString($hashBytes)
+}
+
+function Enter-MonitorSettingsMutex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Parameter(Position = 1)]
+        [ValidateRange(1, 60000)]
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $mutex = [Threading.Mutex]::new($false, (Get-MonitorSettingsMutexName -Path $Path))
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne($TimeoutMilliseconds)
+        }
+        catch [Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+
+        if (-not $acquired) {
+            throw [TimeoutException]::new('Timed out waiting for monitor settings persistence.')
+        }
+
+        return $mutex
+    }
+    catch {
+        if (-not $acquired) {
+            $mutex.Dispose()
+        }
+        throw
+    }
+}
+
+function Exit-MonitorSettingsMutex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [Threading.Mutex]$Mutex
+    )
+
+    try {
+        $Mutex.ReleaseMutex()
+    }
+    finally {
+        $Mutex.Dispose()
+    }
 }
 
 function Move-CorruptMonitorSettings {
@@ -208,41 +337,27 @@ function Move-CorruptMonitorSettings {
     return $destination
 }
 
-function Read-MonitorSettings {
+function Remove-MonitorSettingsBackupFile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
-        [string]$Path,
-
-        [Parameter(Position = 1)]
-        [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
+        [string]$Path
     )
 
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    if (-not [IO.File]::Exists($fullPath)) {
-        return New-DefaultSettings
-    }
-
-    $json = [IO.File]::ReadAllText($fullPath)
-    $settings = $null
-    $valid = $false
-    try {
-        $settings = $json | ConvertFrom-Json -ErrorAction Stop
-        $valid = Test-MonitorSettingsDocument -Settings $settings
-    }
-    catch {
-        $valid = $false
-    }
-
-    if (-not $valid) {
-        $null = Move-CorruptMonitorSettings -Path $fullPath -Now $Now
-        return New-DefaultSettings
-    }
-
-    return $settings
+    [IO.File]::Delete($Path)
 }
 
-function Write-MonitorSettings {
+function ConvertTo-MonitorSettingsJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [object]$Settings
+    )
+
+    return $Settings | ConvertTo-Json -Depth 5 -Compress -ErrorAction Stop
+}
+
+function Write-CanonicalMonitorSettingsFile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
@@ -252,20 +367,14 @@ function Write-MonitorSettings {
         [object]$Settings
     )
 
-    if (-not (Test-MonitorSettingsDocument -Settings $Settings)) {
-        throw [ArgumentException]::new('Settings do not match the supported schema.')
-    }
-
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $directory = [IO.Path]::GetDirectoryName($fullPath)
+    $directory = [IO.Path]::GetDirectoryName($Path)
     $null = [IO.Directory]::CreateDirectory($directory)
-
-    $fileName = [IO.Path]::GetFileName($fullPath)
+    $fileName = [IO.Path]::GetFileName($Path)
     $temporaryId = [Guid]::NewGuid().ToString('N')
     $temporaryPath = Join-Path $directory ".$fileName.$temporaryId.tmp"
     $backupPath = Join-Path $directory ".$fileName.$temporaryId.backup.tmp"
     try {
-        $json = $Settings | ConvertTo-Json -Depth 10 -Compress -ErrorAction Stop
+        $json = ConvertTo-MonitorSettingsJson -Settings $Settings
         $encoding = [Text.UTF8Encoding]::new($false)
         $bytes = $encoding.GetBytes($json)
 
@@ -285,11 +394,11 @@ function Write-MonitorSettings {
             $stream.Dispose()
         }
 
-        if ([IO.File]::Exists($fullPath)) {
-            [IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+        if ([IO.File]::Exists($Path)) {
+            [IO.File]::Replace($temporaryPath, $Path, $backupPath, $true)
         }
         else {
-            [IO.File]::Move($temporaryPath, $fullPath)
+            [IO.File]::Move($temporaryPath, $Path)
         }
     }
     finally {
@@ -297,7 +406,81 @@ function Write-MonitorSettings {
             [IO.File]::Delete($temporaryPath)
         }
         if ([IO.File]::Exists($backupPath)) {
-            [IO.File]::Delete($backupPath)
+            try {
+                Remove-MonitorSettingsBackupFile -Path $backupPath
+            }
+            catch {
+                # The replacement is already committed; stale backup cleanup is best effort.
+            }
         }
+    }
+}
+
+function Read-MonitorSettings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Parameter(Position = 1)]
+        [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $mutex = Enter-MonitorSettingsMutex -Path $fullPath
+    try {
+        if (-not [IO.File]::Exists($fullPath)) {
+            return New-DefaultSettings
+        }
+
+        $json = [IO.File]::ReadAllText($fullPath)
+        $canonical = $null
+        try {
+            $settings = $json | ConvertFrom-Json -ErrorAction Stop
+            $canonical = ConvertTo-CanonicalMonitorSettings -Settings $settings
+        }
+        catch {
+            $canonical = $null
+        }
+
+        if ($null -eq $canonical) {
+            $null = Move-CorruptMonitorSettings -Path $fullPath -Now $Now
+            return New-DefaultSettings
+        }
+
+        $canonicalJson = ConvertTo-MonitorSettingsJson -Settings $canonical
+        if ($json -cne $canonicalJson) {
+            Write-CanonicalMonitorSettingsFile -Path $fullPath -Settings $canonical
+        }
+
+        return $canonical
+    }
+    finally {
+        Exit-MonitorSettingsMutex -Mutex $mutex
+    }
+}
+
+function Write-MonitorSettings {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Parameter(Mandatory, Position = 1)]
+        [object]$Settings
+    )
+
+    $canonical = ConvertTo-CanonicalMonitorSettings -Settings $Settings
+    if ($null -eq $canonical) {
+        throw [ArgumentException]::new('Settings do not match the supported schema.')
+    }
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $mutex = Enter-MonitorSettingsMutex -Path $fullPath
+    try {
+        Write-CanonicalMonitorSettingsFile -Path $fullPath -Settings $canonical
+    }
+    finally {
+        Exit-MonitorSettingsMutex -Mutex $mutex
     }
 }
