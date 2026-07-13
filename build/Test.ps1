@@ -33,6 +33,6 @@ $configuration.TestResult.OutputFormat = 'JUnitXml'
 $configuration.TestResult.OutputPath = Join-Path $resultDirectory "$Suite.xml"
 
 $result = Invoke-Pester -Configuration $configuration
-if ($result.FailedCount -gt 0) {
+if ($result.Result -ne 'Passed') {
     exit 1
 }
