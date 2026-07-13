@@ -90,7 +90,7 @@ BeforeAll {
 
     function Start-TestFakeAppServer {
         param(
-            [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes')]
+            [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes', 'NonReading', 'FinalBeforeExit')]
             [string]$Scenario = 'Happy',
 
             [string]$ServerPath = $script:FakeAppServerPath,
@@ -327,6 +327,74 @@ Describe 'App Server JSONL process transport' {
         $stopResult.Disposed | Should -BeTrue
     }
 
+    It 'returns within one shutdown deadline when a sender blocks on non-reading stdin' {
+        $transport = Start-TestFakeAppServer -Scenario NonReading
+        $largeMessage = New-RpcRequest -Id 1503 -Method 'test/blockedWrite' -Params ([ordered]@{
+                payload = 'X' * (8MB)
+            })
+        $senderScript = @'
+param($ObjectAccessPath, $JsonRpcPath, $AppServerProcessPath, $Transport, $Message)
+. $ObjectAccessPath
+. $JsonRpcPath
+. $AppServerProcessPath
+try {
+    Send-AppServerMessage -Transport $Transport -Message $Message
+    [pscustomobject]@{ Status = 'Sent'; Category = $null; Message = $null }
+}
+catch {
+    [pscustomobject]@{
+        Status = 'Closed'
+        Category = $_.Exception.Data['AppServerErrorCategory']
+        Message = $_.Exception.Message
+    }
+}
+'@
+        $sender = [Management.Automation.PowerShell]::Create()
+        $null = $sender.AddScript($senderScript).
+            AddArgument($script:ObjectAccessPath).
+            AddArgument($script:JsonRpcPath).
+            AddArgument($script:AppServerProcessPath).
+            AddArgument($transport).
+            AddArgument($largeMessage)
+        $sendAsync = $sender.BeginInvoke()
+
+        try {
+            Wait-TestCondition -Description 'blocked sender holding the transport I/O lock' -Condition {
+                $probeLockTaken = $false
+                try {
+                    [Threading.Monitor]::TryEnter($transport.IoLock, 0, [ref]$probeLockTaken)
+                    return -not $probeLockTaken
+                }
+                finally {
+                    if ($probeLockTaken) {
+                        [Threading.Monitor]::Exit($transport.IoLock)
+                    }
+                }
+            }
+
+            $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+            Stop-AppServerProcess -Transport $transport -TimeoutMilliseconds 250
+            $stopwatch.Stop()
+
+            Wait-TestCondition -Description 'blocked sender unwinding after shutdown' -TimeoutMilliseconds 2000 -Condition {
+                $sendAsync.IsCompleted
+            }
+            $sendResult = @($sender.EndInvoke($sendAsync))[0]
+
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 750
+            $transport.WasKilled | Should -BeTrue
+            $sendResult.Status | Should -BeExactly 'Closed'
+            $sendResult.Category | Should -BeExactly 'TransportClosed'
+            $sendResult.Message | Should -BeExactly 'The App Server process transport is closed.'
+        }
+        finally {
+            if (-not $sendAsync.IsCompleted) {
+                $sender.Stop()
+            }
+            $sender.Dispose()
+        }
+    }
+
     It 'sanitizes send after natural process exit as TransportClosed' {
         $transport = Start-TestFakeAppServer -Scenario ExitAfterInitialize
         Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 1501 -Method 'initialize' -Params $null)
@@ -371,13 +439,22 @@ Describe 'App Server JSONL process transport' {
 
     It 'makes a losing concurrent Stop wait until the owner completes' {
         $calls = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+        $captureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(1, 1, 32)
+        $signalStreamEof = $captureState.GetType().GetMethod(
+            'SignalStreamEof',
+            [Reflection.BindingFlags]'Instance,NonPublic'
+        )
         $process = [pscustomobject]@{
             Calls = $calls
+            CaptureState = $captureState
+            SignalStreamEof = $signalStreamEof
             HasExited = $false
             ExitCode = 0
         }
         $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value {
             [Threading.Thread]::Sleep(150)
+            $null = $this.SignalStreamEof.Invoke($this.CaptureState, @('stdout'))
+            $null = $this.SignalStreamEof.Invoke($this.CaptureState, @('stderr'))
             return $true
         }
         $process | Add-Member -MemberType ScriptMethod -Name CancelOutputRead -Value { $this.Calls.Enqueue('CancelOutputRead') }
@@ -392,7 +469,7 @@ Describe 'App Server JSONL process transport' {
 
         $transport = [pscustomobject][ordered]@{
             Process = $process
-            CaptureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(1, 1, 32)
+            CaptureState = $captureState
             OutputHandler = $null
             ErrorHandler = $null
             StdinWriter = $writer
@@ -451,6 +528,71 @@ Describe 'App Server JSONL process transport' {
 
         $stopwatch.ElapsedMilliseconds | Should -BeLessThan 750
         $transport.Disposed | Should -BeTrue
+    }
+
+    It 'drains the final stdout response before detaching stream callbacks after exit' {
+        $transport = Start-TestFakeAppServer -Scenario FinalBeforeExit
+        $syncRootField = $transport.CaptureState.GetType().GetField(
+            'syncRoot',
+            [Reflection.BindingFlags]'Instance,NonPublic'
+        )
+        $captureLock = $syncRootField.GetValue($transport.CaptureState)
+        $captureLockTaken = $false
+        $stopper = $null
+        $stopAsync = $null
+        try {
+            [Threading.Monitor]::Enter($captureLock, [ref]$captureLockTaken)
+            Send-AppServerMessage -Transport $transport -Message (
+                New-RpcRequest -Id 1601 -Method 'test/finalResponse' -Params $null
+            )
+
+            Wait-TestCondition -Description 'final-response server exit' -Condition {
+                $transport.Process.HasExited
+            }
+
+            $stopperScript = @'
+param($AppServerProcessPath, $Transport)
+. $AppServerProcessPath
+Stop-AppServerProcess -Transport $Transport -TimeoutMilliseconds 2000
+'@
+            $stopper = [Management.Automation.PowerShell]::Create()
+            $null = $stopper.AddScript($stopperScript).
+                AddArgument($script:AppServerProcessPath).
+                AddArgument($transport)
+            $stopAsync = $stopper.BeginInvoke()
+            Wait-TestCondition -Description 'EOF-aware stop owner starting' -Condition {
+                $transport.Stopped
+            }
+            [Threading.Thread]::Sleep(100)
+            $stopAsync.IsCompleted | Should -BeFalse
+        }
+        finally {
+            if ($captureLockTaken) {
+                [Threading.Monitor]::Exit($captureLock)
+            }
+        }
+
+        try {
+            Wait-TestCondition -Description 'EOF-aware stop completion' -TimeoutMilliseconds 3000 -Condition {
+                $stopAsync.IsCompleted
+            }
+            $null = $stopper.EndInvoke($stopAsync)
+        }
+        finally {
+            if ($null -ne $stopper) {
+                if ($null -ne $stopAsync -and -not $stopAsync.IsCompleted) {
+                    $stopper.Stop()
+                }
+                $stopper.Dispose()
+            }
+        }
+
+        $records = @(Receive-AppServerRecord -Transport $transport)
+        $finalRecords = @($records | Where-Object { Test-RecordHasId -Record $_ -Id 1601 })
+        $finalRecords.Count | Should -Be 1
+        ($finalRecords[0].Line | ConvertFrom-Json).result.final | Should -BeTrue
+        $transport.ExitCode | Should -Be 0
+        $transport.WasKilled | Should -BeFalse
     }
 
     It 'redacts and length-caps stderr before enforcing its injected record bound' {

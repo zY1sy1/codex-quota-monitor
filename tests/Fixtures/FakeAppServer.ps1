@@ -1,10 +1,15 @@
 param(
-    [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes')]
+    [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes', 'NonReading', 'FinalBeforeExit')]
     [string]$Scenario = 'Happy'
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
+if ($Scenario -eq 'NonReading') {
+    [Threading.Thread]::Sleep(3000)
+    exit 0
+}
 
 while (($line = [Console]::In.ReadLine()) -ne $null) {
     if ($Scenario -eq 'Malformed') {
@@ -20,6 +25,16 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     }
 
     $message = $line | ConvertFrom-Json
+    if ($Scenario -eq 'FinalBeforeExit') {
+        [Console]::Out.WriteLine('{"method":"test/prelude"}')
+        [Console]::Out.WriteLine((@{
+                    id = $message.id
+                    result = @{ final = $true }
+                } | ConvertTo-Json -Depth 20 -Compress))
+        [Console]::Out.Flush()
+        exit 0
+    }
+
     switch ($message.method) {
         initialize {
             [Console]::Out.WriteLine((@{

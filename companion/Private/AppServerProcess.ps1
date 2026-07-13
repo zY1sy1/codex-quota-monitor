@@ -64,8 +64,11 @@ namespace CodexQuotaMonitor.ProcessTransport
 
         private readonly object syncRoot = new object();
         private readonly ManualResetEventSlim stopCompleted = new ManualResetEventSlim(false);
+        private readonly CountdownEvent streamEof = new CountdownEvent(2);
         private volatile bool accepting = true;
         private int stopStarted;
+        private int stdoutEof;
+        private int stderrEof;
 
         public CaptureState(int stdoutLimit, int stderrLimit, int diagnosticLineLimit)
         {
@@ -84,7 +87,13 @@ namespace CodexQuotaMonitor.ProcessTransport
         {
             return delegate(object sender, DataReceivedEventArgs eventArgs)
             {
-                if (!accepting || eventArgs.Data == null)
+                if (eventArgs.Data == null)
+                {
+                    SignalStreamEof(stream);
+                    return;
+                }
+
+                if (!accepting)
                 {
                     return;
                 }
@@ -135,6 +144,11 @@ namespace CodexQuotaMonitor.ProcessTransport
             return stopCompleted.Wait(milliseconds);
         }
 
+        public bool WaitForStreamEof(int milliseconds)
+        {
+            return streamEof.Wait(milliseconds);
+        }
+
         private void EnqueueBounded(AppServerRecord record)
         {
             lock (syncRoot)
@@ -153,6 +167,28 @@ namespace CodexQuotaMonitor.ProcessTransport
                         break;
                     }
                 }
+            }
+        }
+
+        private void SignalStreamEof(string stream)
+        {
+            int wasSignaled;
+            if (String.Equals(stream, "stdout", StringComparison.Ordinal))
+            {
+                wasSignaled = Interlocked.Exchange(ref stdoutEof, 1);
+            }
+            else if (String.Equals(stream, "stderr", StringComparison.Ordinal))
+            {
+                wasSignaled = Interlocked.Exchange(ref stderrEof, 1);
+            }
+            else
+            {
+                return;
+            }
+
+            if (wasSignaled == 0)
+            {
+                streamEof.Signal();
             }
         }
 
@@ -599,11 +635,15 @@ function Stop-AppServerProcess {
     $stdinWriter = $Transport.StdinWriter
 
     try {
+        $Transport.Stopped = $true
         $ioLockTaken = $false
         try {
-            [Threading.Monitor]::Enter($Transport.IoLock, [ref]$ioLockTaken)
-            $Transport.Stopped = $true
-            if (-not $Transport.StdinClosed -and $null -ne $stdinWriter) {
+            $remaining = [Math]::Max(0, $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds)
+            if ($remaining -gt 0) {
+                [Threading.Monitor]::TryEnter($Transport.IoLock, $remaining, [ref]$ioLockTaken)
+            }
+
+            if ($ioLockTaken -and -not $Transport.StdinClosed -and $null -ne $stdinWriter) {
                 try { $stdinWriter.Close() } catch {}
                 $Transport.StdinClosed = $true
             }
@@ -634,7 +674,18 @@ function Stop-AppServerProcess {
 
             $remaining = [Math]::Max(0, $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds)
             if ($remaining -gt 0) {
-                try { $null = $process.WaitForExit($remaining) } catch {}
+                try { $hasExited = $process.WaitForExit($remaining) } catch { $hasExited = $false }
+            }
+        }
+
+        if (-not $hasExited) {
+            try { $hasExited = $process.HasExited } catch { $hasExited = $true }
+        }
+
+        if ($hasExited) {
+            $remaining = [Math]::Max(0, $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds)
+            if ($remaining -gt 0) {
+                $null = $Transport.CaptureState.WaitForStreamEof($remaining)
             }
         }
 
