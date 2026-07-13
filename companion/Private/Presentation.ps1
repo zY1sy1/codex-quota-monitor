@@ -34,6 +34,12 @@ function Format-ResetCountdown {
         [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
     )
 
+    $minimumUnixSeconds = [DateTimeOffset]::MinValue.ToUnixTimeSeconds()
+    $maximumUnixSeconds = [DateTimeOffset]::MaxValue.ToUnixTimeSeconds()
+    if ($ResetsAt -lt $minimumUnixSeconds -or $ResetsAt -gt $maximumUnixSeconds) {
+        return '重置时间未知'
+    }
+
     $resetTime = [DateTimeOffset]::FromUnixTimeSeconds($ResetsAt)
     $timeRemaining = $resetTime - $Now.ToUniversalTime()
     if ($timeRemaining.TotalSeconds -le 0) {
@@ -70,7 +76,11 @@ function Get-QuotaSeverity {
         return 'Gray'
     }
 
-    [double]$remaining = $MinimumRemaining
+    $remaining = ConvertTo-InvariantFiniteDouble -Value $MinimumRemaining
+    if ($null -eq $remaining) {
+        return 'Gray'
+    }
+
     if ($remaining -lt 15.0) {
         return 'Red'
     }
@@ -80,6 +90,38 @@ function Get-QuotaSeverity {
     }
 
     return 'Green'
+}
+
+function Limit-TextElementLength {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory, Position = 1)]
+        [int]$MaximumLength
+    )
+
+    if ($MaximumLength -le 0 -or $Text.Length -eq 0) {
+        return ''
+    }
+    if ($Text.Length -le $MaximumLength) {
+        return $Text
+    }
+
+    $enumerator = [Globalization.StringInfo]::GetTextElementEnumerator($Text)
+    $safeLength = 0
+    while ($enumerator.MoveNext()) {
+        $element = $enumerator.GetTextElement()
+        if ($safeLength + $element.Length -gt $MaximumLength) {
+            break
+        }
+
+        $safeLength += $element.Length
+    }
+
+    return $Text.Substring(0, $safeLength)
 }
 
 function Get-TrayTooltip {
@@ -97,7 +139,7 @@ function Get-TrayTooltip {
         }
 
         $durationValue = Get-ObjectField -InputObject $window -Name 'WindowDurationMins'
-        [int]$duration = if ($null -eq $durationValue) { 0 } else { [int]$durationValue }
+        [int]$duration = ConvertTo-InvariantInt32OrZero -Value $durationValue
         $limitName = [string](Get-ObjectField -InputObject $window -Name 'LimitName')
 
         $label = if ($duration -ge 270 -and $duration -le 330) {
@@ -111,11 +153,12 @@ function Get-TrayTooltip {
         }
 
         $remainingValue = Get-ObjectField -InputObject $window -Name 'RemainingPercent'
-        $remainingText = if ($null -eq $remainingValue) {
+        $remaining = ConvertTo-InvariantFiniteDouble -Value $remainingValue
+        $remainingText = if ($null -eq $remaining) {
             '--'
         }
         else {
-            [Math]::Round([double]$remainingValue, 0, [MidpointRounding]::AwayFromZero).ToString(
+            [Math]::Round($remaining, 0, [MidpointRounding]::AwayFromZero).ToString(
                 '0',
                 [Globalization.CultureInfo]::InvariantCulture
             )
@@ -125,9 +168,5 @@ function Get-TrayTooltip {
     }
 
     $tooltip = $entries -join ' | '
-    if ($tooltip.Length -gt 63) {
-        return $tooltip.Substring(0, 63)
-    }
-
-    return $tooltip
+    return Limit-TextElementLength -Text $tooltip -MaximumLength 63
 }

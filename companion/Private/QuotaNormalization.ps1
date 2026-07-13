@@ -6,11 +6,12 @@ function Get-RemainingPercent {
         [object]$UsedPercent
     )
 
-    if ($null -eq $UsedPercent) {
+    $used = ConvertTo-InvariantFiniteDouble -Value $UsedPercent
+    if ($null -eq $used) {
         return $null
     }
 
-    [double]$remaining = 100.0 - [double]$UsedPercent
+    [double]$remaining = 100.0 - $used
     if ($remaining -lt 0.0) {
         $remaining = 0.0
     }
@@ -50,6 +51,96 @@ function Get-QuotaBucketEntry {
             Value = $property.Value
         }
     }
+}
+
+function Compare-NullableQuotaNumber {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [AllowNull()]
+        [object]$Left,
+
+        [Parameter(Mandatory, Position = 1)]
+        [AllowNull()]
+        [object]$Right
+    )
+
+    if ($null -eq $Left) {
+        if ($null -eq $Right) {
+            return 0
+        }
+
+        return -1
+    }
+    if ($null -eq $Right) {
+        return 1
+    }
+
+    return ([double]$Left).CompareTo([double]$Right)
+}
+
+function Compare-QuotaWindowRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [object]$Left,
+
+        [Parameter(Mandatory, Position = 1)]
+        [object]$Right
+    )
+
+    $comparison = $Left.WindowDurationMins.CompareTo($Right.WindowDurationMins)
+    if ($comparison -ne 0) { return $comparison }
+
+    $comparison = [StringComparer]::Ordinal.Compare($Left.LimitId, $Right.LimitId)
+    if ($comparison -ne 0) { return $comparison }
+
+    $comparison = [StringComparer]::Ordinal.Compare($Left.WindowKind, $Right.WindowKind)
+    if ($comparison -ne 0) { return $comparison }
+
+    $comparison = $Left.ResetsAt.CompareTo($Right.ResetsAt)
+    if ($comparison -ne 0) { return $comparison }
+
+    $comparison = [StringComparer]::Ordinal.Compare($Left.Key, $Right.Key)
+    if ($comparison -ne 0) { return $comparison }
+
+    # Equal identity keys choose the lowest canonical non-key tuple, independent of map order.
+    $comparison = [StringComparer]::Ordinal.Compare($Left.LimitName, $Right.LimitName)
+    if ($comparison -ne 0) { return $comparison }
+
+    $comparison = Compare-NullableQuotaNumber -Left $Left.UsedPercent -Right $Right.UsedPercent
+    if ($comparison -ne 0) { return $comparison }
+
+    $comparison = Compare-NullableQuotaNumber -Left $Left.RemainingPercent -Right $Right.RemainingPercent
+    if ($comparison -ne 0) { return $comparison }
+
+    return [StringComparer]::Ordinal.Compare($Left.RateLimitReached, $Right.RateLimitReached)
+}
+
+function Sort-QuotaWindowRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [AllowEmptyCollection()]
+        [object[]]$Rows
+    )
+
+    $sorted = [System.Collections.Generic.List[object]]::new()
+    foreach ($row in $Rows) {
+        $insertAt = 0
+        while ($insertAt -lt $sorted.Count) {
+            $comparison = Compare-QuotaWindowRecord -Left $sorted[$insertAt] -Right $row
+            if ($comparison -gt 0) {
+                break
+            }
+
+            $insertAt++
+        }
+
+        $sorted.Insert($insertAt, $row)
+    }
+
+    return $sorted
 }
 
 function ConvertTo-QuotaWindow {
@@ -101,13 +192,13 @@ function ConvertTo-QuotaWindow {
             }
 
             $usedValue = Get-ObjectField -InputObject $window -Name 'usedPercent'
-            $usedPercent = if ($null -eq $usedValue) { $null } else { [double]$usedValue }
+            $usedPercent = ConvertTo-InvariantFiniteDouble -Value $usedValue
 
             $durationValue = Get-ObjectField -InputObject $window -Name 'windowDurationMins'
-            [int]$duration = if ($null -eq $durationValue) { 0 } else { [int]$durationValue }
+            [int]$duration = ConvertTo-InvariantInt32OrZero -Value $durationValue
 
             $resetsValue = Get-ObjectField -InputObject $window -Name 'resetsAt'
-            [long]$resetsAt = if ($null -eq $resetsValue) { 0 } else { [long]$resetsValue }
+            [long]$resetsAt = ConvertTo-InvariantInt64OrZero -Value $resetsValue
 
             $rows += [pscustomobject][ordered]@{
                 Key = [string]"$limitId|$windowKind|$duration|$resetsAt"
@@ -123,15 +214,7 @@ function ConvertTo-QuotaWindow {
         }
     }
 
-    $sortedRows = @(
-        $rows | Sort-Object -Property @(
-            @{ Expression = 'WindowDurationMins'; Ascending = $true },
-            @{ Expression = 'LimitId'; Ascending = $true },
-            @{ Expression = 'WindowKind'; Ascending = $true },
-            @{ Expression = 'ResetsAt'; Ascending = $true },
-            @{ Expression = 'Key'; Ascending = $true }
-        )
-    )
+    $sortedRows = @(Sort-QuotaWindowRecord -Rows $rows)
 
     $seenKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($row in $sortedRows) {

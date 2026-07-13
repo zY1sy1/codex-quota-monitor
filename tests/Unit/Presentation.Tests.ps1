@@ -50,6 +50,10 @@ Describe 'Format-ResetCountdown' {
         $resetsAt = $CountdownNow.ToUnixTimeSeconds() + (2 * 86400) + (3 * 3600) + (4 * 60) + 5
         Format-ResetCountdown -ResetsAt $resetsAt -Now $CountdownNow | Should -Be '2天 03:04:05'
     }
+
+    It 'returns an unknown label for an out-of-range Unix timestamp' {
+        Format-ResetCountdown -ResetsAt ([long]::MaxValue) -Now $CountdownNow | Should -Be '重置时间未知'
+    }
 }
 
 Describe 'Get-QuotaSeverity' {
@@ -64,6 +68,16 @@ Describe 'Get-QuotaSeverity' {
         @{ Remaining = 40.1; Expected = 'Green' }
     ) {
         Get-QuotaSeverity -MinimumRemaining $Remaining -Offline $false | Should -Be $Expected
+    }
+
+    It 'returns gray for missing, invalid, and non-finite remaining quota' -ForEach @(
+        @{ Remaining = $null },
+        @{ Remaining = 'not-a-number' },
+        @{ Remaining = [double]::NaN },
+        @{ Remaining = [double]::PositiveInfinity },
+        @{ Remaining = [double]::NegativeInfinity }
+    ) {
+        Get-QuotaSeverity -MinimumRemaining $Remaining -Offline $false | Should -Be 'Gray'
     }
 }
 
@@ -102,5 +116,47 @@ Describe 'Get-TrayTooltip' {
 
         $tooltip.Length | Should -Be 63
         $tooltip.StartsWith('Very long official quota name') | Should -BeTrue
+    }
+
+    It 'shows an unknown percentage for invalid and non-finite values' -ForEach @(
+        @{ Remaining = 'not-a-number' },
+        @{ Remaining = [double]::NaN },
+        @{ Remaining = [double]::PositiveInfinity },
+        @{ Remaining = [double]::NegativeInfinity }
+    ) {
+        $windows = @(
+            [pscustomobject]@{ WindowDurationMins = 60; LimitName = 'Review'; RemainingPercent = $Remaining }
+        )
+
+        Get-TrayTooltip -QuotaWindows $windows | Should -Be 'Review --%'
+    }
+
+    It 'does not split an emoji surrogate pair at the tooltip boundary' {
+        $emoji = [char]::ConvertFromUtf32(0x1F600)
+        $windows = @(
+            [pscustomobject]@{
+                WindowDurationMins = 60
+                LimitName = ('x' * 62) + $emoji
+                RemainingPercent = 55
+            }
+        )
+
+        $tooltip = Get-TrayTooltip -QuotaWindows $windows
+
+        $tooltip.Length | Should -BeLessOrEqual 63
+        $tooltip | Should -Be ('x' * 62)
+        [char]::IsHighSurrogate($tooltip[$tooltip.Length - 1]) | Should -BeFalse
+    }
+
+    It 'does not split a combining text element at the tooltip boundary' {
+        $windows = @(
+            [pscustomobject]@{
+                WindowDurationMins = 60
+                LimitName = ('x' * 62) + "e$([char]0x0301)"
+                RemainingPercent = 55
+            }
+        )
+
+        Get-TrayTooltip -QuotaWindows $windows | Should -Be ('x' * 62)
     }
 }
