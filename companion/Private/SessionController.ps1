@@ -10,6 +10,9 @@ function New-SessionState {
         LastSuccessAt = $null
         LastError = $null
         ReconnectAttempt = [int]0
+        QuotaEligible = $null
+        QuotaRefreshQueued = $false
+        AccountRefreshQueued = $false
     }
 }
 
@@ -71,6 +74,9 @@ function New-SessionRequest {
     $State.Pending[$id] = [pscustomobject][ordered]@{
         Method = $Method
         SentAt = $Now.ToUniversalTime()
+        AllowUnknownQuotaRefresh = [bool](
+            $Method -eq 'account/rateLimits/read' -and $null -eq $State.QuotaEligible
+        )
     }
 
     New-RpcRequest -Id $id -Method $Method -Params $Params
@@ -126,6 +132,92 @@ function ConvertTo-SessionResponseId {
     }
 }
 
+function Test-SessionObjectField {
+    param(
+        [AllowNull()]
+        [object]$InputObject,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $false
+    }
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        return ([System.Collections.IDictionary]$InputObject).Contains($Name)
+    }
+
+    return $null -ne $InputObject.PSObject.Properties[$Name]
+}
+
+function Test-SessionStructuredObject {
+    param(
+        [AllowNull()]
+        [object]$InputObject
+    )
+
+    return $InputObject -is [System.Collections.IDictionary] -or $InputObject -is [pscustomobject]
+}
+
+function Test-SessionResultShape {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Method,
+
+        [AllowNull()]
+        [object]$Result
+    )
+
+    if (-not (Test-SessionStructuredObject -InputObject $Result)) {
+        return $false
+    }
+
+    switch ($Method) {
+        'initialize' {
+            return $true
+        }
+        'account/read' {
+            if (-not (Test-SessionObjectField -InputObject $Result -Name 'account') -or
+                -not (Test-SessionObjectField -InputObject $Result -Name 'requiresOpenaiAuth')) {
+                return $false
+            }
+
+            $requiresOpenaiAuth = Get-ObjectField -InputObject $Result -Name 'requiresOpenaiAuth'
+            if ($requiresOpenaiAuth -isnot [bool]) {
+                return $false
+            }
+
+            $account = Get-ObjectField -InputObject $Result -Name 'account'
+            if ($null -eq $account) {
+                return $true
+            }
+            if (-not (Test-SessionStructuredObject -InputObject $account) -or
+                -not (Test-SessionObjectField -InputObject $account -Name 'type')) {
+                return $false
+            }
+
+            $accountType = Get-ObjectField -InputObject $account -Name 'type'
+            return $accountType -is [string] -and -not [string]::IsNullOrWhiteSpace($accountType)
+        }
+        'account/rateLimits/read' {
+            foreach ($name in @('rateLimits', 'rateLimitsByLimitId')) {
+                if (Test-SessionObjectField -InputObject $Result -Name $name) {
+                    $rateLimits = Get-ObjectField -InputObject $Result -Name $name
+                    if (Test-SessionStructuredObject -InputObject $rateLimits) {
+                        return $true
+                    }
+                }
+            }
+
+            return $false
+        }
+        default {
+            return $false
+        }
+    }
+}
+
 function Clear-SessionQuotaState {
     param(
         [Parameter(Mandatory)]
@@ -135,6 +227,8 @@ function Clear-SessionQuotaState {
     $State.PlanType = $null
     $State.QuotaWindows = @()
     $State.QuotaReadPending = $false
+    $State.QuotaEligible = $false
+    $State.QuotaRefreshQueued = $false
     Remove-SessionPendingMethod -State $State -Method 'account/rateLimits/read'
 }
 
@@ -155,10 +249,12 @@ function Set-SessionRequestFailure {
             $State.LastError = 'Codex App Server initialization failed.'
         }
         'account/read' {
+            $State.AccountRefreshQueued = $false
             $State.LastError = 'Unable to read the Codex account state.'
         }
         'account/rateLimits/read' {
             $State.QuotaReadPending = $false
+            $State.QuotaRefreshQueued = $false
             $State.LastError = 'Unable to read ChatGPT quota from Codex App Server.'
         }
         default {
@@ -267,6 +363,7 @@ function Update-SessionFromAccountResult {
     }
 
     $planType = Get-SessionAccountPlanType -Account $account
+    $State.QuotaEligible = $true
     if ($null -ne $planType) {
         $State.PlanType = $planType
     }
@@ -292,6 +389,12 @@ function Update-SessionFromQuotaResult {
         [datetimeoffset]$Now = [datetimeoffset]::UtcNow
     )
 
+    if ($State.QuotaEligible -eq $false) {
+        $State.QuotaReadPending = $false
+        $State.QuotaRefreshQueued = $false
+        return
+    }
+
     $State.QuotaWindows = @(ConvertTo-QuotaWindow -RateLimitResult $Result)
     $planType = Get-SessionRateLimitPlanType -RateLimitResult $Result
     if ($null -ne $planType) {
@@ -299,6 +402,7 @@ function Update-SessionFromQuotaResult {
     }
     $State.Status = 'Live'
     $State.QuotaReadPending = $false
+    $State.QuotaRefreshQueued = $false
     $State.LastSuccessAt = $Now.ToUniversalTime()
     $State.LastError = $null
     $State.ReconnectAttempt = [int]0
@@ -317,16 +421,41 @@ function Update-SessionFromNotification {
 
     switch ($Method) {
         'account/rateLimits/updated' {
-            if ($State.Initialized -and -not $State.QuotaReadPending) {
+            if (-not $State.Initialized -or $State.QuotaEligible -eq $false) {
+                return
+            }
+            if ($State.QuotaReadPending) {
+                $canQueueRefresh = $State.QuotaEligible -eq $true
+                if (-not $canQueueRefresh -and $null -eq $State.QuotaEligible) {
+                    foreach ($entry in $State.Pending.GetEnumerator()) {
+                        if ($entry.Value.Method -eq 'account/rateLimits/read') {
+                            $canQueueRefresh = $entry.Value.AllowUnknownQuotaRefresh -eq $true
+                            break
+                        }
+                    }
+                }
+                if ($canQueueRefresh) {
+                    $State.QuotaRefreshQueued = $true
+                }
+                return
+            }
+            if ($State.QuotaEligible -eq $true) {
                 $State.QuotaReadPending = $true
                 New-SessionRequest -State $State -Method 'account/rateLimits/read' -Params $null -Now $Now
             }
         }
         'account/updated' {
             $State.PlanType = $null
-            if ($State.Initialized -and -not (Test-SessionPendingMethod -State $State -Method 'account/read')) {
-                New-SessionRequest -State $State -Method 'account/read' -Params ([ordered]@{}) -Now $Now
+            $State.QuotaEligible = $null
+            if (-not $State.Initialized) {
+                return
             }
+            if (Test-SessionPendingMethod -State $State -Method 'account/read') {
+                $State.AccountRefreshQueued = $true
+                return
+            }
+
+            New-SessionRequest -State $State -Method 'account/read' -Params ([ordered]@{}) -Now $Now
         }
     }
 }
@@ -361,13 +490,41 @@ function Update-SessionFromMessage {
     $pending = $State.Pending[$responseId]
     $State.Pending.Remove($responseId)
 
+    if ($pending.Method -eq 'account/read' -and $State.AccountRefreshQueued) {
+        $State.AccountRefreshQueued = $false
+        New-SessionRequest -State $State -Method 'account/read' -Params ([ordered]@{}) -Now $Now
+        return
+    }
+    if ($pending.Method -eq 'account/rateLimits/read') {
+        if ($State.QuotaEligible -eq $false) {
+            $State.QuotaReadPending = $false
+            $State.QuotaRefreshQueued = $false
+            return
+        }
+        if ($State.QuotaRefreshQueued) {
+            $State.QuotaRefreshQueued = $false
+            $State.QuotaReadPending = $true
+            New-SessionRequest -State $State -Method 'account/rateLimits/read' -Params $null -Now $Now
+            return
+        }
+    }
+
     $errorObject = Get-ObjectField -InputObject $Message -Name 'error'
     if ($null -ne $errorObject) {
         Set-SessionRequestFailure -State $State -Method $pending.Method
         return
     }
 
+    if (-not (Test-SessionObjectField -InputObject $Message -Name 'result')) {
+        Set-SessionRequestFailure -State $State -Method $pending.Method
+        return
+    }
     $result = Get-ObjectField -InputObject $Message -Name 'result'
+    if (-not (Test-SessionResultShape -Method $pending.Method -Result $result)) {
+        Set-SessionRequestFailure -State $State -Method $pending.Method
+        return
+    }
+
     switch ($pending.Method) {
         'initialize' {
             $State.Initialized = $true

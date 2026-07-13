@@ -56,6 +56,25 @@ BeforeAll {
 
         [pscustomobject]$result
     }
+
+    function New-MalformedTestResponse {
+        param(
+            [Parameter(Mandatory)]
+            [int]$Id,
+
+            [Parameter(Mandatory)]
+            [ValidateSet('Missing', 'Null', 'Scalar', 'NullError', 'EmptyObject')]
+            [string]$Shape
+        )
+
+        switch ($Shape) {
+            'Missing' { [pscustomobject][ordered]@{ id = $Id } }
+            'Null' { [pscustomobject][ordered]@{ id = $Id; result = $null } }
+            'Scalar' { [pscustomobject][ordered]@{ id = $Id; result = 'not-a-result-object' } }
+            'NullError' { [pscustomobject][ordered]@{ id = $Id; error = $null } }
+            'EmptyObject' { [pscustomobject][ordered]@{ id = $Id; result = [ordered]@{} } }
+        }
+    }
 }
 
 Describe 'New-SessionState' {
@@ -72,7 +91,10 @@ Describe 'New-SessionState' {
             'QuotaWindows',
             'LastSuccessAt',
             'LastError',
-            'ReconnectAttempt'
+            'ReconnectAttempt',
+            'QuotaEligible',
+            'QuotaRefreshQueued',
+            'AccountRefreshQueued'
         )) {
             $state.PSObject.Properties.Name | Should -Contain $name
         }
@@ -87,6 +109,9 @@ Describe 'New-SessionState' {
         $state.LastSuccessAt | Should -BeNullOrEmpty
         $state.LastError | Should -BeNullOrEmpty
         $state.ReconnectAttempt | Should -Be 0
+        $state.QuotaEligible | Should -BeNullOrEmpty
+        $state.QuotaRefreshQueued | Should -BeFalse
+        $state.AccountRefreshQueued | Should -BeFalse
 
         $state.NextId = 41
         $state.NextId | Should -Be 41
@@ -200,6 +225,25 @@ Describe 'session handshake' {
         $state.Status | Should -BeExactly 'Error'
         $state.LastError | Should -Not -Match 'secret-token'
     }
+
+    It 'rejects a malformed matched initialize response' -ForEach @(
+        @{ Shape = 'Missing' },
+        @{ Shape = 'Null' },
+        @{ Shape = 'Scalar' },
+        @{ Shape = 'NullError' }
+    ) {
+        $state = New-SessionState
+        $init = @(Start-SessionHandshake -State $state)[0]
+        $message = New-MalformedTestResponse -Id $init.id -Shape $Shape
+
+        $actions = @(Update-SessionFromMessage -State $state -Message $message)
+
+        $actions.Count | Should -Be 0
+        $state.Initialized | Should -BeFalse
+        $state.Pending.Contains($init.id) | Should -BeFalse
+        $state.Status | Should -BeExactly 'Error'
+        $state.LastError | Should -BeExactly 'Codex App Server initialization failed.'
+    }
 }
 
 Describe 'account state' {
@@ -221,6 +265,7 @@ Describe 'account state' {
         $state.PlanType | Should -BeExactly 'plus'
         $state.Status | Should -Not -BeIn @('AuthRequired', 'Unavailable')
         $state.QuotaReadPending | Should -BeTrue
+        $state.QuotaEligible | Should -BeTrue
         $state.Pending.Contains($context.QuotaRequest.id) | Should -BeTrue
     }
 
@@ -244,6 +289,8 @@ Describe 'account state' {
         $state.PlanType | Should -BeNullOrEmpty
         @($state.QuotaWindows).Count | Should -Be 0
         $state.QuotaReadPending | Should -BeFalse
+        $state.QuotaEligible | Should -BeFalse
+        $state.QuotaRefreshQueued | Should -BeFalse
         $state.Pending.Contains($context.QuotaRequest.id) | Should -BeFalse
         $state.LastError | Should -Match 'API billing'
         $state.LastError | Should -Match 'ChatGPT quota'
@@ -257,6 +304,12 @@ Describe 'account state' {
         )
         $state.Status | Should -BeExactly 'AuthRequired'
         @($state.QuotaWindows).Count | Should -Be 0
+
+        $notificationActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))
+        $notificationActions.Count | Should -Be 0
+        $state.QuotaReadPending | Should -BeFalse
     }
 
     It 'classifies unsupported or unauthenticated account states and clears stale quota' -ForEach @(
@@ -283,7 +336,20 @@ Describe 'account state' {
         $state.PlanType | Should -BeNullOrEmpty
         @($state.QuotaWindows).Count | Should -Be 0
         $state.QuotaReadPending | Should -BeFalse
+        $state.QuotaEligible | Should -BeFalse
+        $state.QuotaRefreshQueued | Should -BeFalse
         $state.Pending.Contains($context.QuotaRequest.id) | Should -BeFalse
+
+        $notificationActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))
+        $notificationActions.Count | Should -Be 0
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'stale-plan' -UsedPercent 99
+        }))
+        $state.Status | Should -BeExactly $ExpectedStatus
+        @($state.QuotaWindows).Count | Should -Be 0
     }
 
     It 'coalesces account updates, invalidates the account snapshot, and clears quota after auth changes' {
@@ -316,11 +382,20 @@ Describe 'account state' {
         $first[0].params.Count | Should -Be 0
         $second.Count | Should -Be 0
         $state.PlanType | Should -BeNullOrEmpty
+        $state.QuotaEligible | Should -BeNullOrEmpty
         @($state.QuotaWindows).Count | Should -Be 1
 
-        $null = @(
+        $followUp = @(
             Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
                 id = $first[0].id
+                result = [ordered]@{ account = $null; requiresOpenaiAuth = $false }
+            })
+        )
+        $followUp.Count | Should -Be 1
+        $followUp[0].method | Should -BeExactly 'account/read'
+        $null = @(
+            Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+                id = $followUp[0].id
                 result = [ordered]@{ account = $null; requiresOpenaiAuth = $false }
             })
         )
@@ -357,6 +432,67 @@ Describe 'account state' {
         $actions[0].PSObject.Properties.Name | Should -Not -Contain 'params'
         $state.QuotaReadPending | Should -BeTrue
         $state.PlanType | Should -BeExactly 'pro'
+        $state.QuotaEligible | Should -BeTrue
+    }
+
+    It 'discards a dirty account response and emits one coalesced refresh' {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{ account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }; requiresOpenaiAuth = $true }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'plus' -UsedPercent 10
+        }))
+        $accountRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/updated'; params = [ordered]@{ authMode = 'chatgpt' }
+        }))[0]
+
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/updated'; params = [ordered]@{ authMode = 'apikey' }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/updated'; params = [ordered]@{ authMode = 'apikey' }
+        }))
+        $state.AccountRefreshQueued | Should -BeTrue
+
+        $actions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $accountRead.id
+            result = [ordered]@{ account = [ordered]@{ type = 'apiKey' }; requiresOpenaiAuth = $true }
+        }))
+
+        $actions.Count | Should -Be 1
+        $actions[0].method | Should -BeExactly 'account/read'
+        $actions[0].params.Count | Should -Be 0
+        $actions[0].id | Should -Not -Be $accountRead.id
+        $state.AccountRefreshQueued | Should -BeFalse
+        $state.PlanType | Should -BeNullOrEmpty
+        $state.QuotaEligible | Should -BeNullOrEmpty
+        $state.Status | Should -BeExactly 'Live'
+        @($state.QuotaWindows).Count | Should -Be 1
+        $state.QuotaWindows[0].UsedPercent | Should -Be 10
+    }
+
+    It 'rejects a malformed matched account response' -ForEach @(
+        @{ Shape = 'Missing' },
+        @{ Shape = 'Null' },
+        @{ Shape = 'Scalar' },
+        @{ Shape = 'NullError' },
+        @{ Shape = 'EmptyObject' }
+    ) {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $message = New-MalformedTestResponse -Id $context.AccountRequest.id -Shape $Shape
+
+        $actions = @(Update-SessionFromMessage -State $state -Message $message)
+
+        $actions.Count | Should -Be 0
+        $state.QuotaEligible | Should -BeNullOrEmpty
+        $state.Pending.Contains($context.AccountRequest.id) | Should -BeFalse
+        $state.Status | Should -BeExactly 'Error'
+        $state.LastError | Should -BeExactly 'Unable to read the Codex account state.'
     }
 }
 
@@ -414,6 +550,10 @@ Describe 'quota state' {
         $state = New-SessionState
         $context = Complete-TestInitialization -State $state
         $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{ account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }; requiresOpenaiAuth = $true }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
             id = $context.QuotaRequest.id
             result = New-TestRateLimitResult -UsedPercent 10
         }))
@@ -441,6 +581,102 @@ Describe 'quota state' {
         $state.QuotaWindows[0].UsedPercent | Should -Be 10
     }
 
+    It 'discards a dirty quota response and emits one coalesced full refresh' {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{ account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }; requiresOpenaiAuth = $true }
+        }))
+        $successAt = [datetimeoffset]'2026-07-13T13:00:00Z'
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'plus' -UsedPercent 10
+        }) -Now $successAt)
+        $quotaRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))[0]
+
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{ rateLimits = [ordered]@{ limitId = 'codex' } }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{ rateLimits = [ordered]@{ limitId = 'codex' } }
+        }))
+        $state.QuotaRefreshQueued | Should -BeTrue
+
+        $actions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $quotaRead.id
+            result = New-TestRateLimitResult -PlanType 'stale' -UsedPercent 99
+        }) -Now $successAt.AddMinutes(1))
+
+        $actions.Count | Should -Be 1
+        $actions[0].method | Should -BeExactly 'account/rateLimits/read'
+        $actions[0].PSObject.Properties.Name | Should -Not -Contain 'params'
+        $actions[0].id | Should -Not -Be $quotaRead.id
+        $state.QuotaRefreshQueued | Should -BeFalse
+        $state.QuotaReadPending | Should -BeTrue
+        $state.Status | Should -BeExactly 'Live'
+        $state.PlanType | Should -BeExactly 'plus'
+        $state.QuotaWindows[0].UsedPercent | Should -Be 10
+        $state.LastSuccessAt | Should -Be $successAt
+    }
+
+    It 'queues one follow-up for an initial quota read while eligibility is unknown' {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+
+        $notificationActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))
+        $notificationActions.Count | Should -Be 0
+        $state.QuotaEligible | Should -BeNullOrEmpty
+        $state.QuotaRefreshQueued | Should -BeTrue
+
+        $responseActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -UsedPercent 88
+        }))
+
+        $responseActions.Count | Should -Be 1
+        $responseActions[0].method | Should -BeExactly 'account/rateLimits/read'
+        @($state.QuotaWindows).Count | Should -Be 0
+        $state.Status | Should -BeExactly 'Starting'
+        $state.QuotaReadPending | Should -BeTrue
+        $state.QuotaRefreshQueued | Should -BeFalse
+    }
+
+    It 'does not queue a noninitial quota refresh after account eligibility becomes unknown' {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{ account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }; requiresOpenaiAuth = $true }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'plus' -UsedPercent 10
+        }))
+        $quotaRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))[0]
+        $quotaRead.method | Should -BeExactly 'account/rateLimits/read'
+
+        $accountRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/updated'; params = [ordered]@{ authMode = 'chatgpt' }
+        }))
+        $accountRead.Count | Should -Be 1
+        $state.QuotaEligible | Should -BeNullOrEmpty
+
+        $actions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))
+
+        $actions.Count | Should -Be 0
+        $state.QuotaReadPending | Should -BeTrue
+        $state.QuotaRefreshQueued | Should -BeFalse
+    }
+
     It 'does not poll quota updates before initialization' {
         $startingState = New-SessionState
         $beforeInit = @(Update-SessionFromMessage -State $startingState -Message ([pscustomobject]@{
@@ -449,7 +685,7 @@ Describe 'quota state' {
         $beforeInit.Count | Should -Be 0
     }
 
-    It 'gates rate-limit invalidation only on initialization and an in-flight quota read' {
+    It 'does not restart quota polling after unsupported auth' {
         $state = New-SessionState
         $context = Complete-TestInitialization -State $state
         $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
@@ -460,9 +696,9 @@ Describe 'quota state' {
             method = 'account/rateLimits/updated'; params = [ordered]@{}
         }))
 
-        $actions.Count | Should -Be 1
-        $actions[0].method | Should -BeExactly 'account/rateLimits/read'
-        $state.QuotaReadPending | Should -BeTrue
+        $actions.Count | Should -Be 0
+        $state.QuotaEligible | Should -BeFalse
+        $state.QuotaReadPending | Should -BeFalse
     }
 
     It 'sanitizes a matched quota error and clears its pending flag' {
@@ -486,6 +722,63 @@ Describe 'quota state' {
         $state.Pending.Contains($context.QuotaRequest.id) | Should -BeFalse
         $state.LastError | Should -Not -Match 'secret|upstream'
         $state.ReconnectAttempt | Should -Be 1
+    }
+
+    It 'keeps refresh flags consistent when a dirty quota response is an error' {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{ account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }; requiresOpenaiAuth = $true }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))
+
+        $actions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            error = [ordered]@{ code = 500; message = 'secret stale error' }
+        }))
+
+        $actions.Count | Should -Be 1
+        $actions[0].method | Should -BeExactly 'account/rateLimits/read'
+        $state.QuotaRefreshQueued | Should -BeFalse
+        $state.QuotaReadPending | Should -BeTrue
+        $state.LastError | Should -Not -Match 'secret'
+    }
+
+    It 'rejects a malformed matched quota response without replacing the last good snapshot' -ForEach @(
+        @{ Shape = 'Missing' },
+        @{ Shape = 'Null' },
+        @{ Shape = 'Scalar' },
+        @{ Shape = 'NullError' },
+        @{ Shape = 'EmptyObject' }
+    ) {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{ account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }; requiresOpenaiAuth = $true }
+        }))
+        $successAt = [datetimeoffset]'2026-07-13T14:00:00Z'
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'plus' -UsedPercent 15
+        }) -Now $successAt)
+        $quotaRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))[0]
+        $before = $state.QuotaWindows | ConvertTo-Json -Depth 20 -Compress
+        $message = New-MalformedTestResponse -Id $quotaRead.id -Shape $Shape
+
+        $actions = @(Update-SessionFromMessage -State $state -Message $message -Now $successAt.AddMinutes(1))
+
+        $actions.Count | Should -Be 0
+        ($state.QuotaWindows | ConvertTo-Json -Depth 20 -Compress) | Should -BeExactly $before
+        $state.LastSuccessAt | Should -Be $successAt
+        $state.Status | Should -BeExactly 'Error'
+        $state.QuotaReadPending | Should -BeFalse
+        $state.LastError | Should -BeExactly 'Unable to read ChatGPT quota from Codex App Server.'
     }
 }
 
