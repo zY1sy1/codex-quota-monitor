@@ -33,6 +33,13 @@ Describe 'Format-ResetCountdown' {
         Format-ResetCountdown -ResetsAt $CountdownNow.ToUnixTimeSeconds() -Now $CountdownNow | Should -Be '正在刷新'
     }
 
+    It 'keeps a positive fractional second in the active countdown' {
+        $resetsAt = $CountdownNow.ToUnixTimeSeconds() + 1
+        $now = [DateTimeOffset]::FromUnixTimeSeconds($resetsAt).AddMilliseconds(-500)
+
+        Format-ResetCountdown -ResetsAt $resetsAt -Now $now | Should -Be '00:00:00'
+    }
+
     It 'formats a sub-day countdown with total hours' {
         $resetsAt = $CountdownNow.ToUnixTimeSeconds() + (5 * 3600) + (2 * 60) + 3
         Format-ResetCountdown -ResetsAt $resetsAt -Now $CountdownNow | Should -Be '05:02:03'

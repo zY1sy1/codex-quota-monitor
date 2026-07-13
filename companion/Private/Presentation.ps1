@@ -35,10 +35,12 @@ function Format-ResetCountdown {
     )
 
     $resetTime = [DateTimeOffset]::FromUnixTimeSeconds($ResetsAt)
-    [long]$totalSeconds = [Math]::Floor(($resetTime - $Now.ToUniversalTime()).TotalSeconds)
-    if ($totalSeconds -le 0) {
+    $timeRemaining = $resetTime - $Now.ToUniversalTime()
+    if ($timeRemaining.TotalSeconds -le 0) {
         return '正在刷新'
     }
+
+    [long]$totalSeconds = [Math]::Floor($timeRemaining.TotalSeconds)
 
     [long]$days = [Math]::Floor($totalSeconds / 86400.0)
     [long]$remainder = $totalSeconds % 86400
