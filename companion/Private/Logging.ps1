@@ -101,7 +101,7 @@ function Write-MonitorLog {
 
         [Parameter(Position = 3)]
         [AllowNull()]
-        [System.Collections.IDictionary]$Data = $null,
+        [object]$Data = $null,
 
         [Parameter(Position = 4)]
         [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow,
@@ -126,27 +126,53 @@ function Write-MonitorLog {
         throw [ArgumentOutOfRangeException]::new('RetainedFiles', 'RetainedFiles cannot be negative.')
     }
 
-    if ($null -eq $Data) {
-        $Data = [ordered]@{}
+    $snapshot = [Collections.Generic.List[Collections.DictionaryEntry]]::new()
+    if ($null -ne $Data) {
+        if ($Data -isnot [System.Collections.IDictionary]) {
+            throw [ArgumentException]::new('Log data must be a flat dictionary.')
+        }
+
+        $enumerator = $null
+        try {
+            $enumerator = ([System.Collections.IDictionary]$Data).GetEnumerator()
+            while ($enumerator.MoveNext()) {
+                $entry = $enumerator.Entry
+                $null = $snapshot.Add(
+                    [Collections.DictionaryEntry]::new($entry.Key, $entry.Value)
+                )
+            }
+        }
+        catch {
+            throw [ArgumentException]::new('Log data must be a flat dictionary.')
+        }
+        finally {
+            if ($enumerator -is [IDisposable]) {
+                $enumerator.Dispose()
+            }
+        }
     }
 
-    foreach ($key in @($Data.Keys)) {
-        if ($key -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$key)) {
-            throw [ArgumentException]::new('Log data field names must be nonempty strings.')
+    $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $safeData = [ordered]@{}
+    foreach ($entry in $snapshot) {
+        if ($entry.Key -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$entry.Key)) {
+            throw [ArgumentException]::new('Log data field names must be unique nonempty strings.')
         }
-        if ([string]$key -match '(?i)token|authorization|cookie|email|raw') {
+
+        $key = [string]$entry.Key
+        if (-not $seenNames.Add($key)) {
+            throw [ArgumentException]::new('Log data field names must be unique nonempty strings.')
+        }
+        if ($key -match '(?i)token|authorization|cookie|email|raw') {
             throw [ArgumentException]::new('Log data contains a prohibited field name.')
         }
-    }
 
-    $safeData = [ordered]@{}
-    foreach ($key in @($Data.Keys)) {
-        $value = $Data[$key]
+        $value = $entry.Value
         if (-not (Test-MonitorLogScalarValue -Value $value)) {
             throw [ArgumentException]::new('Log data values must be flat scalar values.')
         }
 
-        $safeData[[string]$key] = $value
+        $safeData[$key] = $value
     }
 
     $payload = [ordered]@{

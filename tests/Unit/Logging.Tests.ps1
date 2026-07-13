@@ -3,6 +3,103 @@ BeforeAll {
     if (Test-Path -LiteralPath $loggingScript -PathType Leaf) {
         . $loggingScript
     }
+
+    if (-not ('CodexQuotaMonitor.Tests.StatefulDictionary' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+
+namespace CodexQuotaMonitor.Tests
+{
+    public sealed class NonDictionaryLogData
+    {
+        public NonDictionaryLogData(string accessToken) { AccessToken = accessToken; }
+        public string AccessToken { get; }
+        public override string ToString() { return AccessToken; }
+    }
+
+    public sealed class StatefulDictionary : IDictionary
+    {
+        private readonly object[] firstKeys;
+        private readonly object[] firstValues;
+        private readonly object[] laterKeys;
+        private readonly object[] laterValues;
+
+        public StatefulDictionary(
+            object[] firstKeys,
+            object[] firstValues,
+            object[] laterKeys,
+            object[] laterValues)
+        {
+            if (firstKeys.Length != firstValues.Length || laterKeys.Length != laterValues.Length)
+                throw new ArgumentException("Key and value counts must match.");
+            this.firstKeys = firstKeys;
+            this.firstValues = firstValues;
+            this.laterKeys = laterKeys;
+            this.laterValues = laterValues;
+        }
+
+        public int EnumeratorCount { get; private set; }
+        public object this[object key]
+        {
+            get
+            {
+                for (var index = 0; index < laterKeys.Length; index++)
+                    if (Equals(laterKeys[index], key)) return laterValues[index];
+                return null;
+            }
+            set { throw new NotSupportedException(); }
+        }
+        public ICollection Keys { get { return laterKeys; } }
+        public ICollection Values { get { return laterValues; } }
+        public bool IsReadOnly { get { return true; } }
+        public bool IsFixedSize { get { return true; } }
+        public int Count { get { return firstKeys.Length; } }
+        public object SyncRoot { get { return this; } }
+        public bool IsSynchronized { get { return false; } }
+
+        public IDictionaryEnumerator GetEnumerator()
+        {
+            EnumeratorCount++;
+            return EnumeratorCount == 1
+                ? new EntryEnumerator(firstKeys, firstValues)
+                : new EntryEnumerator(laterKeys, laterValues);
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
+        public bool Contains(object key) { return Array.IndexOf(laterKeys, key) >= 0; }
+        public void CopyTo(Array array, int index)
+        {
+            var enumerator = GetEnumerator();
+            while (enumerator.MoveNext()) array.SetValue(enumerator.Entry, index++);
+        }
+        public void Add(object key, object value) { throw new NotSupportedException(); }
+        public void Clear() { throw new NotSupportedException(); }
+        public void Remove(object key) { throw new NotSupportedException(); }
+
+        private sealed class EntryEnumerator : IDictionaryEnumerator
+        {
+            private readonly object[] keys;
+            private readonly object[] values;
+            private int index = -1;
+
+            public EntryEnumerator(object[] keys, object[] values)
+            {
+                this.keys = keys;
+                this.values = values;
+            }
+
+            public DictionaryEntry Entry { get { return new DictionaryEntry(Key, Value); } }
+            public object Key { get { return keys[index]; } }
+            public object Value { get { return values[index]; } }
+            public object Current { get { return Entry; } }
+            public bool MoveNext() { return ++index < keys.Length; }
+            public void Reset() { index = -1; }
+        }
+    }
+}
+'@
+    }
 }
 
 Describe 'Write-MonitorLog' {
@@ -46,6 +143,153 @@ Describe 'Write-MonitorLog' {
         $record = Get-Content -LiteralPath (Join-Path $directory 'monitor.log') -Raw | ConvertFrom-Json
         $record.PSObject.Properties.Name | Should -Contain 'Data'
         @($record.Data.PSObject.Properties).Count | Should -Be 0
+    }
+
+    It 'rejects non-dictionary data internally without rendering sensitive input' {
+        $sentinel = 'SECRET_SENTINEL_ACCESS_TOKEN'
+        $values = @(
+            [pscustomobject]@{ accessToken = $sentinel },
+            [CodexQuotaMonitor.Tests.NonDictionaryLogData]::new($sentinel)
+        )
+
+        for ($index = 0; $index -lt $values.Count; $index++) {
+            $directory = Join-Path $TestDrive "non-dictionary-$index"
+            $caught = $null
+            try {
+                Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'rejected.data' -Data $values[$index]
+                throw 'Expected Write-MonitorLog to reject non-dictionary data.'
+            }
+            catch {
+                $caught = $_
+            }
+
+            $caught.Exception.Message | Should -BeExactly 'Log data must be a flat dictionary.'
+            ($caught | Out-String) | Should -Not -Match ([regex]::Escape($sentinel))
+            $fileText = @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue | ForEach-Object {
+                [IO.File]::ReadAllText($_.FullName)
+            }) -join "`n"
+            $fileText | Should -Not -Match ([regex]::Escape($sentinel))
+        }
+    }
+
+    It 'logs a normal dictionary entry whose key is Keys' {
+        $directory = Join-Path $TestDrive 'keys-field'
+
+        Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'keys.field' -Data ([ordered]@{
+            Keys = 'ordinary-value'
+        })
+
+        $record = Get-Content -LiteralPath (Join-Path $directory 'monitor.log') -Raw | ConvertFrom-Json
+        $record.Data.Keys | Should -BeExactly 'ordinary-value'
+    }
+
+    It 'enumerates stateful dictionaries once and copies the first immutable snapshot' {
+        $directory = Join-Path $TestDrive 'single-snapshot'
+        $sentinel = 'SECRET_SENTINEL_LATER_ENUMERATION'
+        $data = [CodexQuotaMonitor.Tests.StatefulDictionary]::new(
+            [object[]]@('Message'),
+            [object[]]@('first-snapshot'),
+            [object[]]@('accessToken'),
+            [object[]]@($sentinel)
+        )
+
+        Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'snapshot.once' -Data $data
+
+        $data.EnumeratorCount | Should -Be 1
+        $text = [IO.File]::ReadAllText((Join-Path $directory 'monitor.log'))
+        $record = $text | ConvertFrom-Json
+        $record.Data.Message | Should -BeExactly 'first-snapshot'
+        $record.Data.PSObject.Properties.Name | Should -Not -Contain 'accessToken'
+        $text | Should -Not -Match ([regex]::Escape($sentinel))
+    }
+
+    It 'validates the same stateful snapshot and does not bypass a sensitive key' {
+        $directory = Join-Path $TestDrive 'sensitive-first-snapshot'
+        $sentinel = 'SECRET_SENTINEL_FIRST_ENUMERATION'
+        $data = [CodexQuotaMonitor.Tests.StatefulDictionary]::new(
+            [object[]]@('accessToken'),
+            [object[]]@($sentinel),
+            [object[]]@('Safe'),
+            [object[]]@('allowed')
+        )
+        $caught = $null
+
+        try {
+            Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'snapshot.rejected' -Data $data
+            throw 'Expected Write-MonitorLog to reject the first snapshot.'
+        }
+        catch {
+            $caught = $_
+        }
+
+        $data.EnumeratorCount | Should -Be 1
+        $caught.Exception.Message | Should -BeExactly 'Log data contains a prohibited field name.'
+        ($caught | Out-String) | Should -Not -Match ([regex]::Escape($sentinel))
+        $fileText = @(Get-ChildItem -LiteralPath $directory -File -ErrorAction SilentlyContinue | ForEach-Object {
+            [IO.File]::ReadAllText($_.FullName)
+        }) -join "`n"
+        $fileText | Should -Not -Match ([regex]::Escape($sentinel))
+    }
+
+    It 'rejects duplicate and nonstring keys from one snapshot with a constant error' -ForEach @(
+        @{
+            Name = 'duplicate'
+            FirstKeys = [object[]]@('Safe', 'Safe')
+            FirstValues = [object[]]@('DUPLICATE_VALUE_SENTINEL_A', 'DUPLICATE_VALUE_SENTINEL_B')
+            SecretPattern = 'DUPLICATE_VALUE_SENTINEL_[AB]'
+        }
+        @{
+            Name = 'nonstring'
+            FirstKeys = [object[]]@(42)
+            FirstValues = [object[]]@('NONSTRING_VALUE_SENTINEL')
+            SecretPattern = 'NONSTRING_VALUE_SENTINEL'
+        }
+    ) {
+        $directory = Join-Path $TestDrive "invalid-key-$Name"
+        $data = [CodexQuotaMonitor.Tests.StatefulDictionary]::new(
+            $FirstKeys,
+            $FirstValues,
+            [object[]]@('Safe'),
+            [object[]]@('allowed')
+        )
+        $caught = $null
+
+        try {
+            Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'invalid.key' -Data $data
+            throw 'Expected Write-MonitorLog to reject the invalid key snapshot.'
+        }
+        catch {
+            $caught = $_
+        }
+
+        $data.EnumeratorCount | Should -Be 1
+        $caught.Exception.Message | Should -BeExactly 'Log data field names must be unique nonempty strings.'
+        ($caught | Out-String) | Should -Not -Match $SecretPattern
+    }
+
+    It 'validates values from the same snapshot instead of rereading the dictionary' {
+        $directory = Join-Path $TestDrive 'invalid-first-value'
+        $sentinel = 'SECRET_SENTINEL_NESTED_VALUE'
+        $data = [CodexQuotaMonitor.Tests.StatefulDictionary]::new(
+            [object[]]@('Context'),
+            [object[]]@([pscustomobject]@{ accessToken = $sentinel }),
+            [object[]]@('Context'),
+            [object[]]@('allowed')
+        )
+        $caught = $null
+
+        try {
+            Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'invalid.value' -Data $data
+            throw 'Expected Write-MonitorLog to reject the first value snapshot.'
+        }
+        catch {
+            $caught = $_
+        }
+
+        $data.EnumeratorCount | Should -Be 1
+        $caught.Exception.Message | Should -BeExactly 'Log data values must be flat scalar values.'
+        ($caught | Out-String) | Should -Not -Match ([regex]::Escape($sentinel))
+        Test-Path -LiteralPath (Join-Path $directory 'monitor.log') | Should -BeFalse
     }
 
     It 'rotates before writing and retains current plus monitor.1 through monitor.5 in newest order' {
