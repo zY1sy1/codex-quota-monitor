@@ -1,0 +1,19 @@
+{
+  "rateLimitsByLimitId": {
+    "future-agent-hourly": {
+      "limitId": "future-agent-hourly",
+      "limitName": null,
+      "primary": {
+        "usedPercent": null,
+        "windowDurationMins": 45,
+        "resetsAt": 1783930500,
+        "rateLimitReachedType": "future_reason",
+        "futureWindowMetadata": {
+          "version": 2
+        }
+      },
+      "secondary": null,
+      "futureBucketMetadata": true
+    }
+  }
+}

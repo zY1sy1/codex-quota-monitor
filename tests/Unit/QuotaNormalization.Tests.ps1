@@ -1,0 +1,125 @@
+BeforeAll {
+    . "$PSScriptRoot\..\..\companion\Private\ObjectAccess.ps1"
+    . "$PSScriptRoot\..\..\companion\Private\QuotaNormalization.ps1"
+}
+
+Describe 'Get-ObjectField' {
+    It 'returns null for a null input or a missing field' {
+        Get-ObjectField -InputObject $null -Name 'anything' | Should -BeNullOrEmpty
+        Get-ObjectField -InputObject ([pscustomobject]@{ Present = 1 }) -Name 'missing' | Should -BeNullOrEmpty
+    }
+
+    It 'reads IDictionary and PSObject fields, including null values' {
+        $dictionary = [ordered]@{ Present = 42; Empty = $null }
+        $object = [pscustomobject]@{ Present = 'value'; Empty = $null }
+
+        Get-ObjectField -InputObject $dictionary -Name 'Present' | Should -Be 42
+        Get-ObjectField -InputObject $dictionary -Name 'Empty' | Should -BeNullOrEmpty
+        Get-ObjectField -InputObject $object -Name 'Present' | Should -Be 'value'
+        Get-ObjectField -InputObject $object -Name 'Empty' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'ConvertTo-QuotaWindow' {
+    It 'normalizes a compatibility-only response' {
+        $fixture = Get-Content "$PSScriptRoot\..\Fixtures\RateLimits\compatibility-one.json" -Raw | ConvertFrom-Json
+        $rows = @(ConvertTo-QuotaWindow -RateLimitResult $fixture)
+
+        $rows.Count | Should -Be 1
+        $rows[0].Key | Should -Be 'codex|primary|300|1783933200'
+        $rows[0].LimitId | Should -Be 'codex'
+        $rows[0].UsedPercent | Should -Be 35.25
+        $rows[0].RemainingPercent | Should -Be 64.8
+    }
+
+    It 'emits primary and secondary windows from a named bucket' {
+        $fixture = Get-Content "$PSScriptRoot\..\Fixtures\RateLimits\primary-secondary.json" -Raw | ConvertFrom-Json
+        $rows = @(ConvertTo-QuotaWindow -RateLimitResult $fixture)
+
+        $rows.Count | Should -Be 2
+        $rows.WindowKind | Should -Be @('primary', 'secondary')
+        $rows.WindowDurationMins | Should -Be @(300, 10080)
+    }
+
+    It 'prefers multi-bucket data and deduplicates compatibility data' {
+        $fixture = Get-Content "$PSScriptRoot\..\Fixtures\RateLimits\multi-bucket.json" -Raw | ConvertFrom-Json
+        $fixture.rateLimits.primary.usedPercent = 88.8
+        $rows = @(ConvertTo-QuotaWindow -RateLimitResult $fixture)
+
+        $rows.Count | Should -Be 3
+        @($rows.Key | Select-Object -Unique).Count | Should -Be 3
+        ($rows | Where-Object Key -EQ 'codex|primary|300|1783933200').UsedPercent | Should -Be 12.3
+    }
+
+    It 'preserves unknown bucket ids and durations without inventing percentages' {
+        $fixture = Get-Content "$PSScriptRoot\..\Fixtures\RateLimits\unknown-window.json" -Raw | ConvertFrom-Json
+        $fixture.rateLimitsByLimitId.'future-agent-hourly'.primary.PSObject.Properties.Remove('usedPercent')
+        $row = @(ConvertTo-QuotaWindow -RateLimitResult $fixture)[0]
+
+        $row.LimitId | Should -Be 'future-agent-hourly'
+        $row.WindowDurationMins | Should -Be 45
+        ($null -eq $row.UsedPercent) | Should -BeTrue
+        ($null -eq $row.RemainingPercent) | Should -BeTrue
+        $row.RateLimitReached | Should -Be 'future_reason'
+    }
+
+    It 'uses the exact locked property order and scalar types' {
+        $fixture = Get-Content "$PSScriptRoot\..\Fixtures\RateLimits\compatibility-one.json" -Raw | ConvertFrom-Json
+        $row = @(ConvertTo-QuotaWindow -RateLimitResult $fixture)[0]
+
+        ($row.PSObject.Properties.Name -join ',') | Should -Be 'Key,LimitId,LimitName,WindowKind,UsedPercent,RemainingPercent,WindowDurationMins,ResetsAt,RateLimitReached'
+        $row.Key | Should -BeOfType ([string])
+        $row.LimitId | Should -BeOfType ([string])
+        $row.LimitName | Should -BeOfType ([string])
+        $row.WindowKind | Should -BeOfType ([string])
+        $row.UsedPercent | Should -BeOfType ([double])
+        $row.RemainingPercent | Should -BeOfType ([double])
+        $row.WindowDurationMins | Should -BeOfType ([int])
+        $row.ResetsAt | Should -BeOfType ([long])
+        $row.RateLimitReached | Should -BeOfType ([string])
+    }
+
+    It 'sorts by duration then limit id and removes duplicate keys deterministically' {
+        $result = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{
+                zAlias = [ordered]@{
+                    limitId = 'zeta'
+                    limitName = 'Zeta'
+                    primary = [ordered]@{ usedPercent = 20; windowDurationMins = 60; resetsAt = 200; rateLimitReachedType = 'none' }
+                }
+                alpha = [ordered]@{
+                    limitId = 'alpha'
+                    limitName = 'Alpha'
+                    primary = [ordered]@{ usedPercent = 30; windowDurationMins = 60; resetsAt = 100; rateLimitReachedType = 'none' }
+                }
+                duplicateZeta = [ordered]@{
+                    limitId = 'zeta'
+                    limitName = 'Zeta'
+                    primary = [ordered]@{ usedPercent = 20; windowDurationMins = 60; resetsAt = 200; rateLimitReachedType = 'none' }
+                }
+                short = [ordered]@{
+                    limitId = 'short'
+                    limitName = 'Short'
+                    primary = [ordered]@{ usedPercent = 40; windowDurationMins = 30; resetsAt = 50; rateLimitReachedType = 'none' }
+                }
+            }
+        }
+
+        $rows = @(ConvertTo-QuotaWindow -RateLimitResult $result)
+
+        $rows.Count | Should -Be 3
+        $rows.LimitId | Should -Be @('short', 'alpha', 'zeta')
+        @($rows.Key | Select-Object -Unique).Count | Should -Be 3
+    }
+}
+
+Describe 'Get-RemainingPercent' {
+    It 'clamps remaining percent' -ForEach @(
+        @{ Used = $null; Remaining = $null },
+        @{ Used = -5; Remaining = 100 },
+        @{ Used = 25.5; Remaining = 74.5 },
+        @{ Used = 140; Remaining = 0 }
+    ) {
+        Get-RemainingPercent -UsedPercent $Used | Should -Be $Remaining
+    }
+}

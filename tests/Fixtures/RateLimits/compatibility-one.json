@@ -1,0 +1,15 @@
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "Codex",
+    "primary": {
+      "usedPercent": 35.25,
+      "windowDurationMins": 300,
+      "resetsAt": 1783933200,
+      "rateLimitReachedType": "not_reached",
+      "ignoredBalance": 6475
+    },
+    "secondary": null,
+    "ignoredBucketField": "compatibility"
+  }
+}
