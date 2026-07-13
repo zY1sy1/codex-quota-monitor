@@ -498,21 +498,53 @@ $null = $mutex.WaitOne()
         }
     }
 
-    It 'does not report failure after a committed replacement when backup cleanup fails' {
-        $path = Join-Path $TestDrive 'cleanup-failure\settings.json'
-        $first = New-DefaultSettings
-        $first.Window['Left'] = [long]1
-        Write-MonitorSettings -Path $path -Settings $first
-        $second = New-DefaultSettings
-        $second.Window['Left'] = [long]2
-        Mock Remove-MonitorSettingsBackupFile { throw [IO.IOException]::new('Synthetic cleanup failure.') }
+    It 'never creates a replacement backup containing fields removed by canonicalization' {
+        $path = Join-Path $TestDrive 'credential-backup\settings.json'
+        $directory = Split-Path -Parent $path
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        $sentinel = 'OLD_CREDENTIAL_SENTINEL_MUST_NOT_SURVIVE'
+        $oldDocument = '{"SchemaVersion":1,"accessToken":"' + $sentinel + '","Window":{"Left":1,"Top":2,"Topmost":true,"Visible":true},"Startup":true}'
+        [IO.File]::WriteAllText($path, $oldDocument, [Text.UTF8Encoding]::new($false))
+        $replacement = New-DefaultSettings
+        $replacement.Window['Left'] = [long]2
+        Mock Remove-MonitorSettingsArtifactFile { throw [IO.IOException]::new('Synthetic cleanup failure.') }
 
-        { Write-MonitorSettings -Path $path -Settings $second } | Should -Not -Throw
+        { Write-MonitorSettings -Path $path -Settings $replacement } | Should -Not -Throw
 
         (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Left | Should -Be 2
-        Should -Invoke Remove-MonitorSettingsBackupFile -Times 1 -Exactly
-        Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.backup.tmp' |
-            ForEach-Object { [IO.File]::Delete($_.FullName) }
+        Should -Invoke Remove-MonitorSettingsArtifactFile -Times 0 -Exactly
+        $files = @(Get-ChildItem -LiteralPath $directory -File)
+        $files.Name | Should -Be @('settings.json')
+        $persisted = @($files | ForEach-Object { [IO.File]::ReadAllText($_.FullName) }) -join "`n"
+        $persisted | Should -Not -Match ([regex]::Escape($sentinel))
+    }
+
+    It 'keeps existing bytes and removes staged artifacts when overwrite is blocked by a real file lock' {
+        $path = Join-Path $TestDrive 'locked-overwrite\settings.json'
+        $first = New-DefaultSettings
+        $first.Window['Left'] = [long]11
+        Write-MonitorSettings -Path $path -Settings $first
+        $before = [IO.File]::ReadAllBytes($path)
+        $second = New-DefaultSettings
+        $second.Window['Left'] = [long]22
+        $lock = [IO.FileStream]::new(
+            $path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::None
+        )
+        try {
+            { Write-MonitorSettings -Path $path -Settings $second } | Should -Throw
+        }
+        finally {
+            $lock.Dispose()
+        }
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) |
+            Should -BeExactly ([Convert]::ToBase64String($before))
+        $files = @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File)
+        $files.Name | Should -Be @('settings.json')
+        @($files.Name | Where-Object { $_ -match '\.(tmp|backup)' }).Count | Should -Be 0
     }
 
     It 'preserves the existing target ACL across replacement on Windows when supported' {

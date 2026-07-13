@@ -337,7 +337,7 @@ function Move-CorruptMonitorSettings {
     return $destination
 }
 
-function Remove-MonitorSettingsBackupFile {
+function Remove-MonitorSettingsArtifactFile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
@@ -372,7 +372,6 @@ function Write-CanonicalMonitorSettingsFile {
     $fileName = [IO.Path]::GetFileName($Path)
     $temporaryId = [Guid]::NewGuid().ToString('N')
     $temporaryPath = Join-Path $directory ".$fileName.$temporaryId.tmp"
-    $backupPath = Join-Path $directory ".$fileName.$temporaryId.backup.tmp"
     try {
         $json = ConvertTo-MonitorSettingsJson -Settings $Settings
         $encoding = [Text.UTF8Encoding]::new($false)
@@ -395,7 +394,9 @@ function Write-CanonicalMonitorSettingsFile {
         }
 
         if ([IO.File]::Exists($Path)) {
-            [IO.File]::Replace($temporaryPath, $Path, $backupPath, $true)
+            $securityDescriptor = Get-Acl -LiteralPath $Path -ErrorAction Stop
+            Set-Acl -LiteralPath $temporaryPath -AclObject $securityDescriptor -ErrorAction Stop
+            [IO.File]::Move($temporaryPath, $Path, $true)
         }
         else {
             [IO.File]::Move($temporaryPath, $Path)
@@ -403,15 +404,7 @@ function Write-CanonicalMonitorSettingsFile {
     }
     finally {
         if ([IO.File]::Exists($temporaryPath)) {
-            [IO.File]::Delete($temporaryPath)
-        }
-        if ([IO.File]::Exists($backupPath)) {
-            try {
-                Remove-MonitorSettingsBackupFile -Path $backupPath
-            }
-            catch {
-                # The replacement is already committed; stale backup cleanup is best effort.
-            }
+            Remove-MonitorSettingsArtifactFile -Path $temporaryPath
         }
     }
 }
