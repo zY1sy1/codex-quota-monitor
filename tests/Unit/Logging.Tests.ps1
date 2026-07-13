@@ -604,6 +604,104 @@ $null = $mutex.WaitOne()
         @(Get-ChildItem -LiteralPath $directory -File | Where-Object Name -Match '\.(tmp|backup)\.').Count | Should -Be 0
     }
 
+    It 'rolls back every committed archive when a later archive destination fails' {
+        $directory = Join-Path $TestDrive 'generation-archive-failure'
+        foreach ($sequence in 1..6) {
+            Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'generation.seed' -Data ([ordered]@{
+                Sequence = [long]$sequence
+                Padding = 'x' * 256
+            }) -Now ([DateTimeOffset]'2026-07-14T00:00:00Z').AddSeconds($sequence) -MaximumBytes 128 -RetainedFiles 5
+        }
+
+        $blockedDestination = Join-Path $directory 'monitor.3.log'
+        [IO.File]::Delete($blockedDestination)
+        [IO.File]::Delete((Join-Path $directory 'monitor.5.log'))
+        $null = [IO.Directory]::CreateDirectory($blockedDestination)
+        $before = [ordered]@{}
+        Get-ChildItem -LiteralPath $directory -File -Filter 'monitor*.log' |
+            Sort-Object Name |
+            ForEach-Object {
+                $before[$_.Name] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))
+            }
+        $caught = $null
+
+        try {
+            Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'generation.trigger' -Data ([ordered]@{
+                Sequence = [long]7
+                Padding = 'x' * 256
+            }) -Now ([DateTimeOffset]'2026-07-14T00:00:07Z') -MaximumBytes 128 -RetainedFiles 5
+            throw 'Expected the blocked archive destination to fail.'
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught.Exception.Message | Should -BeExactly 'Failed to persist monitor log entry.'
+        foreach ($fileName in $before.Keys) {
+            $path = Join-Path $directory $fileName
+            Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly $before[$fileName]
+        }
+        $files = @(Get-ChildItem -LiteralPath $directory -File -Force)
+        @($files.Name | Sort-Object) | Should -Be @($before.Keys | Sort-Object)
+        @($files.Name | Where-Object { $_ -match '\.(tmp|backup)' }).Count | Should -Be 0
+        Test-Path -LiteralPath $blockedDestination -PathType Container | Should -BeTrue
+    }
+
+    It 'rolls back every archive when the final current-file commit fails' {
+        $directory = Join-Path $TestDrive 'generation-current-failure'
+        foreach ($sequence in 1..6) {
+            Write-MonitorLog -LogDirectory $directory -Level 'Info' -Event 'generation.seed' -Data ([ordered]@{
+                Sequence = [long]$sequence
+                Padding = 'x' * 256
+            }) -Now ([DateTimeOffset]'2026-07-14T00:00:00Z').AddSeconds($sequence) -MaximumBytes 128 -RetainedFiles 5
+        }
+
+        $before = [ordered]@{}
+        Get-ChildItem -LiteralPath $directory -File -Filter 'monitor*.log' |
+            Sort-Object Name |
+            ForEach-Object {
+                $before[$_.Name] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))
+            }
+        Mock Complete-MonitorLogAtomicFile {
+            param($TemporaryPath, $DestinationPath, $BackupPath)
+            if ([IO.Path]::GetFileName($DestinationPath) -eq 'monitor.log') {
+                throw [IO.IOException]::new('Synthetic final current commit failure.')
+            }
+            if ([IO.File]::Exists($DestinationPath)) {
+                [IO.File]::Replace($TemporaryPath, $DestinationPath, $BackupPath, $true)
+            }
+            else {
+                [IO.File]::Move($TemporaryPath, $DestinationPath)
+            }
+        }
+        $caught = $null
+
+        try {
+            Write-MonitorLog -LogDirectory $directory -Level 'Error' -Event 'generation.trigger' -Data ([ordered]@{
+                Sequence = [long]7
+                Padding = 'x' * 256
+            }) -Now ([DateTimeOffset]'2026-07-14T00:00:07Z') -MaximumBytes 128 -RetainedFiles 5
+            throw 'Expected the final current-file commit to fail.'
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught.Exception.Message | Should -BeExactly 'Failed to persist monitor log entry.'
+        Should -Invoke Complete-MonitorLogAtomicFile -Times 1 -Exactly -ParameterFilter {
+            [IO.Path]::GetFileName($DestinationPath) -eq 'monitor.log'
+        }
+        foreach ($fileName in $before.Keys) {
+            $path = Join-Path $directory $fileName
+            Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Should -BeExactly $before[$fileName]
+        }
+        $files = @(Get-ChildItem -LiteralPath $directory -File -Force)
+        @($files.Name | Sort-Object) | Should -Be @($before.Keys | Sort-Object)
+        @($files.Name | Where-Object { $_ -match '\.(tmp|backup)' }).Count | Should -Be 0
+    }
+
     It 'rejects sensitive field names without writing the rejected key or value anywhere' -ForEach @(
         @{ Key = 'accessToken'; Value = 'secret-token-value' }
         @{ Key = 'AUTHORIZATION'; Value = 'Bearer hidden-value' }

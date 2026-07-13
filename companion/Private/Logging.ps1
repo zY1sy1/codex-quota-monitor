@@ -210,14 +210,17 @@ function Complete-MonitorLogAtomicFile {
     }
 }
 
-function Copy-MonitorLogFileAtomic {
-    [CmdletBinding()]
+function New-MonitorLogAtomicChange {
+    [CmdletBinding(DefaultParameterSetName = 'Source')]
     param(
         [Parameter(Mandatory, Position = 0)]
+        [string]$DestinationPath,
+
+        [Parameter(Mandatory, Position = 1, ParameterSetName = 'Source')]
         [string]$SourcePath,
 
-        [Parameter(Mandatory, Position = 1)]
-        [string]$DestinationPath
+        [Parameter(Mandatory, Position = 1, ParameterSetName = 'Bytes')]
+        [byte[]]$Bytes
     )
 
     $directory = [IO.Path]::GetDirectoryName($DestinationPath)
@@ -226,65 +229,126 @@ function Copy-MonitorLogFileAtomic {
     $temporaryPath = Join-Path $directory ".$fileName.$temporaryId.tmp"
     $backupPath = Join-Path $directory ".$fileName.$temporaryId.backup.tmp"
     try {
-        Copy-MonitorLogTemporaryFile -SourcePath $SourcePath -TemporaryPath $temporaryPath
-        Complete-MonitorLogAtomicFile -TemporaryPath $temporaryPath -DestinationPath $DestinationPath -BackupPath $backupPath
+        if ($PSCmdlet.ParameterSetName -eq 'Source') {
+            Copy-MonitorLogTemporaryFile -SourcePath $SourcePath -TemporaryPath $temporaryPath
+        }
+        else {
+            Write-MonitorLogTemporaryBytes -Path $temporaryPath -Bytes $Bytes
+        }
+
+        return [pscustomobject][ordered]@{
+            TemporaryPath = $temporaryPath
+            DestinationPath = $DestinationPath
+            BackupPath = $backupPath
+            ExistedBefore = [IO.File]::Exists($DestinationPath)
+            Committed = $false
+        }
     }
-    finally {
+    catch {
         if ([IO.File]::Exists($temporaryPath)) {
             try {
                 Remove-MonitorLogTemporaryFile -Path $temporaryPath
             }
             catch {
-                # Temporary cleanup is best effort; the source was never removed.
+                # Staging cleanup is best effort; no destination has been changed.
             }
         }
-        if ([IO.File]::Exists($backupPath)) {
-            try {
-                Remove-MonitorLogBackupFile -Path $backupPath
-            }
-            catch {
-                # A committed target remains authoritative if backup cleanup fails.
-            }
+        throw
+    }
+}
+
+function Remove-MonitorLogAtomicChangeArtifacts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [object]$Change,
+
+        [Parameter(Position = 1)]
+        [switch]$IncludeBackup
+    )
+
+    if ([IO.File]::Exists($Change.TemporaryPath)) {
+        try {
+            Remove-MonitorLogTemporaryFile -Path $Change.TemporaryPath
+        }
+        catch {
+            # Staging cleanup after a resolved transaction is best effort.
+        }
+    }
+    if ($IncludeBackup -and [IO.File]::Exists($Change.BackupPath)) {
+        try {
+            Remove-MonitorLogBackupFile -Path $Change.BackupPath
+        }
+        catch {
+            # A committed generation or completed rollback remains authoritative.
         }
     }
 }
 
-function Write-MonitorLogFileAtomic {
+function Undo-MonitorLogAtomicChange {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
-        [string]$Path,
-
-        [Parameter(Mandatory, Position = 1)]
-        [byte[]]$Bytes
+        [object]$Change
     )
 
-    $directory = [IO.Path]::GetDirectoryName($Path)
-    $fileName = [IO.Path]::GetFileName($Path)
-    $temporaryId = [Guid]::NewGuid().ToString('N')
-    $temporaryPath = Join-Path $directory ".$fileName.$temporaryId.tmp"
-    $backupPath = Join-Path $directory ".$fileName.$temporaryId.backup.tmp"
-    try {
-        Write-MonitorLogTemporaryBytes -Path $temporaryPath -Bytes $Bytes
-        Complete-MonitorLogAtomicFile -TemporaryPath $temporaryPath -DestinationPath $Path -BackupPath $backupPath
+    if (-not $Change.Committed) {
+        return
     }
-    finally {
-        if ([IO.File]::Exists($temporaryPath)) {
+
+    if ($Change.ExistedBefore) {
+        if (-not [IO.File]::Exists($Change.BackupPath)) {
+            throw [IO.IOException]::new('Monitor log rollback state is unavailable.')
+        }
+        [IO.File]::Move($Change.BackupPath, $Change.DestinationPath, $true)
+    }
+    elseif ([IO.File]::Exists($Change.DestinationPath)) {
+        [IO.File]::Delete($Change.DestinationPath)
+    }
+
+    $Change.Committed = $false
+}
+
+function Invoke-MonitorLogGenerationTransaction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [object[]]$Changes
+    )
+
+    try {
+        foreach ($change in $Changes) {
+            Complete-MonitorLogAtomicFile `
+                -TemporaryPath $change.TemporaryPath `
+                -DestinationPath $change.DestinationPath `
+                -BackupPath $change.BackupPath
+            $change.Committed = $true
+        }
+    }
+    catch {
+        $failure = $_
+        for ($index = $Changes.Count - 1; $index -ge 0; $index--) {
             try {
-                Remove-MonitorLogTemporaryFile -Path $temporaryPath
+                Undo-MonitorLogAtomicChange -Change $Changes[$index]
             }
             catch {
-                # Temporary cleanup is best effort; the previous target remains authoritative.
+                # Keep that change's backup for recovery and continue restoring older changes.
             }
         }
-        if ([IO.File]::Exists($backupPath)) {
-            try {
-                Remove-MonitorLogBackupFile -Path $backupPath
+
+        foreach ($change in $Changes) {
+            if ($change.Committed) {
+                Remove-MonitorLogAtomicChangeArtifacts -Change $change
             }
-            catch {
-                # A committed target remains authoritative if backup cleanup fails.
+            else {
+                Remove-MonitorLogAtomicChangeArtifacts -Change $change -IncludeBackup
             }
         }
+        throw $failure
+    }
+
+    foreach ($change in $Changes) {
+        Remove-MonitorLogAtomicChangeArtifacts -Change $change -IncludeBackup
     }
 }
 
@@ -295,27 +359,43 @@ function Invoke-MonitorLogRotation {
         [string]$LogDirectory,
 
         [Parameter(Mandatory, Position = 1)]
-        [int]$RetainedFiles
+        [int]$RetainedFiles,
+
+        [Parameter(Mandatory, Position = 2)]
+        [byte[]]$LineBytes
     )
 
-    if ($RetainedFiles -eq 0) {
-        return
-    }
+    $changes = [Collections.Generic.List[object]]::new()
+    try {
+        for ($index = $RetainedFiles - 1; $index -ge 1; $index--) {
+            $source = Join-Path $LogDirectory "monitor.$index.log"
+            if (-not [IO.File]::Exists($source)) {
+                continue
+            }
 
-    for ($index = $RetainedFiles - 1; $index -ge 1; $index--) {
-        $source = Join-Path $LogDirectory "monitor.$index.log"
-        if (-not [IO.File]::Exists($source)) {
-            continue
+            $destination = Join-Path $LogDirectory "monitor.$($index + 1).log"
+            $null = $changes.Add((New-MonitorLogAtomicChange -SourcePath $source -DestinationPath $destination))
         }
 
-        $destination = Join-Path $LogDirectory "monitor.$($index + 1).log"
-        Copy-MonitorLogFileAtomic -SourcePath $source -DestinationPath $destination
-    }
+        $currentPath = Join-Path $LogDirectory 'monitor.log'
+        if ($RetainedFiles -gt 0 -and [IO.File]::Exists($currentPath)) {
+            $firstRotatedPath = Join-Path $LogDirectory 'monitor.1.log'
+            $null = $changes.Add((New-MonitorLogAtomicChange -SourcePath $currentPath -DestinationPath $firstRotatedPath))
+        }
 
-    $currentPath = Join-Path $LogDirectory 'monitor.log'
-    if ([IO.File]::Exists($currentPath)) {
-        $firstRotatedPath = Join-Path $LogDirectory 'monitor.1.log'
-        Copy-MonitorLogFileAtomic -SourcePath $currentPath -DestinationPath $firstRotatedPath
+        $null = $changes.Add((New-MonitorLogAtomicChange -DestinationPath $currentPath -Bytes $LineBytes))
+        Invoke-MonitorLogGenerationTransaction -Changes $changes.ToArray()
+    }
+    catch {
+        foreach ($change in $changes) {
+            if ($change.Committed) {
+                Remove-MonitorLogAtomicChangeArtifacts -Change $change
+            }
+            else {
+                Remove-MonitorLogAtomicChangeArtifacts -Change $change -IncludeBackup
+            }
+        }
+        throw
     }
 }
 
@@ -433,8 +513,7 @@ function Write-MonitorLog {
             }
 
             if ($rotate) {
-                Invoke-MonitorLogRotation -LogDirectory $fullDirectory -RetainedFiles $RetainedFiles
-                Write-MonitorLogFileAtomic -Path $currentPath -Bytes $lineBytes
+                Invoke-MonitorLogRotation -LogDirectory $fullDirectory -RetainedFiles $RetainedFiles -LineBytes $lineBytes
                 return
             }
 
