@@ -1,6 +1,6 @@
 $typeLoadMutex = [System.Threading.Mutex]::new(
     $false,
-    'Local\CodexQuotaMonitor.AppServerProcess.TypeLoad.v1'
+    'Local\CodexQuotaMonitor.AppServerProcess.TypeLoad.v2'
 )
 $typeLoadMutexAcquired = $false
 
@@ -16,7 +16,7 @@ try {
         throw [System.TimeoutException]::new('Timed out while initializing the App Server transport types.')
     }
 
-    if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+    if ($null -eq ('CodexQuotaMonitor.ProcessTransport.V2.CaptureState' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Concurrent;
@@ -25,7 +25,7 @@ using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-namespace CodexQuotaMonitor.ProcessTransport
+namespace CodexQuotaMonitor.ProcessTransport.V2
 {
     public sealed class AppServerRecord
     {
@@ -47,7 +47,7 @@ namespace CodexQuotaMonitor.ProcessTransport
         private const string Truncated = " [truncated]";
 
         private static readonly Regex SensitiveKeyPattern = new Regex(
-            @"\b(?:authorization|access(?:_|-)?token|refresh(?:_|-)?token|api(?:_|-)?key|cookie|(?:user(?:_|-)?)?e(?:_|-)?mail|client(?:_|-)?secret|password|passwd|credentials?|private(?:_|-)?key|session|secret)\b",
+            @"\b(?:authorization|access(?:_|-)?token|refresh(?:_|-)?token|api(?:_|-)?key|cookie|(?:user(?:_|-)?)?e(?:_|-)?mail|client(?:_|-)?secret|password|passwd|credentials?|private(?:_|-)?key|id(?:_|-)?token|token(?:_|-)?id|session(?:_|-)?id|auth(?:_|-)?id|session|secret)\b",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly Regex BearerPattern = new Regex(
@@ -350,10 +350,7 @@ function Find-CodexExecutable {
 
         foreach ($command in $commands) {
             $commandType = Get-ObjectField -InputObject $command -Name 'CommandType'
-            if ($commandType -notin @(
-                    [Management.Automation.CommandTypes]::Application,
-                    [Management.Automation.CommandTypes]::ExternalScript
-                )) {
+            if ($commandType -ne [Management.Automation.CommandTypes]::Application) {
                 continue
             }
 
@@ -370,7 +367,8 @@ function Find-CodexExecutable {
                     continue
                 }
 
-                if (Test-Path -LiteralPath $path -PathType Leaf) {
+                if ([IO.Path]::GetExtension($path) -in @('.exe', '.com') -and
+                    (Test-Path -LiteralPath $path -PathType Leaf)) {
                     return [pscustomobject][ordered]@{
                         Status = 'Found'
                         Found = $true
@@ -464,7 +462,7 @@ function Start-AppServerProcess {
         $startInfo.ArgumentList.Add([string]$argument)
     }
 
-    $captureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(
+    $captureState = [CodexQuotaMonitor.ProcessTransport.V2.CaptureState]::new(
         $StdoutRecordLimit,
         $StderrRecordLimit,
         $DiagnosticLineLimit

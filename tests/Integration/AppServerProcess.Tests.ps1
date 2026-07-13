@@ -8,6 +8,7 @@ BeforeAll {
 
     $script:PwshPath = 'C:\Users\335\AppData\Local\Microsoft\WindowsApps\pwsh.exe'
     $script:FakeAppServerPath = (Resolve-Path -LiteralPath "$PSScriptRoot\..\Fixtures\FakeAppServer.ps1").Path
+    $script:LaunchableTestExecutable = $env:ComSpec
 
     function Wait-TestCondition {
         param(
@@ -86,6 +87,39 @@ BeforeAll {
 
         $script:OwnedTestTransports.Add($Transport)
         return $Transport
+    }
+
+    function Copy-TestExecutable {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Destination
+        )
+
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force
+        Copy-Item -LiteralPath $script:LaunchableTestExecutable -Destination $Destination -Force
+        return $Destination
+    }
+
+    function Assert-TestDiscoveredExecutableLaunches {
+        param(
+            [Parameter(Mandatory)]
+            [object]$Result
+        )
+
+        $transport = $null
+        try {
+            $transport = Start-AppServerProcess -ExecutablePath $Result.ExecutablePath -ArgumentList @(
+                '/d', '/c', 'exit'
+            )
+            Stop-AppServerProcess -Transport $transport -TimeoutMilliseconds 2000
+            $transport.Disposed | Should -BeTrue
+            $transport.ExitCode | Should -Be 0
+        }
+        finally {
+            if ($null -ne $transport -and -not $transport.Disposed) {
+                Stop-AppServerProcess -Transport $transport -TimeoutMilliseconds 2000
+            }
+        }
     }
 
     function Start-TestFakeAppServer {
@@ -439,7 +473,7 @@ catch {
 
     It 'makes a losing concurrent Stop wait until the owner completes' {
         $calls = [Collections.Concurrent.ConcurrentQueue[string]]::new()
-        $captureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(1, 1, 32)
+        $captureState = [CodexQuotaMonitor.ProcessTransport.V2.CaptureState]::new(1, 1, 32)
         $signalStreamEof = $captureState.GetType().GetMethod(
             'SignalStreamEof',
             [Reflection.BindingFlags]'Instance,NonPublic'
@@ -617,19 +651,19 @@ Stop-AppServerProcess -Transport $Transport -TimeoutMilliseconds 2000
     }
 
     It 'wholesale-redacts sensitive-key and Unicode-email diagnostics without splitting surrogate pairs' {
-        $transport = Start-TestFakeAppServer -StderrRecordLimit 11 -DiagnosticLineLimit 32
+        $transport = Start-TestFakeAppServer -StderrRecordLimit 19 -DiagnosticLineLimit 32
         Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 1650 -Method 'test/safetyDiagnostics' -Params $null)
 
         Wait-TestCondition -Description 'safety diagnostics and completion response' -Condition {
             $snapshot = @($transport.Queue.ToArray())
-            @($snapshot | Where-Object Stream -EQ 'stderr').Count -eq 11 -and
+            @($snapshot | Where-Object Stream -EQ 'stderr').Count -eq 19 -and
                 @($snapshot | Where-Object { Test-RecordHasId -Record $_ -Id 1650 }).Count -eq 1
         }
 
         $stderr = @(Receive-AppServerRecord -Transport $transport | Where-Object Stream -EQ 'stderr')
-        $stderr.Count | Should -Be 11
-        @($stderr | Where-Object Line -EQ '[REDACTED]').Count | Should -Be 10
-        ($stderr.Line -join [Environment]::NewLine) | Should -Not -Match '(?i)FAKE_|用户@|例子|client[_-]?secret|password|passwd|credential|private[_-]?key|session|user[_-]?email'
+        $stderr.Count | Should -Be 19
+        @($stderr | Where-Object Line -EQ '[REDACTED]').Count | Should -Be 18
+        ($stderr.Line -join [Environment]::NewLine) | Should -Not -Match '(?i)FAKE_|用户@|例子|client[_-]?secret|password|passwd|credential|private[_-]?key|id[_-]?token|token[_-]?id|session(?:[_-]?id)?|auth[_-]?id|user[_-]?email'
 
         $capped = @($stderr | Where-Object { $_.Line.StartsWith('A') })[0].Line
         $capped.Length | Should -BeLessOrEqual 32
@@ -647,8 +681,8 @@ Stop-AppServerProcess -Transport $Transport -TimeoutMilliseconds 2000
     }
 
     It 'does not enqueue a callback that reaches the capture lock after StopAccepting returns' {
-        $captureState = [CodexQuotaMonitor.ProcessTransport.CaptureState]::new(10, 10, 128)
-        $lateRecord = [CodexQuotaMonitor.ProcessTransport.AppServerRecord]::new(
+        $captureState = [CodexQuotaMonitor.ProcessTransport.V2.CaptureState]::new(10, 10, 128)
+        $lateRecord = [CodexQuotaMonitor.ProcessTransport.V2.AppServerRecord]::new(
             'stdout',
             '{"id":999}',
             [DateTimeOffset]::UtcNow
@@ -669,7 +703,7 @@ Stop-AppServerProcess -Transport $Transport -TimeoutMilliseconds 2000
         $probeScript = @'
 param([Parameter(Mandatory)][string]$TargetPath)
 $ErrorActionPreference = 'Stop'
-if ($null -ne ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+if ($null -ne ('CodexQuotaMonitor.ProcessTransport.V2.CaptureState' -as [type])) {
     [Console]::Error.WriteLine('capture type was already loaded before the probe')
     exit 19
 }
@@ -698,7 +732,7 @@ if (-not $errors.IsEmpty) {
     [Console]::Error.WriteLine(($errors.ToArray() -join [Environment]::NewLine))
     exit 17
 }
-if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
+if ($null -eq ('CodexQuotaMonitor.ProcessTransport.V2.CaptureState' -as [type])) {
     [Console]::Error.WriteLine('capture type was not loaded')
     exit 18
 }
@@ -737,6 +771,104 @@ if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
         }
     }
 
+    It 'uses versioned current helpers when a legacy CaptureState is already loaded' {
+        $probePath = Join-Path $TestDrive 'legacy-type-reload-probe.ps1'
+        $probeScript = @'
+param(
+    [Parameter(Mandatory)][string]$ObjectAccessPath,
+    [Parameter(Mandatory)][string]$JsonRpcPath,
+    [Parameter(Mandatory)][string]$AppServerProcessPath,
+    [Parameter(Mandatory)][string]$PwshPath,
+    [Parameter(Mandatory)][string]$FakeAppServerPath
+)
+$ErrorActionPreference = 'Stop'
+try {
+    Add-Type -TypeDefinition @"
+using System.Collections.Concurrent;
+using System.Diagnostics;
+
+namespace CodexQuotaMonitor.ProcessTransport
+{
+    public sealed class CaptureState
+    {
+        public CaptureState(int stdoutLimit, int stderrLimit, int diagnosticLineLimit)
+        {
+            Queue = new ConcurrentQueue<object>();
+        }
+
+        public ConcurrentQueue<object> Queue { get; private set; }
+
+        public DataReceivedEventHandler CreateHandler(string stream)
+        {
+            return delegate(object sender, DataReceivedEventArgs eventArgs) { };
+        }
+
+        public object[] Drain(int maximum) { return new object[0]; }
+        public void StopAccepting() { }
+        public bool TryBeginStop() { return true; }
+    }
+}
+"@
+
+    . $ObjectAccessPath
+    . $JsonRpcPath
+    . $AppServerProcessPath
+
+    $transport = Start-AppServerProcess -ExecutablePath $PwshPath -ArgumentList @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $FakeAppServerPath, '-Scenario', 'Happy'
+    )
+    Stop-AppServerProcess -Transport $transport -TimeoutMilliseconds 2000
+
+    if (-not $transport.Disposed) {
+        throw 'The reloaded transport did not dispose normally.'
+    }
+    if ($transport.CaptureState.GetType().FullName -ne 'CodexQuotaMonitor.ProcessTransport.V2.CaptureState') {
+        throw "The legacy helper remained active: $($transport.CaptureState.GetType().FullName)"
+    }
+}
+catch {
+    [Console]::Error.WriteLine($_.Exception.ToString())
+    exit 17
+}
+'@
+        Set-Content -LiteralPath $probePath -Value $probeScript -Encoding utf8NoBOM
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $script:PwshPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        foreach ($argument in @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probePath,
+                '-ObjectAccessPath', $script:ObjectAccessPath,
+                '-JsonRpcPath', $script:JsonRpcPath,
+                '-AppServerProcessPath', $script:AppServerProcessPath,
+                '-PwshPath', $script:PwshPath,
+                '-FakeAppServerPath', $script:FakeAppServerPath
+            )) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $probe = [Diagnostics.Process]::new()
+        $probe.StartInfo = $startInfo
+        try {
+            $null = $probe.Start()
+            $stdoutTask = $probe.StandardOutput.ReadToEndAsync()
+            $stderrTask = $probe.StandardError.ReadToEndAsync()
+            if (-not $probe.WaitForExit(30000)) {
+                $probe.Kill($true)
+                throw 'Legacy type reload probe timed out.'
+            }
+
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $probe.ExitCode | Should -Be 0 -Because "legacy reload stderr: $stderr stdout: $stdout"
+        }
+        finally {
+            $probe.Dispose()
+        }
+    }
+
     It 'bounds stdout independently and Receive-AppServerRecord drains at most Maximum without blocking' {
         $transport = Start-TestFakeAppServer -StdoutRecordLimit 3 -StderrRecordLimit 2
         Send-AppServerMessage -Transport $transport -Message (New-RpcRequest -Id 47 -Method 'test/stdoutBurst' -Params ([ordered]@{ count = 8 }))
@@ -763,9 +895,7 @@ if ($null -eq ('CodexQuotaMonitor.ProcessTransport.CaptureState' -as [type])) {
 
 Describe 'Codex executable discovery' {
     It 'prefers codex.exe and does not probe later sources after finding it' {
-        $codexExe = Join-Path $TestDrive 'commands\codex.exe'
-        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $codexExe) -Force
-        $null = New-Item -ItemType File -Path $codexExe
+        $codexExe = Copy-TestExecutable -Destination (Join-Path $TestDrive 'commands\codex.exe')
         $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
         Mock Get-Command {
             param($Name)
@@ -787,12 +917,42 @@ Describe 'Codex executable discovery' {
         $result.ExecutablePath | Should -BeExactly $codexExe
         @($script:DiscoveryCalls) | Should -Be @('command:codex.exe')
         Should -Invoke Get-AppxPackage -Times 0 -Exactly
+        Assert-TestDiscoveredExecutableLaunches -Result $result
     }
 
     It 'checks codex after codex.exe before consulting the package' {
+        $codexExe = Copy-TestExecutable -Destination (Join-Path $TestDrive 'commands\codex.exe')
+        $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
+        Mock Get-Command {
+            param($Name)
+            $script:DiscoveryCalls.Add("command:$Name")
+            if ($Name -eq 'codex') {
+                return [pscustomobject]@{
+                    Path = $codexExe
+                    Source = $codexExe
+                    CommandType = [Management.Automation.CommandTypes]::Application
+                }
+            }
+        }
+        Mock Get-AppxPackage { throw 'Appx discovery should not run.' }
+
+        $result = Find-CodexExecutable
+
+        $result.Source | Should -BeExactly 'Command:codex'
+        $result.ExecutablePath | Should -BeExactly $codexExe
+        @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
+        Should -Invoke Get-AppxPackage -Times 0 -Exactly
+        Assert-TestDiscoveredExecutableLaunches -Result $result
+    }
+
+    It 'rejects an existing ps1 ExternalScript and continues to the Appx executable' {
         $codexScript = Join-Path $TestDrive 'commands\codex.ps1'
         $null = New-Item -ItemType Directory -Path (Split-Path -Parent $codexScript) -Force
-        $null = New-Item -ItemType File -Path $codexScript
+        Set-Content -LiteralPath $codexScript -Value 'exit 0' -Encoding utf8NoBOM
+        $installLocation = Join-Path $TestDrive 'Script Fallback Package'
+        $packagedExecutable = Copy-TestExecutable -Destination (
+            Join-Path $installLocation 'app\resources\codex.exe'
+        )
         $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
         Mock Get-Command {
             param($Name)
@@ -805,20 +965,19 @@ Describe 'Codex executable discovery' {
                 }
             }
         }
-        Mock Get-AppxPackage { throw 'Appx discovery should not run.' }
+        Mock Get-AppxPackage { [pscustomobject]@{ InstallLocation = $installLocation } }
 
         $result = Find-CodexExecutable
 
-        $result.ExecutablePath | Should -BeExactly $codexScript
+        $result.Source | Should -BeExactly 'AppxPackage'
+        $result.ExecutablePath | Should -BeExactly $packagedExecutable
         @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
-        Should -Invoke Get-AppxPackage -Times 0 -Exactly
+        Assert-TestDiscoveredExecutableLaunches -Result $result
     }
 
     It 'skips a nonexistent codex.exe command result and continues to codex' {
         $missingExe = Join-Path $TestDrive 'missing\codex.exe'
-        $codexScript = Join-Path $TestDrive 'valid\codex.ps1'
-        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $codexScript) -Force
-        $null = New-Item -ItemType File -Path $codexScript
+        $codexExe = Copy-TestExecutable -Destination (Join-Path $TestDrive 'valid\codex.exe')
         $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
         Mock Get-Command {
             param($Name)
@@ -832,25 +991,26 @@ Describe 'Codex executable discovery' {
             }
 
             return [pscustomobject]@{
-                Path = $codexScript
-                Source = $codexScript
-                CommandType = [Management.Automation.CommandTypes]::ExternalScript
+                Path = $codexExe
+                Source = $codexExe
+                CommandType = [Management.Automation.CommandTypes]::Application
             }
         }
         Mock Get-AppxPackage { throw 'Appx discovery should not run.' }
 
         $result = Find-CodexExecutable
 
-        $result.ExecutablePath | Should -BeExactly $codexScript
+        $result.ExecutablePath | Should -BeExactly $codexExe
         @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
         Should -Invoke Get-AppxPackage -Times 0 -Exactly
+        Assert-TestDiscoveredExecutableLaunches -Result $result
     }
 
     It 'skips nonexistent command results and falls through to the Appx executable' {
         $installLocation = Join-Path $TestDrive 'Fallback Package'
-        $packagedExecutable = Join-Path $installLocation 'app\resources\codex.exe'
-        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $packagedExecutable) -Force
-        $null = New-Item -ItemType File -Path $packagedExecutable
+        $packagedExecutable = Copy-TestExecutable -Destination (
+            Join-Path $installLocation 'app\resources\codex.exe'
+        )
         $script:DiscoveryCalls = [Collections.Generic.List[string]]::new()
         Mock Get-Command {
             param($Name)
@@ -868,16 +1028,15 @@ Describe 'Codex executable discovery' {
         $result.Source | Should -BeExactly 'AppxPackage'
         $result.ExecutablePath | Should -BeExactly $packagedExecutable
         @($script:DiscoveryCalls) | Should -Be @('command:codex.exe', 'command:codex')
+        Assert-TestDiscoveredExecutableLaunches -Result $result
     }
 
     It 'ignores existing command paths from nonlaunchable command types' {
-        $nonlaunchable = Join-Path $TestDrive 'nonlaunchable\codex.exe'
+        $nonlaunchable = Copy-TestExecutable -Destination (Join-Path $TestDrive 'nonlaunchable\codex.exe')
         $installLocation = Join-Path $TestDrive 'Launchable Package'
-        $packagedExecutable = Join-Path $installLocation 'app\resources\codex.exe'
-        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $nonlaunchable) -Force
-        $null = New-Item -ItemType File -Path $nonlaunchable
-        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $packagedExecutable) -Force
-        $null = New-Item -ItemType File -Path $packagedExecutable
+        $packagedExecutable = Copy-TestExecutable -Destination (
+            Join-Path $installLocation 'app\resources\codex.exe'
+        )
         Mock Get-Command {
             [pscustomobject]@{
                 Path = $nonlaunchable
@@ -891,13 +1050,36 @@ Describe 'Codex executable discovery' {
 
         $result.Source | Should -BeExactly 'AppxPackage'
         $result.ExecutablePath | Should -BeExactly $packagedExecutable
+        Assert-TestDiscoveredExecutableLaunches -Result $result
+    }
+
+    It 'ignores Application leaves without a directly executable extension' {
+        $commandScript = Copy-TestExecutable -Destination (Join-Path $TestDrive 'commands\codex.cmd')
+        $installLocation = Join-Path $TestDrive 'Extension Fallback Package'
+        $packagedExecutable = Copy-TestExecutable -Destination (
+            Join-Path $installLocation 'app\resources\codex.exe'
+        )
+        Mock Get-Command {
+            [pscustomobject]@{
+                Path = $commandScript
+                Source = $commandScript
+                CommandType = [Management.Automation.CommandTypes]::Application
+            }
+        }
+        Mock Get-AppxPackage { [pscustomobject]@{ InstallLocation = $installLocation } }
+
+        $result = Find-CodexExecutable
+
+        $result.Source | Should -BeExactly 'AppxPackage'
+        $result.ExecutablePath | Should -BeExactly $packagedExecutable
+        Assert-TestDiscoveredExecutableLaunches -Result $result
     }
 
     It 'uses the packaged Codex path only after both command probes miss' {
         $installLocation = Join-Path $TestDrive 'Codex Package'
-        $packagedExecutable = Join-Path $installLocation 'app\resources\codex.exe'
-        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $packagedExecutable) -Force
-        $null = New-Item -ItemType File -Path $packagedExecutable
+        $packagedExecutable = Copy-TestExecutable -Destination (
+            Join-Path $installLocation 'app\resources\codex.exe'
+        )
         Mock Get-Command { $null }
         Mock Get-AppxPackage { [pscustomobject]@{ InstallLocation = $installLocation } }
 
@@ -908,6 +1090,7 @@ Describe 'Codex executable discovery' {
         $result.ExecutablePath | Should -BeExactly $packagedExecutable
         Should -Invoke Get-Command -Times 2 -Exactly
         Should -Invoke Get-AppxPackage -Times 1 -Exactly -ParameterFilter { $Name -eq 'OpenAI.Codex' }
+        Assert-TestDiscoveredExecutableLaunches -Result $result
     }
 
     It 'returns a structured Missing result when all discovery sources miss' {
