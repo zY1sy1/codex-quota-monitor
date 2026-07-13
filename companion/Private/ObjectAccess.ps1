@@ -29,6 +29,33 @@ function Get-ObjectField {
     return $property.Value
 }
 
+function Test-IsNumericClrPrimitive {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value -or $Value.GetType().IsEnum) {
+        return $false
+    }
+
+    return [Type]::GetTypeCode($Value.GetType()) -in @(
+        [TypeCode]::SByte,
+        [TypeCode]::Byte,
+        [TypeCode]::Int16,
+        [TypeCode]::UInt16,
+        [TypeCode]::Int32,
+        [TypeCode]::UInt32,
+        [TypeCode]::Int64,
+        [TypeCode]::UInt64,
+        [TypeCode]::Single,
+        [TypeCode]::Double,
+        [TypeCode]::Decimal
+    )
+}
+
 function ConvertTo-InvariantFiniteDouble {
     [CmdletBinding()]
     param(
@@ -54,8 +81,11 @@ function ConvertTo-InvariantFiniteDouble {
                 return $null
             }
         }
-        else {
+        elseif (Test-IsNumericClrPrimitive -Value $Value) {
             $converted = [Convert]::ToDouble($Value, [Globalization.CultureInfo]::InvariantCulture)
+        }
+        else {
+            return $null
         }
     }
     catch {
@@ -81,9 +111,10 @@ function ConvertTo-InvariantInt32OrZero {
         return [int]0
     }
 
-    [int]$converted = 0
+    [decimal]$numericValue = 0
     try {
         if ($Value -is [string]) {
+            [int]$converted = 0
             $parsed = [int]::TryParse(
                 $Value,
                 [Globalization.NumberStyles]::Integer,
@@ -93,16 +124,27 @@ function ConvertTo-InvariantInt32OrZero {
             if (-not $parsed) {
                 return [int]0
             }
+
+            return [int]$converted
+        }
+        elseif (Test-IsNumericClrPrimitive -Value $Value) {
+            $numericValue = [Convert]::ToDecimal($Value, [Globalization.CultureInfo]::InvariantCulture)
         }
         else {
-            $converted = [Convert]::ToInt32($Value, [Globalization.CultureInfo]::InvariantCulture)
+            return [int]0
         }
     }
     catch {
         return [int]0
     }
 
-    return [int]$converted
+    if ($numericValue -ne [decimal]::Truncate($numericValue) -or
+        $numericValue -lt [decimal]([int]::MinValue) -or
+        $numericValue -gt [decimal]([int]::MaxValue)) {
+        return [int]0
+    }
+
+    return [int]$numericValue
 }
 
 function ConvertTo-InvariantInt64OrZero {
@@ -117,9 +159,10 @@ function ConvertTo-InvariantInt64OrZero {
         return [long]0
     }
 
-    [long]$converted = 0
+    [decimal]$numericValue = 0
     try {
         if ($Value -is [string]) {
+            [long]$converted = 0
             $parsed = [long]::TryParse(
                 $Value,
                 [Globalization.NumberStyles]::Integer,
@@ -129,14 +172,25 @@ function ConvertTo-InvariantInt64OrZero {
             if (-not $parsed) {
                 return [long]0
             }
+
+            return [long]$converted
+        }
+        elseif (Test-IsNumericClrPrimitive -Value $Value) {
+            $numericValue = [Convert]::ToDecimal($Value, [Globalization.CultureInfo]::InvariantCulture)
         }
         else {
-            $converted = [Convert]::ToInt64($Value, [Globalization.CultureInfo]::InvariantCulture)
+            return [long]0
         }
     }
     catch {
         return [long]0
     }
 
-    return [long]$converted
+    if ($numericValue -ne [decimal]::Truncate($numericValue) -or
+        $numericValue -lt [decimal]([long]::MinValue) -or
+        $numericValue -gt [decimal]([long]::MaxValue)) {
+        return [long]0
+    }
+
+    return [long]$numericValue
 }

@@ -79,6 +79,21 @@ function Compare-NullableQuotaNumber {
     return ([double]$Left).CompareTo([double]$Right)
 }
 
+function Get-QuotaWindowCompleteness {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [object]$Row
+    )
+
+    $score = 0
+    if (-not [string]::IsNullOrWhiteSpace($Row.LimitName)) { $score++ }
+    if ($null -ne $Row.UsedPercent) { $score++ }
+    if ($null -ne $Row.RemainingPercent) { $score++ }
+    if (-not [string]::IsNullOrWhiteSpace($Row.RateLimitReached)) { $score++ }
+    return $score
+}
+
 function Compare-QuotaWindowRecord {
     [CmdletBinding()]
     param(
@@ -104,7 +119,12 @@ function Compare-QuotaWindowRecord {
     $comparison = [StringComparer]::Ordinal.Compare($Left.Key, $Right.Key)
     if ($comparison -ne 0) { return $comparison }
 
-    # Equal identity keys choose the lowest canonical non-key tuple, independent of map order.
+    # Equal identity keys prefer more complete metadata, then the lowest canonical non-key tuple.
+    $leftCompleteness = Get-QuotaWindowCompleteness -Row $Left
+    $rightCompleteness = Get-QuotaWindowCompleteness -Row $Right
+    $comparison = $rightCompleteness.CompareTo($leftCompleteness)
+    if ($comparison -ne 0) { return $comparison }
+
     $comparison = [StringComparer]::Ordinal.Compare($Left.LimitName, $Right.LimitName)
     if ($comparison -ne 0) { return $comparison }
 

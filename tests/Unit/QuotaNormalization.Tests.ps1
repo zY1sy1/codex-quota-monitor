@@ -122,11 +122,15 @@ Describe 'ConvertTo-QuotaWindow' {
         @($rows.Key | Select-Object -Unique).Count | Should -Be 3
     }
 
-    It 'normalizes invalid and non-finite used percentages to null' -ForEach @(
+    It 'normalizes invalid, coercive, and non-finite used percentages to null' -ForEach @(
         @{ Value = 'not-a-number' },
         @{ Value = [double]::NaN },
         @{ Value = [double]::PositiveInfinity },
-        @{ Value = [double]::NegativeInfinity }
+        @{ Value = [double]::NegativeInfinity },
+        @{ Value = $true },
+        @{ Value = $false },
+        @{ Value = [char]'7' },
+        @{ Value = [DayOfWeek]::Monday }
     ) {
         $result = [pscustomobject]@{
             rateLimitsByLimitId = [ordered]@{
@@ -178,6 +182,108 @@ Describe 'ConvertTo-QuotaWindow' {
         $row.ResetsAt | Should -BeOfType ([long])
     }
 
+    It 'rejects fractional integral window values instead of rounding them' {
+        $result = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{
+                sample = [ordered]@{
+                    limitId = 'sample'
+                    limitName = 'Sample'
+                    primary = [ordered]@{
+                        usedPercent = 20
+                        windowDurationMins = 60.6
+                        resetsAt = 123.4
+                        rateLimitReachedType = 'none'
+                    }
+                }
+            }
+        }
+
+        $row = @(ConvertTo-QuotaWindow -RateLimitResult $result)[0]
+
+        $row.WindowDurationMins | Should -Be 0
+        $row.WindowDurationMins | Should -BeOfType ([int])
+        $row.ResetsAt | Should -Be 0
+        $row.ResetsAt | Should -BeOfType ([long])
+    }
+
+    It 'rejects coercible nonnumeric integral window values' -ForEach @(
+        @{ Duration = $true; Resets = $false },
+        @{ Duration = [char]'7'; Resets = [char]'8' },
+        @{ Duration = [DayOfWeek]::Monday; Resets = [DayOfWeek]::Tuesday }
+    ) {
+        $result = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{
+                sample = [ordered]@{
+                    limitId = 'sample'
+                    limitName = 'Sample'
+                    primary = [ordered]@{
+                        usedPercent = 20
+                        windowDurationMins = $Duration
+                        resetsAt = $Resets
+                        rateLimitReachedType = 'none'
+                    }
+                }
+            }
+        }
+
+        $row = @(ConvertTo-QuotaWindow -RateLimitResult $result)[0]
+
+        $row.WindowDurationMins | Should -Be 0
+        $row.ResetsAt | Should -Be 0
+    }
+
+    It 'rejects non-finite integral window values' -ForEach @(
+        @{ Duration = [double]::NaN; Resets = [double]::NaN },
+        @{ Duration = [double]::PositiveInfinity; Resets = [double]::NegativeInfinity }
+    ) {
+        $result = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{
+                sample = [ordered]@{
+                    limitId = 'sample'
+                    limitName = 'Sample'
+                    primary = [ordered]@{
+                        usedPercent = 20
+                        windowDurationMins = $Duration
+                        resetsAt = $Resets
+                        rateLimitReachedType = 'none'
+                    }
+                }
+            }
+        }
+
+        $row = @(ConvertTo-QuotaWindow -RateLimitResult $result)[0]
+
+        $row.WindowDurationMins | Should -Be 0
+        $row.ResetsAt | Should -Be 0
+    }
+
+    It 'accepts exact numeric primitives and invariant integral strings' -ForEach @(
+        @{ Duration = [double]60.0; Resets = [double]123.0 },
+        @{ Duration = '60'; Resets = '123' }
+    ) {
+        $result = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{
+                sample = [ordered]@{
+                    limitId = 'sample'
+                    limitName = 'Sample'
+                    primary = [ordered]@{
+                        usedPercent = 20
+                        windowDurationMins = $Duration
+                        resetsAt = $Resets
+                        rateLimitReachedType = 'none'
+                    }
+                }
+            }
+        }
+
+        $row = @(ConvertTo-QuotaWindow -RateLimitResult $result)[0]
+
+        $row.WindowDurationMins | Should -Be 60
+        $row.WindowDurationMins | Should -BeOfType ([int])
+        $row.ResetsAt | Should -Be 123
+        $row.ResetsAt | Should -BeOfType ([long])
+    }
+
     It 'chooses the same canonical collision winner regardless of map order' {
         $lowerCandidate = [ordered]@{
             limitId = 'same'
@@ -202,6 +308,33 @@ Describe 'ConvertTo-QuotaWindow' {
         $forwardRow.UsedPercent | Should -Be 20
         $forwardRow.RateLimitReached | Should -Be 'Alpha'
         ($forwardRow | ConvertTo-Json -Compress) | Should -Be ($reverseRow | ConvertTo-Json -Compress)
+    }
+
+    It 'prefers a complete duplicate over a sparse duplicate regardless of map order' {
+        $sparseCandidate = [ordered]@{
+            limitId = 'same'
+            limitName = ''
+            primary = [ordered]@{ usedPercent = $null; windowDurationMins = 60; resetsAt = 200; rateLimitReachedType = '' }
+        }
+        $completeCandidate = [ordered]@{
+            limitId = 'same'
+            limitName = 'Codex'
+            primary = [ordered]@{ usedPercent = 80; windowDurationMins = 60; resetsAt = 200; rateLimitReachedType = 'none' }
+        }
+        $sparseFirst = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{ first = $sparseCandidate; second = $completeCandidate }
+        }
+        $completeFirst = [pscustomobject]@{
+            rateLimitsByLimitId = [ordered]@{ first = $completeCandidate; second = $sparseCandidate }
+        }
+
+        $sparseFirstRow = @(ConvertTo-QuotaWindow -RateLimitResult $sparseFirst)[0]
+        $completeFirstRow = @(ConvertTo-QuotaWindow -RateLimitResult $completeFirst)[0]
+
+        $sparseFirstRow.LimitName | Should -Be 'Codex'
+        $sparseFirstRow.UsedPercent | Should -Be 80
+        $sparseFirstRow.RateLimitReached | Should -Be 'none'
+        ($sparseFirstRow | ConvertTo-Json -Compress) | Should -Be ($completeFirstRow | ConvertTo-Json -Compress)
     }
 
     It 'sorts LimitId with ordinal case-sensitive comparison after duration' {
