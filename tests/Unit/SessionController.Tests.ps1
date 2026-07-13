@@ -475,6 +475,138 @@ Describe 'account state' {
         $state.QuotaWindows[0].UsedPercent | Should -Be 10
     }
 
+    It 'invalidates a pre-account-change quota read when <Ordering>' -ForEach @(
+        @{ Ordering = 'the stale quota response arrives first'; FreshAccountFirst = $false },
+        @{ Ordering = 'the fresh account response arrives first'; FreshAccountFirst = $true }
+    ) {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{
+                account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }
+                requiresOpenaiAuth = $true
+            }
+        }))
+        $oldSuccessAt = [datetimeoffset]'2026-07-13T15:00:00Z'
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'plus' -UsedPercent 10
+        }) -Now $oldSuccessAt)
+        $oldQuotaRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))[0]
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))
+        $state.QuotaRefreshQueued | Should -BeTrue
+
+        $accountRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/updated'; params = [ordered]@{}
+        }))
+
+        $accountRead.Count | Should -Be 1
+        $accountRead[0].method | Should -BeExactly 'account/read'
+        $state.Pending.Contains($oldQuotaRead.id) | Should -BeFalse
+        @( $state.Pending.Values | Where-Object Method -EQ 'account/rateLimits/read' ).Count | Should -Be 0
+        $state.QuotaReadPending | Should -BeFalse
+        $state.QuotaRefreshQueued | Should -BeFalse
+        $state.QuotaEligible | Should -BeNullOrEmpty
+        $state.PlanType | Should -BeNullOrEmpty
+        $state.QuotaWindows[0].UsedPercent | Should -Be 10
+        $state.LastSuccessAt | Should -Be $oldSuccessAt
+
+        $staleQuotaResponse = [pscustomobject]@{
+            id = $oldQuotaRead.id
+            result = New-TestRateLimitResult -PlanType 'stale-plan' -UsedPercent 99
+        }
+        $freshAccountResponse = [pscustomobject]@{
+            id = $accountRead[0].id
+            result = [ordered]@{
+                account = [ordered]@{ type = 'chatgpt'; planType = 'pro' }
+                requiresOpenaiAuth = $true
+            }
+        }
+
+        if ($FreshAccountFirst) {
+            $freshAccountActions = @(Update-SessionFromMessage -State $state -Message $freshAccountResponse)
+            $staleQuotaActions = @(Update-SessionFromMessage -State $state -Message $staleQuotaResponse)
+        }
+        else {
+            $staleQuotaActions = @(Update-SessionFromMessage -State $state -Message $staleQuotaResponse)
+            $state.PlanType | Should -BeNullOrEmpty
+            $state.QuotaWindows[0].UsedPercent | Should -Be 10
+            $state.LastSuccessAt | Should -Be $oldSuccessAt
+            $freshAccountActions = @(Update-SessionFromMessage -State $state -Message $freshAccountResponse)
+        }
+
+        $staleQuotaActions.Count | Should -Be 0
+        $freshAccountActions.Count | Should -Be 1
+        $freshAccountActions[0].method | Should -BeExactly 'account/rateLimits/read'
+        $freshAccountActions[0].id | Should -Not -Be $oldQuotaRead.id
+        @( $state.Pending.Values | Where-Object Method -EQ 'account/rateLimits/read' ).Count | Should -Be 1
+        $state.Pending.Contains($freshAccountActions[0].id) | Should -BeTrue
+        $state.PlanType | Should -BeExactly 'pro'
+        $state.QuotaWindows[0].UsedPercent | Should -Be 10
+        $state.LastSuccessAt | Should -Be $oldSuccessAt
+
+        $newSuccessAt = $oldSuccessAt.AddMinutes(5)
+        $newQuotaActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $freshAccountActions[0].id
+            result = New-TestRateLimitResult -PlanType 'pro' -UsedPercent 25
+        }) -Now $newSuccessAt)
+
+        $newQuotaActions.Count | Should -Be 0
+        $state.Status | Should -BeExactly 'Live'
+        $state.PlanType | Should -BeExactly 'pro'
+        $state.QuotaWindows[0].UsedPercent | Should -Be 25
+        $state.LastSuccessAt | Should -Be $newSuccessAt
+    }
+
+    It 'keeps a fresh unsupported account unsupported after invalidating an old quota read' {
+        $state = New-SessionState
+        $context = Complete-TestInitialization -State $state
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.AccountRequest.id
+            result = [ordered]@{
+                account = [ordered]@{ type = 'chatgpt'; planType = 'plus' }
+                requiresOpenaiAuth = $true
+            }
+        }))
+        $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $context.QuotaRequest.id
+            result = New-TestRateLimitResult -PlanType 'plus' -UsedPercent 10
+        }))
+        $oldQuotaRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/rateLimits/updated'; params = [ordered]@{}
+        }))[0]
+        $accountRead = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            method = 'account/updated'; params = [ordered]@{}
+        }))[0]
+
+        $freshAccountActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $accountRead.id
+            result = [ordered]@{
+                account = [ordered]@{ type = 'apiKey' }
+                requiresOpenaiAuth = $true
+            }
+        }))
+        $staleQuotaActions = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
+            id = $oldQuotaRead.id
+            result = New-TestRateLimitResult -PlanType 'stale-plan' -UsedPercent 99
+        }))
+
+        $freshAccountActions.Count | Should -Be 0
+        $staleQuotaActions.Count | Should -Be 0
+        $state.Status | Should -BeExactly 'AuthRequired'
+        $state.QuotaEligible | Should -BeFalse
+        $state.QuotaReadPending | Should -BeFalse
+        $state.QuotaRefreshQueued | Should -BeFalse
+        @( $state.Pending.Values | Where-Object Method -EQ 'account/rateLimits/read' ).Count | Should -Be 0
+        $state.PlanType | Should -BeNullOrEmpty
+        @($state.QuotaWindows).Count | Should -Be 0
+    }
+
     It 'rejects a malformed matched account response' -ForEach @(
         @{ Shape = 'Missing' },
         @{ Shape = 'Null' },
@@ -646,7 +778,7 @@ Describe 'quota state' {
         $state.QuotaRefreshQueued | Should -BeFalse
     }
 
-    It 'does not queue a noninitial quota refresh after account eligibility becomes unknown' {
+    It 'invalidates a noninitial quota refresh after account eligibility becomes unknown' {
         $state = New-SessionState
         $context = Complete-TestInitialization -State $state
         $null = @(Update-SessionFromMessage -State $state -Message ([pscustomobject]@{
@@ -673,7 +805,9 @@ Describe 'quota state' {
         }))
 
         $actions.Count | Should -Be 0
-        $state.QuotaReadPending | Should -BeTrue
+        $state.Pending.Contains($quotaRead.id) | Should -BeFalse
+        @( $state.Pending.Values | Where-Object Method -EQ 'account/rateLimits/read' ).Count | Should -Be 0
+        $state.QuotaReadPending | Should -BeFalse
         $state.QuotaRefreshQueued | Should -BeFalse
     }
 

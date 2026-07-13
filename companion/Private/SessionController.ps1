@@ -447,6 +447,9 @@ function Update-SessionFromNotification {
         'account/updated' {
             $State.PlanType = $null
             $State.QuotaEligible = $null
+            $State.QuotaReadPending = $false
+            $State.QuotaRefreshQueued = $false
+            Remove-SessionPendingMethod -State $State -Method 'account/rateLimits/read'
             if (-not $State.Initialized) {
                 return
             }
