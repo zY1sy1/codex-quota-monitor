@@ -9,6 +9,28 @@ try {
         [AppDomain]::CurrentDomain.SetData($monitorRegistryKey, $monitorRegistry)
     }
     $script:MonitorOwnedInstancePrefixes = $monitorRegistry
+
+    # Upgrade records produced by the earlier v2 implementation without
+    # retaining their mutex handles strongly after this script is reloaded.
+    foreach ($entry in $monitorRegistry.GetEnumerator()) {
+        $record = $entry.Value
+        if (
+            $null -ne $record -and
+            $null -eq $record.PSObject.Properties['MutexReference'] -and
+            $null -ne $record.PSObject.Properties['Mutex']
+        ) {
+            $strongMutex = $record.PSObject.Properties['Mutex'].Value
+            $monitorRegistry[$entry.Key] = [pscustomobject]@{
+                OwnerToken = $record.PSObject.Properties['OwnerToken'].Value
+                OwnerThreadId = $record.PSObject.Properties['OwnerThreadId'].Value
+                OwnerThread = $record.PSObject.Properties['OwnerThread'].Value
+                MutexReference = [WeakReference]::new($strongMutex)
+            }
+        }
+    }
+    $strongMutex = $null
+    $record = $null
+    $entry = $null
 }
 finally {
     [Threading.Monitor]::Exit($monitorRegistryLock)
@@ -26,7 +48,11 @@ function Test-MonitorOwnerRecordIsCurrentThreadLive {
     }
 
     $ownerThread = $Record.PSObject.Properties['OwnerThread'].Value
-    $mutex = $Record.PSObject.Properties['Mutex'].Value
+    $mutexReference = $Record.PSObject.Properties['MutexReference'].Value
+    if ($mutexReference -isnot [WeakReference]) {
+        return $false
+    }
+    $mutex = $mutexReference.Target
     if (
         $null -eq $ownerThread -or
         $null -eq $mutex -or
@@ -61,7 +87,7 @@ function Set-MonitorOwnerRecord {
         OwnerToken = $OwnerToken
         OwnerThreadId = [Environment]::CurrentManagedThreadId
         OwnerThread = [Threading.Thread]::CurrentThread
-        Mutex = $Mutex
+        MutexReference = [WeakReference]::new($Mutex)
     }
 
     $previous = $null
@@ -78,7 +104,13 @@ function Set-MonitorOwnerRecord {
         $null -ne $previous -and
         $previous.PSObject.Properties['OwnerToken'].Value -ne $OwnerToken
     ) {
-        $previousMutex = $previous.PSObject.Properties['Mutex'].Value
+        $previousReference = $previous.PSObject.Properties['MutexReference'].Value
+        $previousMutex = if ($previousReference -is [WeakReference]) {
+            $previousReference.Target
+        }
+        else {
+            $previous.PSObject.Properties['Mutex'].Value
+        }
         if ($null -ne $previousMutex -and -not [object]::ReferenceEquals($previousMutex, $Mutex)) {
             try {
                 $previousMutex.Dispose()

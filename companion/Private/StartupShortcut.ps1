@@ -5,7 +5,11 @@ function Test-MonitorPwshExecutable {
         [string]$Path,
 
         [ValidateRange(100, 30000)]
-        [int]$TimeoutMilliseconds = 5000
+        [int]$TimeoutMilliseconds = 5000,
+
+        [Parameter(DontShow)]
+        [AllowNull()]
+        [string]$ProbeCommand
     )
 
     if (
@@ -17,15 +21,18 @@ function Test-MonitorPwshExecutable {
     }
 
     $process = $null
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
     try {
         $probeMarker = 'CODEX_QUOTA_MONITOR_PWSH_CORE_7'
-        $probeCommand = @"
+        if ([string]::IsNullOrEmpty($ProbeCommand)) {
+            $ProbeCommand = @"
 if (`$PSVersionTable.PSEdition -eq 'Core' -and `$PSVersionTable.PSVersion.Major -ge 7) {
     [Console]::Out.Write('$probeMarker')
     exit 0
 }
 exit 17
 "@
+        }
 
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = [IO.Path]::GetFullPath($Path)
@@ -37,7 +44,7 @@ exit 17
         $startInfo.ArgumentList.Add('-NoLogo')
         $startInfo.ArgumentList.Add('-NoProfile')
         $startInfo.ArgumentList.Add('-Command')
-        $startInfo.ArgumentList.Add($probeCommand)
+        $startInfo.ArgumentList.Add($ProbeCommand)
 
         $process = [Diagnostics.Process]::new()
         $process.StartInfo = $startInfo
@@ -47,10 +54,34 @@ exit 17
 
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+        $remaining = $TimeoutMilliseconds - [int]$deadline.ElapsedMilliseconds
+        if ($remaining -le 0 -or -not $process.WaitForExit($remaining)) {
             try {
                 $process.Kill($true)
-                $null = $process.WaitForExit([Math]::Min(2000, $TimeoutMilliseconds))
+            }
+            catch {
+            }
+            return $false
+        }
+
+        $remaining = $TimeoutMilliseconds - [int]$deadline.ElapsedMilliseconds
+        $drainTask = [Threading.Tasks.Task]::WhenAll(
+            [Threading.Tasks.Task[]]@($stdoutTask, $stderrTask)
+        )
+        $drained = $false
+        if ($remaining -gt 0) {
+            try {
+                $drained = $drainTask.Wait($remaining)
+            }
+            catch {
+                $drained = $false
+            }
+        }
+        if (-not $drained) {
+            try {
+                # Kill(true) also terminates descendants that still own inherited
+                # pipe handles, even when the candidate itself has already exited.
+                $process.Kill($true)
             }
             catch {
             }
@@ -65,7 +96,18 @@ exit 17
         return $false
     }
     finally {
+        $deadline.Stop()
         if ($null -ne $process) {
+            try {
+                $process.StandardOutput.Dispose()
+            }
+            catch {
+            }
+            try {
+                $process.StandardError.Dispose()
+            }
+            catch {
+            }
             $process.Dispose()
         }
     }

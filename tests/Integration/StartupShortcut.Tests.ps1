@@ -67,6 +67,59 @@ Describe 'PowerShell executable resolution' {
 
         Test-MonitorPwshExecutable -Path $windowsPowerShell -TimeoutMilliseconds 5000 | Should -BeFalse
     }
+
+    It 'bounds the whole probe when a descendant inherits redirected output handles' {
+        $pwshPath = (Get-Process -Id $PID).Path
+        $childPidPath = Join-Path $TestDrive 'inherited-output-child.pid'
+        $escapedPidPath = $childPidPath.Replace("'", "''")
+        $probeMarker = 'CODEX_QUOTA_MONITOR_PWSH_CORE_7'
+        $probeCommand = @"
+`$childStart = [Diagnostics.ProcessStartInfo]::new()
+`$childStart.FileName = (Get-Process -Id `$PID).Path
+`$childStart.UseShellExecute = `$false
+`$childStart.CreateNoWindow = `$true
+`$childStart.ArgumentList.Add('-NoLogo')
+`$childStart.ArgumentList.Add('-NoProfile')
+`$childStart.ArgumentList.Add('-Command')
+`$childStart.ArgumentList.Add('Start-Sleep -Seconds 30')
+`$child = [Diagnostics.Process]::Start(`$childStart)
+[IO.File]::WriteAllText('$escapedPidPath', `$child.Id.ToString([Globalization.CultureInfo]::InvariantCulture))
+[Console]::Out.Write('$probeMarker')
+exit 0
+"@
+
+        $childPid = $null
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $result = Test-MonitorPwshExecutable `
+                -Path $pwshPath `
+                -TimeoutMilliseconds 500 `
+                -ProbeCommand $probeCommand
+            $stopwatch.Stop()
+
+            $result | Should -BeFalse
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 3000
+            Test-Path -LiteralPath $childPidPath -PathType Leaf | Should -BeTrue
+            $childPid = [int][IO.File]::ReadAllText($childPidPath)
+
+            $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+            if ($null -ne $child) {
+                try {
+                    $child.WaitForExit(5000) | Should -BeTrue
+                }
+                finally {
+                    $child.Dispose()
+                }
+            }
+            Get-Process -Id $childPid -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        }
+        finally {
+            $stopwatch.Stop()
+            if ($null -ne $childPid) {
+                Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 Describe 'current-user Startup shortcut' {

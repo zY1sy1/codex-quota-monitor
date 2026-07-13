@@ -183,6 +183,32 @@ exit 0
             $runspace.Dispose()
         }
     }
+
+    function New-TestForgottenInstanceReferences {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Prefix
+        )
+
+        $instance = Enter-MonitorInstance -Prefix $Prefix -Signal None
+        $references = [pscustomobject]@{
+            Instance = [WeakReference]::new($instance)
+            Mutex = [WeakReference]::new($instance.Mutex)
+            ActivateEvent = [WeakReference]::new($instance.ActivateEvent)
+            ExitEvent = [WeakReference]::new($instance.ExitEvent)
+            OwnerToken = $instance.OwnerToken
+        }
+        Remove-Variable -Name instance
+        return $references
+    }
+
+    function Invoke-TestFullGarbageCollection {
+        foreach ($pass in 1..3) {
+            [GC]::Collect()
+            [GC]::WaitForPendingFinalizers()
+            [GC]::Collect()
+        }
+    }
 }
 
 Describe 'monitor single-instance lifecycle' {
@@ -515,5 +541,56 @@ Describe 'monitor single-instance lifecycle' {
         }
 
         $primary.Closed | Should -BeTrue
+    }
+
+    It 'forgets an unreferenced instance on a live owner thread and allows a fresh primary' {
+        $prefix = New-TestMonitorPrefix
+        $forgotten = New-TestForgottenInstanceReferences -Prefix $prefix
+        $fresh = $null
+        try {
+            Invoke-TestFullGarbageCollection
+
+            $forgotten.Instance.IsAlive | Should -BeFalse
+            $forgotten.Mutex.IsAlive | Should -BeFalse
+            $forgotten.ActivateEvent.IsAlive | Should -BeFalse
+            $forgotten.ExitEvent.IsAlive | Should -BeFalse
+            $script:MonitorOwnedInstancePrefixes[$prefix].MutexReference | Should -BeOfType ([WeakReference])
+
+            foreach ($eventName in @("$prefix.Activate", "$prefix.Exit")) {
+                $openError = $null
+                try {
+                    $event = [Threading.EventWaitHandle]::OpenExisting($eventName)
+                    $event.Dispose()
+                }
+                catch {
+                    $openError = $_.Exception
+                }
+                $openError | Should -Not -BeNullOrEmpty
+                while ($null -ne $openError.InnerException) {
+                    $openError = $openError.InnerException
+                }
+                $openError.GetType() | Should -Be ([Threading.WaitHandleCannotBeOpenedException])
+            }
+
+            $fresh = Enter-MonitorInstance -Prefix $prefix -Signal None
+            $fresh.IsPrimary | Should -BeTrue
+            $fresh.OwnerToken | Should -Not -Be $forgotten.OwnerToken
+        }
+        finally {
+            if ($null -ne $fresh -and -not $fresh.Closed) {
+                Close-MonitorInstance -Instance $fresh
+            }
+
+            $forgottenMutex = $forgotten.Mutex.Target
+            if ($null -ne $forgottenMutex) {
+                try {
+                    $forgottenMutex.ReleaseMutex()
+                }
+                catch {
+                }
+                $forgottenMutex.Dispose()
+            }
+            $null = Remove-MonitorOwnerRecord -Prefix $prefix -OwnerToken $forgotten.OwnerToken
+        }
     }
 }
