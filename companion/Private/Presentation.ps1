@@ -61,6 +61,140 @@ function Format-ResetCountdown {
     return '{0:00}:{1:00}:{2:00}' -f $hours, $minutes, $seconds
 }
 
+function ConvertTo-ValidQuotaUnixSeconds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    [long]$unixSeconds = 0
+    try {
+        if ($Value -is [string]) {
+            if (-not [long]::TryParse(
+                $Value,
+                [Globalization.NumberStyles]::Integer,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$unixSeconds
+            )) {
+                return $null
+            }
+        }
+        elseif (Test-IsNumericClrPrimitive -Value $Value) {
+            if ($Value -is [single] -or $Value -is [double]) {
+                [double]$floatingPointValue = [Convert]::ToDouble(
+                    $Value,
+                    [Globalization.CultureInfo]::InvariantCulture
+                )
+                if ([double]::IsNaN($floatingPointValue) -or
+                    [double]::IsInfinity($floatingPointValue) -or
+                    $floatingPointValue -ne [Math]::Truncate($floatingPointValue)) {
+                    return $null
+                }
+            }
+
+            [decimal]$decimalValue = [Convert]::ToDecimal(
+                $Value,
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            if ($decimalValue -ne [decimal]::Truncate($decimalValue) -or
+                $decimalValue -lt [decimal]([long]::MinValue) -or
+                $decimalValue -gt [decimal]([long]::MaxValue)) {
+                return $null
+            }
+
+            $unixSeconds = [long]$decimalValue
+        }
+        else {
+            return $null
+        }
+
+        $minimumUnixSeconds = [DateTimeOffset]::MinValue.ToUnixTimeSeconds()
+        $maximumUnixSeconds = [DateTimeOffset]::MaxValue.ToUnixTimeSeconds()
+        if ($unixSeconds -lt $minimumUnixSeconds -or $unixSeconds -gt $maximumUnixSeconds) {
+            return $null
+        }
+
+        # Validate conversion here so both countdown and reset-time fields share one boundary.
+        [DateTimeOffset]::FromUnixTimeSeconds($unixSeconds) | Out-Null
+        return [long]$unixSeconds
+    }
+    catch {
+        return $null
+    }
+}
+
+function ConvertTo-QuotaPresentationRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [AllowEmptyCollection()]
+        [object[]]$QuotaWindows,
+
+        [Parameter(Position = 1)]
+        [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
+    )
+
+    foreach ($window in $QuotaWindows) {
+        if ($null -eq $window) {
+            continue
+        }
+
+        [int]$duration = ConvertTo-InvariantInt32OrZero -Value (
+            Get-ObjectField -InputObject $window -Name 'WindowDurationMins'
+        )
+        $limitName = [string](Get-ObjectField -InputObject $window -Name 'LimitName')
+
+        $remaining = ConvertTo-InvariantFiniteDouble -Value (
+            Get-ObjectField -InputObject $window -Name 'RemainingPercent'
+        )
+        if ($null -ne $remaining -and ($remaining -lt 0.0 -or $remaining -gt 100.0)) {
+            $remaining = $null
+        }
+
+        if ($null -eq $remaining) {
+            $remainingText = '--%'
+            $progressValue = $null
+        }
+        else {
+            $remainingText = $remaining.ToString(
+                '0.#',
+                [Globalization.CultureInfo]::InvariantCulture
+            ) + '%'
+            $progressValue = [double]$remaining
+        }
+
+        $resetsAt = ConvertTo-ValidQuotaUnixSeconds -Value (
+            Get-ObjectField -InputObject $window -Name 'ResetsAt'
+        )
+        if ($null -eq $resetsAt) {
+            $countdownText = '重置时间未知'
+            $resetTimeText = '重置时间未知'
+        }
+        else {
+            $countdownText = Format-ResetCountdown -ResetsAt $resetsAt -Now $Now
+            $resetTimeText = [DateTimeOffset]::FromUnixTimeSeconds($resetsAt).ToLocalTime().ToString(
+                "'重置时间：'yyyy-MM-dd HH:mm",
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+        }
+
+        [pscustomobject][ordered]@{
+            Key = [string](Get-ObjectField -InputObject $window -Name 'Key')
+            Label = Get-QuotaLabel -WindowDurationMins $duration -LimitName $limitName
+            RemainingText = [string]$remainingText
+            ProgressValue = $progressValue
+            CountdownText = [string]$countdownText
+            ResetTimeText = [string]$resetTimeText
+        }
+    }
+}
+
 function Get-QuotaSeverity {
     [CmdletBinding()]
     param(

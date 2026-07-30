@@ -160,3 +160,102 @@ Describe 'Get-TrayTooltip' {
         Get-TrayTooltip -QuotaWindows $windows | Should -Be ('x' * 62)
     }
 }
+
+Describe 'ConvertTo-QuotaPresentationRow' {
+    BeforeAll {
+        $script:PresentationNow = [DateTimeOffset]'2026-07-13T00:00:00Z'
+        $script:PresentationReset = $PresentationNow.AddHours(5).ToUnixTimeSeconds()
+    }
+
+    It 'builds the exact display boundary for fractional remaining quota' {
+        $source = [pscustomobject][ordered]@{
+            Key = 'codex|primary|300|reset'
+            LimitId = 'codex'
+            LimitName = 'Ignored'
+            WindowKind = 'primary'
+            UsedPercent = 25.5
+            RemainingPercent = 74.5
+            WindowDurationMins = 300
+            ResetsAt = $PresentationReset
+            RateLimitReached = ''
+        }
+
+        $row = @(ConvertTo-QuotaPresentationRow -QuotaWindows @($source) -Now $PresentationNow)[0]
+
+        @($row.PSObject.Properties.Name) | Should -Be @(
+            'Key', 'Label', 'RemainingText', 'ProgressValue', 'CountdownText', 'ResetTimeText'
+        )
+        $row.Key | Should -BeExactly $source.Key
+        $row.Label | Should -BeExactly '5 小时额度'
+        $row.RemainingText | Should -BeExactly '74.5%'
+        $row.ProgressValue | Should -BeOfType ([double])
+        $row.ProgressValue | Should -Be 74.5
+        $row.CountdownText | Should -BeExactly '05:00:00'
+        $expectedLocal = [DateTimeOffset]::FromUnixTimeSeconds($PresentationReset).ToLocalTime().ToString(
+            "'重置时间：'yyyy-MM-dd HH:mm",
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $row.ResetTimeText | Should -BeExactly $expectedLocal
+    }
+
+    It 'does not fabricate progress for missing, invalid, non-finite, or out-of-range remaining quota' -ForEach @(
+        @{ Remaining = $null },
+        @{ Remaining = 'not-a-number' },
+        @{ Remaining = [double]::NaN },
+        @{ Remaining = [double]::PositiveInfinity },
+        @{ Remaining = -0.1 },
+        @{ Remaining = 100.1 }
+    ) {
+        $source = [pscustomobject]@{
+            Key = 'review|primary|60|reset'
+            LimitName = 'Review'
+            RemainingPercent = $Remaining
+            WindowDurationMins = 60
+            ResetsAt = $PresentationReset
+        }
+
+        $row = @(ConvertTo-QuotaPresentationRow -QuotaWindows @($source) -Now $PresentationNow)[0]
+
+        $row.ProgressValue | Should -BeNullOrEmpty
+        $row.RemainingText | Should -BeExactly '--%'
+    }
+
+    It 'marks invalid Unix reset timestamps unknown without throwing' -ForEach @(
+        @{ Reset = 'not-a-timestamp' },
+        @{ Reset = [double]::NaN },
+        @{ Reset = [long]::MaxValue },
+        @{ Reset = $null }
+    ) {
+        $source = [pscustomobject]@{
+            Key = 'review|primary|60|bad'
+            LimitName = 'Review'
+            RemainingPercent = 50
+            WindowDurationMins = 60
+            ResetsAt = $Reset
+        }
+
+        $row = @(ConvertTo-QuotaPresentationRow -QuotaWindows @($source) -Now $PresentationNow)[0]
+
+        $row.CountdownText | Should -BeExactly '重置时间未知'
+        $row.ResetTimeText | Should -BeExactly '重置时间未知'
+    }
+
+    It 'does not mutate source records' {
+        $source = [pscustomobject][ordered]@{
+            Key = 'codex|secondary|10080|reset'
+            LimitName = 'Codex'
+            RemainingPercent = 80
+            WindowDurationMins = 10080
+            ResetsAt = $PresentationReset
+        }
+        $before = $source | ConvertTo-Json -Compress
+
+        $null = @(ConvertTo-QuotaPresentationRow -QuotaWindows @($source) -Now $PresentationNow)
+
+        ($source | ConvertTo-Json -Compress) | Should -BeExactly $before
+    }
+
+    It 'returns an empty collection for no quota windows' {
+        @(ConvertTo-QuotaPresentationRow -QuotaWindows @() -Now $PresentationNow).Count | Should -Be 0
+    }
+}

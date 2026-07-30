@@ -1,0 +1,138 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Codex 额度"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Width="300"
+        SizeToContent="Height"
+        MinHeight="150"
+        Topmost="True"
+        ShowInTaskbar="False"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        AutomationProperties.Name="Codex 额度悬浮窗">
+    <Border x:Name="RootBorder"
+            Background="#EE101827"
+            BorderBrush="#334155"
+            BorderThickness="1"
+            CornerRadius="16"
+            Padding="12">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="28" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Height="28">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="18" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="30" />
+                    <ColumnDefinition Width="30" />
+                    <ColumnDefinition Width="30" />
+                </Grid.ColumnDefinitions>
+
+                <Grid x:Name="HeaderDragArea"
+                      Grid.Column="0"
+                      Grid.ColumnSpan="2"
+                      Height="28"
+                      Background="Transparent"
+                      Cursor="SizeAll"
+                      AutomationProperties.Name="拖动 Codex 额度窗口" />
+
+                <Border x:Name="ConnectionDot"
+                        Grid.Column="0"
+                        Width="9"
+                        Height="9"
+                        Margin="1,0,0,0"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Center"
+                        Background="#94A3B8"
+                        CornerRadius="5"
+                        IsHitTestVisible="False"
+                        ToolTip="正在连接 Codex"
+                        AutomationProperties.Name="连接状态：正在连接" />
+
+                <TextBlock x:Name="TitleText"
+                           Grid.Column="1"
+                           Margin="2,0,4,0"
+                           VerticalAlignment="Center"
+                           Foreground="#F8FAFC"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           IsHitTestVisible="False"
+                           Text="Codex 额度" />
+
+                <Button x:Name="PinButton"
+                        Grid.Column="2"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        Foreground="#A7F3D0"
+                        Focusable="True"
+                        FontSize="13"
+                        Content="置"
+                        ToolTip="取消始终置顶"
+                        AutomationProperties.Name="取消始终置顶" />
+
+                <Button x:Name="HideButton"
+                        Grid.Column="3"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        Foreground="#CBD5E1"
+                        Focusable="True"
+                        FontSize="16"
+                        Content="—"
+                        ToolTip="隐藏悬浮窗"
+                        AutomationProperties.Name="隐藏悬浮窗" />
+
+                <Button x:Name="CloseButton"
+                        Grid.Column="4"
+                        Width="28"
+                        Height="28"
+                        Padding="0"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        Foreground="#CBD5E1"
+                        Focusable="True"
+                        FontSize="15"
+                        Content="×"
+                        ToolTip="关闭到系统托盘"
+                        AutomationProperties.Name="关闭到系统托盘" />
+            </Grid>
+
+            <ScrollViewer Grid.Row="1"
+                          Margin="0,4,0,0"
+                          MaxHeight="400"
+                          HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto"
+                          CanContentScroll="True"
+                          Focusable="False">
+                <StackPanel x:Name="QuotaRows" Orientation="Vertical" />
+            </ScrollViewer>
+
+            <TextBlock x:Name="FreshnessText"
+                       Grid.Row="2"
+                       Margin="2,8,2,0"
+                       Foreground="#94A3B8"
+                       FontSize="11"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed"
+                       AutomationProperties.Name="额度数据新鲜度" />
+        </Grid>
+    </Border>
+</Window>
