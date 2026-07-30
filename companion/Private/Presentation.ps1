@@ -116,7 +116,12 @@ function ConvertTo-ValidQuotaUnixSeconds {
 
         $minimumUnixSeconds = [DateTimeOffset]::MinValue.ToUnixTimeSeconds()
         $maximumUnixSeconds = [DateTimeOffset]::MaxValue.ToUnixTimeSeconds()
-        if ($unixSeconds -lt $minimumUnixSeconds -or $unixSeconds -gt $maximumUnixSeconds) {
+        # Codex reset timestamps are future Unix seconds. Normalization uses zero
+        # when the field is absent, so non-positive values must remain unknown
+        # instead of rendering an epoch date.
+        if ($unixSeconds -le 0 -or
+            $unixSeconds -lt $minimumUnixSeconds -or
+            $unixSeconds -gt $maximumUnixSeconds) {
             return $null
         }
 

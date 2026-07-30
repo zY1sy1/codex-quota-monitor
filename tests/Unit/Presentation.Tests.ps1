@@ -224,6 +224,7 @@ Describe 'ConvertTo-QuotaPresentationRow' {
         @{ Reset = 'not-a-timestamp' },
         @{ Reset = [double]::NaN },
         @{ Reset = [long]::MaxValue },
+        @{ Reset = 0 },
         @{ Reset = $null }
     ) {
         $source = [pscustomobject]@{
