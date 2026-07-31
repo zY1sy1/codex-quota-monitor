@@ -25,6 +25,81 @@ Describe 'Codex quota monitor production composition' {
         )
     }
 
+    It 'invokes the injected desktop initializer exactly once from the production runtime' {
+        $localAppData = Join-Path $TestDrive 'Desktop Initializer'
+        $startup = Join-Path $TestDrive 'Desktop Initializer Startup'
+        New-Item -ItemType Directory -Path $startup -Force | Out-Null
+        $instancePrefix = 'Local\CodexQuotaMonitor.DesktopInitializer.' + [guid]::NewGuid().ToString('N')
+        $pwsh = (Get-Process -Id $PID).Path
+        $calls = [Collections.Generic.List[string]]::new()
+
+        $windowView = [pscustomobject][ordered]@{
+            Window = [pscustomobject]@{}
+            Render = { param($PresentationRows) }
+            SetFreshness = { param([bool]$IsLive, [string]$Text) }
+            Dispose = { }
+        }
+        $trayView = [pscustomobject][ordered]@{
+            SetSeverity = { param([string]$Severity) }
+            SetTooltip = { param([string]$Tooltip) }
+            Dispose = { }
+        }
+        $interaction = [pscustomobject][ordered]@{
+            ShowAndActivate = { }
+            Dispose = { }
+        }
+        $overrides = [ordered]@{
+            NewWindow = { Write-Output -NoEnumerate $windowView }.GetNewClosure()
+            NewTray = { param([switch]$Visible) Write-Output -NoEnumerate $trayView }.GetNewClosure()
+            NewInteraction = {
+                param(
+                    $Settings,
+                    $WindowView,
+                    $TrayView,
+                    $SaveSettings,
+                    $ApplyStartupPreference,
+                    $RequestRefresh,
+                    $ExitEvent,
+                    $OpenTarget,
+                    $LogDirectory
+                )
+                Write-Output -NoEnumerate $interaction
+            }.GetNewClosure()
+            InitializeDesktop = {
+                param($WindowView, $TrayView, $Settings, $GetWorkAreas, $SetPlacement)
+                $calls.Add('initialize-desktop') | Out-Null
+            }.GetNewClosure()
+        }
+
+        $module = Import-Module -Name $ManifestPath -Force -PassThru
+        try {
+            $arguments = @{
+                AppServerExecutable = $pwsh
+                AppServerArguments = @(
+                    '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $FakeServerPath,
+                    '-Scenario', 'RuntimeHappy'
+                )
+                LocalAppData = $localAppData
+                Startup = $startup
+                InstancePrefix = $instancePrefix
+                RunForSeconds = 1
+                TickMilliseconds = 50
+                PassThru = $true
+                FunctionOverrides = $overrides
+            }
+            $result = & $module {
+                param([hashtable]$RuntimeArguments)
+                Invoke-CodexQuotaMonitorRuntime @RuntimeArguments
+            } $arguments
+        }
+        finally {
+            Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
+        }
+
+        @($calls) | Should -Be @('initialize-desktop')
+        $result.Status | Should -BeExactly 'Live'
+    }
+
     It 'runs headless through the full fake App Server handshake and writes only sanitized health' {
         Test-Path -LiteralPath $RuntimePath -PathType Leaf | Should -BeTrue
         $localAppData = Join-Path $TestDrive 'Local App Data 测试'

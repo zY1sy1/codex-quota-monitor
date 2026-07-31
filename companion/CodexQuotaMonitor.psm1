@@ -77,6 +77,10 @@ function Invoke-CodexQuotaMonitorRuntime {
         [ValidateRange(1, 300)]
         [int]$RequestTimeoutSeconds = 10,
 
+        [Parameter(DontShow)]
+        [AllowNull()]
+        [System.Collections.IDictionary]$FunctionOverrides,
+
         [switch]$PassThru
     )
 
@@ -108,6 +112,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         PresentationRows = ${function:ConvertTo-QuotaPresentationRow}
         Severity = ${function:Get-QuotaSeverity}
         Tooltip = ${function:Get-TrayTooltip}
+        WorkAreas = ${function:Get-MonitorWorkAreas}
+        SetPlacement = ${function:Set-ResolvedWindowPlacement}
+        InitializeDesktop = ${function:Initialize-MonitorDesktopPresentation}
         NewWindow = ${function:New-QuotaWindowView}
         NewTray = ${function:New-TrayView}
         NewInteraction = ${function:New-MonitorInteractionController}
@@ -117,6 +124,21 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
         else {
             $null
+        }
+    }
+
+    if ($null -ne $FunctionOverrides) {
+        foreach ($entry in $FunctionOverrides.GetEnumerator()) {
+            $name = [string]$entry.Key
+            $property = $functions.PSObject.Properties[$name]
+            if ($null -eq $property) {
+                throw [ArgumentException]::new('Runtime function override name is not supported.')
+            }
+            if ($entry.Value -isnot [scriptblock]) {
+                throw [ArgumentException]::new('Runtime function overrides must be script blocks.')
+            }
+
+            $property.Value = [scriptblock]$entry.Value
         }
     }
 
@@ -189,12 +211,14 @@ function Invoke-CodexQuotaMonitorRuntime {
         param([switch]$Force)
 
         $session = $runtime.Session
-        $displayWindows = if ($session.Status -eq 'Live') {
-            @($session.QuotaWindows)
-        }
-        else {
-            @($runtime.LastQuotaWindows)
-        }
+        $displayWindows = @(
+            if ($session.Status -eq 'Live') {
+                $session.QuotaWindows
+            }
+            else {
+                $runtime.LastQuotaWindows
+            }
+        )
         $planType = if (-not [string]::IsNullOrWhiteSpace([string]$session.PlanType)) {
             [string]$session.PlanType
         }
@@ -320,12 +344,14 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
 
         $session = $runtime.Session
-        $displayWindows = if ($session.Status -eq 'Live') {
-            @($session.QuotaWindows)
-        }
-        else {
-            @($runtime.LastQuotaWindows)
-        }
+        $displayWindows = @(
+            if ($session.Status -eq 'Live') {
+                $session.QuotaWindows
+            }
+            else {
+                $runtime.LastQuotaWindows
+            }
+        )
         $presentationFunction = $runtime.Functions.PresentationRows
         $rows = @(& $presentationFunction -QuotaWindows $displayWindows -Now $Now)
         & $runtime.WindowView.Render $rows
@@ -511,14 +537,6 @@ function Invoke-CodexQuotaMonitorRuntime {
             $newTrayFunction = $functions.NewTray
             $runtime.TrayView = & $newTrayFunction -Visible:$false
 
-            & $runtime.WindowView.SetTopmost ([bool]$runtime.Settings.Window.Topmost)
-            if ($null -ne $runtime.Settings.Window.Left) {
-                $runtime.WindowView.Window.Left = [double]$runtime.Settings.Window.Left
-            }
-            if ($null -ne $runtime.Settings.Window.Top) {
-                $runtime.WindowView.Window.Top = [double]$runtime.Settings.Window.Top
-            }
-
             $saveSettingsFunction = $functions.WriteSettings
             $saveSettingsAction = {
                 param($Settings)
@@ -555,13 +573,13 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -OpenTarget $openTargetAction `
                 -LogDirectory $paths.Logs
 
-            & $runtime.TrayView.SetVisible $true
-            if ([bool]$runtime.Settings.Window.Visible) {
-                & $runtime.WindowView.Show
-            }
-            else {
-                & $runtime.WindowView.Hide
-            }
+            $initializeDesktopFunction = $functions.InitializeDesktop
+            & $initializeDesktopFunction `
+                -WindowView $runtime.WindowView `
+                -TrayView $runtime.TrayView `
+                -Settings $runtime.Settings `
+                -GetWorkAreas $functions.WorkAreas `
+                -SetPlacement $functions.SetPlacement
 
             try {
                 $powerHandlerScript = {

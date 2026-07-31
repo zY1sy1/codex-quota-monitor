@@ -19,6 +19,22 @@ BeforeAll {
             Height = $Height
         }
     }
+
+    function New-TestScreen {
+        param(
+            [bool]$Primary,
+            [string]$DeviceName,
+            [object]$Bounds,
+            [object]$WorkingArea
+        )
+
+        [pscustomobject]@{
+            Primary = $Primary
+            DeviceName = $DeviceName
+            Bounds = $Bounds
+            WorkingArea = $WorkingArea
+        }
+    }
 }
 
 Describe 'Resolve-WindowPlacement' {
@@ -132,5 +148,123 @@ Describe 'Resolve-WindowPlacement' {
 
         $result.Left | Should -Be 850
         $result.Top | Should -Be 100
+    }
+
+    It 'applies recovered coordinates to a size-to-content window before it is shown' {
+        $window = [pscustomobject]@{
+            ActualWidth = 0.0
+            Width = 300.0
+            MinWidth = 0.0
+            ActualHeight = 0.0
+            Height = [double]::NaN
+            MinHeight = 150.0
+            Left = 5000.0
+            Top = 3000.0
+        }
+        $areas = @(New-TestWorkArea -Left 100 -Top 50 -Width 1200 -Height 800)
+
+        $result = Set-ResolvedWindowPlacement `
+            -Window $window `
+            -Left 5000 `
+            -Top 3000 `
+            -WorkAreas $areas
+
+        $result.Left | Should -Be 124
+        $result.Top | Should -Be 74
+        $window.Left | Should -Be 124
+        $window.Top | Should -Be 74
+    }
+
+    It 'converts device-pixel work areas into one WPF logical desktop coordinate space' {
+        $screens = @(
+            New-TestScreen `
+                -Primary $true `
+                -DeviceName '\\.\DISPLAY1' `
+                -Bounds (New-TestWorkArea -Left 0 -Top 0 -Width 3840 -Height 2160) `
+                -WorkingArea (New-TestWorkArea -Left 0 -Top 0 -Width 3840 -Height 2070)
+            New-TestScreen `
+                -Primary $false `
+                -DeviceName '\\.\DISPLAY2' `
+                -Bounds (New-TestWorkArea -Left -1920 -Top 0 -Width 1920 -Height 1080) `
+                -WorkingArea (New-TestWorkArea -Left -1920 -Top 0 -Width 1920 -Height 1080)
+        )
+        $logicalPrimary = New-TestWorkArea -Left 0 -Top 0 -Width 2560 -Height 1380
+
+        $result = @(Get-MonitorWorkAreas `
+            -Screens $screens `
+            -PrimaryLogicalWorkArea $logicalPrimary `
+            -PrimaryLogicalScreenWidth 2560 `
+            -PrimaryLogicalScreenHeight 1440)
+
+        $result.Count | Should -Be 2
+        $result[0].Left | Should -Be 0
+        $result[0].Top | Should -Be 0
+        $result[0].Width | Should -Be 2560
+        $result[0].Height | Should -Be 1380
+        $result[1].Left | Should -Be -1280
+        $result[1].Top | Should -Be 0
+        $result[1].Width | Should -Be 1280
+        $result[1].Height | Should -Be 720
+    }
+
+    It 'resolves placement before the first visible desktop presentation' {
+        $calls = [Collections.Generic.List[string]]::new()
+        $window = [pscustomobject]@{
+            ActualWidth = 0.0
+            Width = 300.0
+            MinWidth = 0.0
+            ActualHeight = 0.0
+            Height = [double]::NaN
+            MinHeight = 150.0
+            Left = 5000.0
+            Top = 3000.0
+        }
+        $windowView = [pscustomobject]@{
+            Window = $window
+            SetTopmost = { param([bool]$Value) $calls.Add("topmost:$Value") }.GetNewClosure()
+            Show = { $calls.Add('show') }.GetNewClosure()
+            Hide = { $calls.Add('hide') }.GetNewClosure()
+        }
+        $trayView = [pscustomobject]@{
+            SetVisible = { param([bool]$Value) $calls.Add("tray-visible:$Value") }.GetNewClosure()
+        }
+        $settings = [ordered]@{
+            Window = [ordered]@{
+                Left = 5000.0
+                Top = 3000.0
+                Topmost = $true
+                Visible = $true
+            }
+        }
+        $testWorkAreas = @(
+            New-TestWorkArea -Left 100 -Top 50 -Width 1200 -Height 800
+        )
+        $getWorkAreas = {
+            $calls.Add('work-areas')
+            return $testWorkAreas
+        }.GetNewClosure()
+        $setPlacement = {
+            param($Window, $Left, $Top, $WorkAreas)
+            $calls.Add('placement')
+            $Window.Left = 124.0
+            $Window.Top = 74.0
+        }.GetNewClosure()
+
+        Initialize-MonitorDesktopPresentation `
+            -WindowView $windowView `
+            -TrayView $trayView `
+            -Settings $settings `
+            -GetWorkAreas $getWorkAreas `
+            -SetPlacement $setPlacement
+
+        @($calls) | Should -Be @(
+            'topmost:True'
+            'work-areas'
+            'placement'
+            'tray-visible:True'
+            'show'
+        )
+        $window.Left | Should -Be 124
+        $window.Top | Should -Be 74
     }
 }
