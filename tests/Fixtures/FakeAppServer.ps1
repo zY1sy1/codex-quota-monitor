@@ -1,10 +1,13 @@
 param(
-    [ValidateSet('Happy', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes', 'NonReading', 'FinalBeforeExit')]
+    [ValidateSet('Happy', 'RuntimeHappy', 'RuntimeAuthChange', 'RuntimeResetCycles', 'RuntimeInitializeError', 'Malformed', 'ExitAfterInitialize', 'InheritedPipes', 'NonReading', 'FinalBeforeExit')]
     [string]$Scenario = 'Happy'
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$runtimeAccountReadCount = 0
+$runtimeRateLimitReadCount = 0
+$runtimeAccountChangeSent = $false
 
 if ($Scenario -eq 'NonReading') {
     [Threading.Thread]::Sleep(3000)
@@ -37,6 +40,18 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 
     switch ($message.method) {
         initialize {
+            if ($Scenario -eq 'RuntimeInitializeError') {
+                [Console]::Out.WriteLine((@{
+                            id = $message.id
+                            error = @{
+                                code = -32603
+                                message = 'fake initialization failure'
+                            }
+                        } | ConvertTo-Json -Depth 20 -Compress))
+                [Console]::Out.Flush()
+                continue
+            }
+
             [Console]::Out.WriteLine((@{
                         id = $message.id
                         result = @{
@@ -46,6 +61,11 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                         }
                     } | ConvertTo-Json -Depth 20 -Compress))
             [Console]::Out.Flush()
+
+            if ($Scenario -eq 'RuntimeHappy') {
+                [Console]::Error.WriteLine('Authorization: Bearer FAKE_RUNTIME_SECRET')
+                [Console]::Error.Flush()
+            }
 
             if ($Scenario -eq 'ExitAfterInitialize') {
                 exit 17
@@ -67,13 +87,22 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         }
 
         'account/read' {
+            $runtimeAccountReadCount++
+            $account = if ($Scenario -eq 'RuntimeAuthChange' -and $runtimeAccountReadCount -ge 2) {
+                @{
+                    type = 'apiKey'
+                }
+            }
+            else {
+                @{
+                    type = 'chatgpt'
+                    planType = 'plus'
+                }
+            }
             [Console]::Out.WriteLine((@{
                         id = $message.id
                         result = @{
-                            account = @{
-                                type = 'chatgpt'
-                                planType = 'plus'
-                            }
+                            account = $account
                             requiresOpenaiAuth = $true
                         }
                     } | ConvertTo-Json -Depth 20 -Compress))
@@ -81,15 +110,34 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         }
 
         'account/rateLimits/read' {
+            $runtimeRateLimitReadCount++
+            $primaryUsedPercent = 25
+            $primaryResetsAt = 1893456000
+            if ($Scenario -eq 'RuntimeResetCycles') {
+                switch ($runtimeRateLimitReadCount) {
+                    1 {
+                        $primaryUsedPercent = 10
+                        $primaryResetsAt = 1
+                    }
+                    2 {
+                        $primaryUsedPercent = 20
+                        $primaryResetsAt = 2
+                    }
+                    default {
+                        $primaryUsedPercent = 30
+                        $primaryResetsAt = 1893456000
+                    }
+                }
+            }
             [Console]::Out.WriteLine((@{
                         id = $message.id
                         result = @{
                             rateLimits = @{
                                 limitId = 'codex'
                                 primary = @{
-                                    usedPercent = 25
+                                    usedPercent = $primaryUsedPercent
                                     windowDurationMins = 300
-                                    resetsAt = 1893456000
+                                    resetsAt = $primaryResetsAt
                                 }
                                 secondary = @{
                                     usedPercent = 40
@@ -100,6 +148,12 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                         }
                     } | ConvertTo-Json -Depth 20 -Compress))
             [Console]::Out.Flush()
+
+            if ($Scenario -eq 'RuntimeAuthChange' -and -not $runtimeAccountChangeSent) {
+                $runtimeAccountChangeSent = $true
+                [Console]::Out.WriteLine('{"method":"account/updated"}')
+                [Console]::Out.Flush()
+            }
         }
 
         'test/diagnostics' {
