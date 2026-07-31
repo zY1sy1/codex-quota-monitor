@@ -207,17 +207,41 @@ function New-MonitorInteractionController {
 
         $current = [bool](& $getField -InputObject $windowSettings -Name 'Topmost')
         $desired = -not $current
-        & $WindowView.SetTopmost $desired
+        $windowApplied = $false
+        $trayAttempted = $false
         try {
+            & $WindowView.SetTopmost $desired
+            $windowApplied = $true
+            $trayAttempted = $true
             & $TrayView.SetTopmostChecked $desired
+            & $setField -InputObject $windowSettings -Name 'Topmost' -Value $desired
+            & $SaveSettings $Settings
         }
         catch {
-            try { & $WindowView.SetTopmost $current } catch { }
-            throw
-        }
+            $primaryError = $_
+            & $setField -InputObject $windowSettings -Name 'Topmost' -Value $current
+            $rollbackErrors = [Collections.Generic.List[Exception]]::new()
+            $rollbackErrors.Add($primaryError.Exception)
 
-        & $setField -InputObject $windowSettings -Name 'Topmost' -Value $desired
-        & $SaveSettings $Settings
+            if ($trayAttempted) {
+                try { & $TrayView.SetTopmostChecked $current } catch {
+                    $rollbackErrors.Add($_.Exception)
+                }
+            }
+            if ($windowApplied) {
+                try { & $WindowView.SetTopmost $current } catch {
+                    $rollbackErrors.Add($_.Exception)
+                }
+            }
+
+            if ($rollbackErrors.Count -gt 1) {
+                throw [AggregateException]::new(
+                    'Changing the always-on-top preference failed and rollback was incomplete.',
+                    [Exception[]]$rollbackErrors.ToArray()
+                )
+            }
+            throw $primaryError
+        }
     }.GetNewClosure()
 
     $toggleStartup = {
@@ -227,12 +251,43 @@ function New-MonitorInteractionController {
 
         $current = [bool](& $getField -InputObject $Settings -Name 'Startup')
         $desired = -not $current
+        $systemApplied = $false
+        $trayAttempted = $false
 
         # The system operation is authoritative. Do not persist a check mark that failed to apply.
-        & $ApplyStartupPreference $desired
-        & $setField -InputObject $Settings -Name 'Startup' -Value $desired
-        & $TrayView.SetStartupChecked $desired
-        & $SaveSettings $Settings
+        try {
+            & $ApplyStartupPreference $desired
+            $systemApplied = $true
+            $trayAttempted = $true
+            & $TrayView.SetStartupChecked $desired
+            & $setField -InputObject $Settings -Name 'Startup' -Value $desired
+            & $SaveSettings $Settings
+        }
+        catch {
+            $primaryError = $_
+            & $setField -InputObject $Settings -Name 'Startup' -Value $current
+            $rollbackErrors = [Collections.Generic.List[Exception]]::new()
+            $rollbackErrors.Add($primaryError.Exception)
+
+            if ($trayAttempted) {
+                try { & $TrayView.SetStartupChecked $current } catch {
+                    $rollbackErrors.Add($_.Exception)
+                }
+            }
+            if ($systemApplied) {
+                try { & $ApplyStartupPreference $current } catch {
+                    $rollbackErrors.Add($_.Exception)
+                }
+            }
+
+            if ($rollbackErrors.Count -gt 1) {
+                throw [AggregateException]::new(
+                    'Changing the startup preference failed and rollback was incomplete.',
+                    [Exception[]]$rollbackErrors.ToArray()
+                )
+            }
+            throw $primaryError
+        }
     }.GetNewClosure()
 
     $refresh = {

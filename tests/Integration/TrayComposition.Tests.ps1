@@ -143,6 +143,52 @@ Describe 'system tray composition' {
         $script:View = $null
     }
 
+    It 'retains and retries a native handle when destruction reports <Mode>' -ForEach @(
+        @{ Mode = 'False' }
+        @{ Mode = 'Throw' }
+    ) {
+        & $View.Dispose
+        $script:DestroyedHandles.Clear()
+        $script:DestroyFailureMode = $Mode
+        $script:FailureHandle = [long]0
+        $script:FailureAttempts = 0
+
+        $script:View = New-TrayView -Visible:$false -DestroyIconAction {
+            param([IntPtr]$Handle)
+
+            $numericHandle = $Handle.ToInt64()
+            if ($script:FailureHandle -eq 0) {
+                $script:FailureHandle = $numericHandle
+            }
+            if ($numericHandle -eq $script:FailureHandle -and $script:FailureAttempts -eq 0) {
+                $script:FailureAttempts++
+                if ($script:DestroyFailureMode -eq 'Throw') {
+                    throw 'Synthetic DestroyIcon failure.'
+                }
+                return $false
+            }
+
+            if ($numericHandle -eq $script:FailureHandle) {
+                $script:FailureAttempts++
+            }
+            $script:DestroyedHandles.Add($numericHandle)
+            return [CodexQuotaMonitor.NativeIconMethodsV1]::DestroyIcon($Handle)
+        }
+
+        { & $View.Dispose } | Should -Throw
+        $View.State.ManagedDisposed | Should -BeTrue
+        $View.State.Disposed | Should -BeFalse
+        @($View.Resources.Values | Where-Object Handle -ne ([IntPtr]::Zero)).Count | Should -Be 1
+        @($script:DestroyedHandles).Count | Should -Be 3
+
+        { & $View.Dispose } | Should -Not -Throw
+        $View.State.Disposed | Should -BeTrue
+        @($View.Resources.Values | Where-Object Handle -ne ([IntPtr]::Zero)).Count | Should -Be 0
+        $script:FailureAttempts | Should -Be 2
+        @($script:DestroyedHandles | Select-Object -Unique).Count | Should -Be 4
+        $script:View = $null
+    }
+
     It 'can be dot-sourced repeatedly without a native type collision' {
         { . $script:TrayViewPath; . $script:TrayViewPath } | Should -Not -Throw
         'CodexQuotaMonitor.NativeIconMethodsV1' -as [type] | Should -Not -BeNullOrEmpty

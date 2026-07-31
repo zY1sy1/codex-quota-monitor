@@ -191,6 +191,7 @@ function New-TrayView {
 
         $state = [pscustomobject][ordered]@{
             OwnerThreadId = [Threading.Thread]::CurrentThread.ManagedThreadId
+            ManagedDisposed = $false
             Disposed = $false
             Severity = 'Gray'
             Callbacks = [pscustomobject][ordered]@{
@@ -367,57 +368,84 @@ function New-TrayView {
                 return
             }
 
-            $state.Disposed = $true
             $state.Callbacks = $null
             $firstError = $null
 
-            try { $notifyIcon.Visible = $false } catch { $firstError = $_ }
+            if (-not $state.ManagedDisposed) {
+                try { $notifyIcon.Visible = $false } catch { $firstError = $_ }
 
-            foreach ($binding in @(
-                @($menuItems.ToggleVisibility, 'Click', $state.Delegates.ToggleVisibility),
-                @($menuItems.Topmost, 'Click', $state.Delegates.Topmost),
-                @($menuItems.Refresh, 'Click', $state.Delegates.Refresh),
-                @($menuItems.Startup, 'Click', $state.Delegates.Startup),
-                @($menuItems.Usage, 'Click', $state.Delegates.Usage),
-                @($menuItems.Logs, 'Click', $state.Delegates.Logs),
-                @($menuItems.Exit, 'Click', $state.Delegates.Exit)
-            )) {
-                try { $binding[0].remove_Click([EventHandler]$binding[2]) } catch {
+                foreach ($binding in @(
+                    @($menuItems.ToggleVisibility, $state.Delegates.ToggleVisibility),
+                    @($menuItems.Topmost, $state.Delegates.Topmost),
+                    @($menuItems.Refresh, $state.Delegates.Refresh),
+                    @($menuItems.Startup, $state.Delegates.Startup),
+                    @($menuItems.Usage, $state.Delegates.Usage),
+                    @($menuItems.Logs, $state.Delegates.Logs),
+                    @($menuItems.Exit, $state.Delegates.Exit)
+                )) {
+                    try { $binding[0].remove_Click([EventHandler]$binding[1]) } catch {
+                        if ($null -eq $firstError) { $firstError = $_ }
+                    }
+                }
+                try { $notifyIcon.remove_DoubleClick([EventHandler]$state.Delegates.DoubleClick) } catch {
                     if ($null -eq $firstError) { $firstError = $_ }
                 }
-            }
-            try { $notifyIcon.remove_DoubleClick([EventHandler]$state.Delegates.DoubleClick) } catch {
-                if ($null -eq $firstError) { $firstError = $_ }
+
+                try { $notifyIcon.Icon = $null } catch {
+                    if ($null -eq $firstError) { $firstError = $_ }
+                }
+                try { $notifyIcon.ContextMenuStrip = $null } catch {
+                    if ($null -eq $firstError) { $firstError = $_ }
+                }
+                try { $notifyIcon.Dispose() } catch {
+                    if ($null -eq $firstError) { $firstError = $_ }
+                }
+                try { $contextMenu.Dispose() } catch {
+                    if ($null -eq $firstError) { $firstError = $_ }
+                }
+
+                foreach ($resource in $resources.Values) {
+                    try { $resource.Icon.Dispose() } catch {
+                        if ($null -eq $firstError) { $firstError = $_ }
+                    }
+                    try { $resource.Bitmap.Dispose() } catch {
+                        if ($null -eq $firstError) { $firstError = $_ }
+                    }
+                }
+                $state.Delegates = $null
+
+                if ($null -eq $firstError) {
+                    $state.ManagedDisposed = $true
+                }
             }
 
-            try { $notifyIcon.Icon = $null } catch {
-                if ($null -eq $firstError) { $firstError = $_ }
-            }
-            try { $notifyIcon.ContextMenuStrip = $null } catch {
-                if ($null -eq $firstError) { $firstError = $_ }
-            }
-            try { $notifyIcon.Dispose() } catch {
-                if ($null -eq $firstError) { $firstError = $_ }
-            }
-            try { $contextMenu.Dispose() } catch {
-                if ($null -eq $firstError) { $firstError = $_ }
+            if ($null -ne $firstError) {
+                throw $firstError
             }
 
             foreach ($resource in $resources.Values) {
-                try { $resource.Icon.Dispose() } catch {
-                    if ($null -eq $firstError) { $firstError = $_ }
+                if ($resource.Handle -eq [IntPtr]::Zero) {
+                    continue
                 }
-                if ($resource.Handle -ne [IntPtr]::Zero) {
-                    try { & $DestroyIconAction $resource.Handle | Out-Null } catch {
-                        if ($null -eq $firstError) { $firstError = $_ }
+
+                try {
+                    $destroyed = & $DestroyIconAction $resource.Handle
+                    if ($destroyed -is [bool] -and -not $destroyed) {
+                        throw [InvalidOperationException]::new(
+                            'The native tray icon handle could not be released.'
+                        )
                     }
                     $resource.Handle = [IntPtr]::Zero
                 }
-                try { $resource.Bitmap.Dispose() } catch {
+                catch {
                     if ($null -eq $firstError) { $firstError = $_ }
                 }
             }
-            $state.Delegates = $null
+
+            $remainingHandles = @(
+                $resources.Values | Where-Object Handle -ne ([IntPtr]::Zero)
+            ).Count
+            $state.Disposed = $state.ManagedDisposed -and $remainingHandles -eq 0
 
             if ($null -ne $firstError) {
                 throw $firstError
@@ -443,6 +471,8 @@ function New-TrayView {
         return $view
     }
     catch {
+        $constructionError = $_
+        $unreleasedHandles = [Collections.Generic.List[long]]::new()
         if ($null -ne $notifyIcon) {
             try { $notifyIcon.Visible = $false } catch { }
             try { $notifyIcon.Dispose() } catch { }
@@ -453,11 +483,24 @@ function New-TrayView {
         foreach ($resource in $resources.Values) {
             try { $resource.Icon.Dispose() } catch { }
             if ($resource.Handle -ne [IntPtr]::Zero) {
-                try { & $DestroyIconAction $resource.Handle | Out-Null } catch { }
-                $resource.Handle = [IntPtr]::Zero
+                try {
+                    $destroyed = & $DestroyIconAction $resource.Handle
+                    if ($destroyed -is [bool] -and -not $destroyed) {
+                        $unreleasedHandles.Add($resource.Handle.ToInt64())
+                    }
+                    else {
+                        $resource.Handle = [IntPtr]::Zero
+                    }
+                }
+                catch {
+                    $unreleasedHandles.Add($resource.Handle.ToInt64())
+                }
             }
             try { $resource.Bitmap.Dispose() } catch { }
         }
-        throw
+        if ($unreleasedHandles.Count -gt 0) {
+            $constructionError.Exception.Data['UnreleasedIconHandles'] = [long[]]$unreleasedHandles.ToArray()
+        }
+        throw $constructionError
     }
 }

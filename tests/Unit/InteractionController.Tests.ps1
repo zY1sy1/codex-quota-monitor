@@ -34,8 +34,11 @@ Describe 'monitor interaction controller' {
             DisposeCalls = 0
         }
         $script:SaveCalls = 0
+        $script:SaveFailuresRemaining = 0
         $script:ApplyStartupCalls = [Collections.Generic.List[bool]]::new()
         $script:StartupFailure = $false
+        $script:TrayTopmostFailuresRemaining = 0
+        $script:TrayStartupFailuresRemaining = 0
         $script:RefreshCalls = 0
         $script:OpenedTargets = [Collections.Generic.List[string]]::new()
         $script:ExitEvent = [Threading.EventWaitHandle]::new(
@@ -102,10 +105,18 @@ Describe 'monitor interaction controller' {
             }
             SetTopmostChecked = {
                 param([bool]$Checked)
+                if ($script:TrayTopmostFailuresRemaining -gt 0) {
+                    $script:TrayTopmostFailuresRemaining--
+                    throw 'Synthetic tray topmost failure.'
+                }
                 $script:TrayState.TopmostChecked = $Checked
             }
             SetStartupChecked = {
                 param([bool]$Checked)
+                if ($script:TrayStartupFailuresRemaining -gt 0) {
+                    $script:TrayStartupFailuresRemaining--
+                    throw 'Synthetic tray startup failure.'
+                }
                 $script:TrayState.StartupChecked = $Checked
             }
             Dispose = { $script:TrayState.DisposeCalls++ }
@@ -115,7 +126,14 @@ Describe 'monitor interaction controller' {
             -Settings $script:Settings `
             -WindowView $script:WindowView `
             -TrayView $script:TrayView `
-            -SaveSettings { param($value) $script:SaveCalls++ } `
+            -SaveSettings {
+                param($value)
+                $script:SaveCalls++
+                if ($script:SaveFailuresRemaining -gt 0) {
+                    $script:SaveFailuresRemaining--
+                    throw 'Synthetic save failure.'
+                }
+            } `
             -ApplyStartupPreference {
                 param([bool]$enabled)
                 $script:ApplyStartupCalls.Add($enabled)
@@ -184,6 +202,18 @@ Describe 'monitor interaction controller' {
         $script:SaveCalls | Should -Be 1
     }
 
+    It 'rolls topmost back across adapters and memory when persistence fails' {
+        $script:SaveFailuresRemaining = 1
+
+        { & $script:WindowCallbacks.OnToggleTopmost } | Should -Throw 'Synthetic save failure.'
+
+        $script:Settings.Window.Topmost | Should -BeTrue
+        $script:WindowState.Topmost | Should -BeTrue
+        @($script:WindowState.SetTopmostCalls) | Should -Be @($false, $true)
+        $script:TrayState.TopmostChecked | Should -BeTrue
+        $script:SaveCalls | Should -Be 1
+    }
+
     It 'persists only finite dragged coordinates' {
         & $script:WindowCallbacks.OnDrag ([pscustomobject]@{
             Left = [double]111.5
@@ -224,6 +254,28 @@ Describe 'monitor interaction controller' {
         $script:Settings.Startup | Should -BeTrue
         $script:TrayState.StartupChecked | Should -BeTrue
         $script:SaveCalls | Should -Be 2
+    }
+
+    It 'compensates the startup operation when the tray update fails' {
+        $script:TrayStartupFailuresRemaining = 1
+
+        { & $script:TrayCallbacks.OnToggleStartup } | Should -Throw 'Synthetic tray startup failure.'
+
+        @($script:ApplyStartupCalls) | Should -Be @($false, $true)
+        $script:Settings.Startup | Should -BeTrue
+        $script:TrayState.StartupChecked | Should -BeTrue
+        $script:SaveCalls | Should -Be 0
+    }
+
+    It 'rolls startup back across the system tray and memory when persistence fails' {
+        $script:SaveFailuresRemaining = 1
+
+        { & $script:TrayCallbacks.OnToggleStartup } | Should -Throw 'Synthetic save failure.'
+
+        @($script:ApplyStartupCalls) | Should -Be @($false, $true)
+        $script:Settings.Startup | Should -BeTrue
+        $script:TrayState.StartupChecked | Should -BeTrue
+        $script:SaveCalls | Should -Be 1
     }
 
     It 'preserves startup state and check state when applying the preference fails' {
