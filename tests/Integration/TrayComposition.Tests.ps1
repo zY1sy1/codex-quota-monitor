@@ -1,0 +1,179 @@
+BeforeAll {
+    . (Join-Path $PSScriptRoot '..\..\companion\Private\ObjectAccess.ps1')
+    . (Join-Path $PSScriptRoot '..\..\companion\Private\Presentation.ps1')
+
+    $script:TrayViewPath = Join-Path $PSScriptRoot '..\..\companion\Private\TrayView.ps1'
+    if (Test-Path -LiteralPath $script:TrayViewPath -PathType Leaf) {
+        . $script:TrayViewPath
+    }
+
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.Windows.Forms
+}
+
+Describe 'system tray composition' {
+    BeforeEach {
+        $script:DestroyedHandles = [Collections.Generic.List[long]]::new()
+        $script:View = New-TrayView -Visible:$false -DestroyIconAction {
+            param([IntPtr]$Handle)
+
+            $script:DestroyedHandles.Add($Handle.ToInt64())
+            [CodexQuotaMonitor.NativeIconMethodsV1]::DestroyIcon($Handle) | Out-Null
+        }
+    }
+
+    AfterEach {
+        if ($null -ne $script:View -and -not $script:View.State.Disposed) {
+            & $script:View.Dispose
+        }
+    }
+
+    It 'requires an STA thread and starts hidden when requested' {
+        [Threading.Thread]::CurrentThread.GetApartmentState().ToString() | Should -BeExactly 'STA'
+        $View.NotifyIcon | Should -BeOfType ([Windows.Forms.NotifyIcon])
+        $View.NotifyIcon.Visible | Should -BeFalse
+        $View.ContextMenu | Should -BeOfType ([Windows.Forms.ContextMenuStrip])
+    }
+
+    It 'builds the exact ordered Chinese menu contract' {
+        @($View.ContextMenu.Items | ForEach-Object Text) | Should -Be @(
+            '显示/隐藏'
+            '始终置顶'
+            '立即刷新'
+            '开机启动'
+            '打开官方额度页面'
+            '查看日志'
+            '退出'
+        )
+
+        @($View.MenuItems.Keys) | Should -Be @(
+            'ToggleVisibility', 'Topmost', 'Refresh', 'Startup', 'Usage', 'Logs', 'Exit'
+        )
+    }
+
+    It 'creates four retained 32-pixel native icon resources' {
+        @($View.Resources.Keys) | Should -Be @('Green', 'Yellow', 'Red', 'Gray')
+        $handles = foreach ($severity in @('Green', 'Yellow', 'Red', 'Gray')) {
+            $resource = $View.Resources[$severity]
+            $resource.Bitmap | Should -BeOfType ([Drawing.Bitmap])
+            $resource.Bitmap.Width | Should -Be 32
+            $resource.Bitmap.Height | Should -Be 32
+            $resource.Icon | Should -BeOfType ([Drawing.Icon])
+            $resource.Handle | Should -Not -Be ([IntPtr]::Zero)
+            $resource.Handle.ToInt64()
+        }
+
+        @($handles | Select-Object -Unique).Count | Should -Be 4
+    }
+
+    It 'replaces callbacks atomically and routes menu plus double-click exactly once' {
+        $calls = [Collections.Generic.List[string]]::new()
+        & $View.SetCallbacks `
+            -OnToggleVisibility { $calls.Add('visibility') } `
+            -OnToggleTopmost { $calls.Add('topmost') } `
+            -OnRefresh { $calls.Add('refresh') } `
+            -OnToggleStartup { $calls.Add('startup') } `
+            -OnOpenUsage { $calls.Add('usage') } `
+            -OnOpenLogs { $calls.Add('logs') } `
+            -OnExit { $calls.Add('exit') }
+
+        foreach ($key in @('ToggleVisibility', 'Topmost', 'Refresh', 'Startup', 'Usage', 'Logs', 'Exit')) {
+            $View.MenuItems[$key].PerformClick()
+        }
+        $View.State.Delegates.DoubleClick.Invoke($View.NotifyIcon, [EventArgs]::Empty)
+
+        @($calls) | Should -Be @(
+            'visibility', 'topmost', 'refresh', 'startup', 'usage', 'logs', 'exit', 'visibility'
+        )
+        @($View.State.Callbacks.PSObject.Properties.Name) | Should -Be @(
+            'OnToggleVisibility', 'OnToggleTopmost', 'OnRefresh', 'OnToggleStartup',
+            'OnOpenUsage', 'OnOpenLogs', 'OnExit'
+        )
+    }
+
+    It 'switches severity using retained handles that survive collection' {
+        foreach ($severity in @('Green', 'Yellow', 'Red', 'Gray')) {
+            & $View.SetSeverity $severity
+            [GC]::Collect()
+            [GC]::WaitForPendingFinalizers()
+
+            $View.State.Severity | Should -BeExactly $severity
+            $View.NotifyIcon.Icon.Handle | Should -Be $View.Resources[$severity].Icon.Handle
+            $View.Resources[$severity].Handle | Should -Not -Be ([IntPtr]::Zero)
+        }
+    }
+
+    It 'limits tooltip text without splitting Unicode text elements' {
+        $text = ('额度🚀e' + [char]0x0301 + ' · ') * 20
+        $expected = Limit-TextElementLength -Text $text -MaximumLength 63
+
+        & $View.SetTooltip $text
+
+        $View.NotifyIcon.Text | Should -BeExactly $expected
+        $View.NotifyIcon.Text.Length | Should -BeLessOrEqual 63
+        [Globalization.StringInfo]::ParseCombiningCharacters($View.NotifyIcon.Text) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'updates check marks without invoking action callbacks' {
+        $script:calls = 0
+        & $View.SetCallbacks `
+            -OnToggleTopmost { $script:calls++ } `
+            -OnToggleStartup { $script:calls++ }
+
+        & $View.SetTopmostChecked $true
+        & $View.SetStartupChecked $true
+
+        $View.MenuItems.Topmost.Checked | Should -BeTrue
+        $View.MenuItems.Startup.Checked | Should -BeTrue
+        $script:calls | Should -Be 0
+    }
+
+    It 'clears callbacks and destroys every retained native handle exactly once' {
+        $expectedHandles = @($View.Resources.Values | ForEach-Object { $_.Handle.ToInt64() })
+
+        { & $View.Dispose; & $View.Dispose } | Should -Not -Throw
+
+        $View.State.Disposed | Should -BeTrue
+        $View.State.Callbacks | Should -BeNullOrEmpty
+        $View.NotifyIcon.Visible | Should -BeFalse
+        $View.NotifyIcon.Icon | Should -BeNullOrEmpty
+        @($script:DestroyedHandles).Count | Should -Be 4
+        @($script:DestroyedHandles | Select-Object -Unique).Count | Should -Be 4
+        @($script:DestroyedHandles | Sort-Object) | Should -Be @($expectedHandles | Sort-Object)
+        $script:View = $null
+    }
+
+    It 'can be dot-sourced repeatedly without a native type collision' {
+        { . $script:TrayViewPath; . $script:TrayViewPath } | Should -Not -Throw
+        'CodexQuotaMonitor.NativeIconMethodsV1' -as [type] | Should -Not -BeNullOrEmpty
+    }
+
+    It 'rejects MTA deterministically in a separate PowerShell process' {
+        $pwsh = (Get-Process -Id $PID).Path
+        $escapedView = $TrayViewPath.Replace("'", "''")
+        $command = @"
+. '$escapedView'
+try {
+    New-TrayView -Visible:`$false | Out-Null
+    exit 19
+}
+catch {
+    if (`$_.Exception.Message -ne 'Codex quota tray view requires an STA thread.') {
+        [Console]::Error.WriteLine(`$_.Exception.Message)
+        exit 20
+    }
+    exit 0
+}
+"@
+
+        $process = Start-Process -FilePath $pwsh -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-Mta', '-Command', $command
+        ) -Wait -PassThru -WindowStyle Hidden
+        try {
+            $process.ExitCode | Should -Be 0
+        }
+        finally {
+            $process.Dispose()
+        }
+    }
+}
