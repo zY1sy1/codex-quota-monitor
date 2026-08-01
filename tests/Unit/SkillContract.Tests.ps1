@@ -46,8 +46,8 @@ BeforeAll {
             '(?m)^When the user expects ChatGPT subscription quota and the account uses supported ChatGPT authentication, additionally run the `-Live` command',
             'Do not require `-Live` for signed-out, API-key-only, Bedrock, or valid zero-window states;',
             '(?m)^Use `-PreserveData` .* only when the user explicitly asks to retain monitor data, settings, or logs\.',
-            '(?m)^- Never print credentials, tokens, environment secrets, `auth\.json`, provider headers, raw App Server messages, raw JSON-RPC traffic, or full logs\.$',
-            '(?m)^- Closing the floating window \(`Close`\) hides it to the system tray\. Choosing `Exit` from the tray stops monitoring\.$'
+            '(?m)^- Never print credentials, tokens, environment secrets, `auth\.json`, provider headers, raw App Server messages, raw JSON-RPC traffic, or full logs\.\r?$',
+            '(?m)^- Closing the floating window \(`Close`\) hides it to the system tray\. Choosing `Exit` from the tray stops monitoring\.\r?$'
         )
 
         foreach ($pattern in $requiredPatterns) {
@@ -136,6 +136,12 @@ Describe 'Codex quota monitor management skill contract' {
         $SkillContent | Should -Match '(?i)API-key-only and Bedrock authentication do not expose ChatGPT quota'
         $SkillContent | Should -Match 'verify the process with ordinary health, then use `-Live` only when ChatGPT quota is expected'
         $SkillContent | Should -Not -Match '(?mi)^(?:After install|\| Starting again immediately after Install \|)[^\r\n]*verify with `-Live`'
+    }
+
+    It 'accepts policy lines with CRLF endings' {
+        $crlfContent = $SkillContent -replace "(?<!`r)`n", "`r`n"
+
+        Test-SkillPolicyContract -Content $crlfContent | Should -BeTrue
     }
 
     It 'rejects reversed privacy and account-health policies even when all keywords remain' {
