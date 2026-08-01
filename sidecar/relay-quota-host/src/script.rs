@@ -17,17 +17,30 @@ use std::{
 
 use rquickjs::{
     allocator::{Allocator, RustAllocator},
-    qjs, Atom, Context, Ctx, Error as QuickJsError, Filter, Object, Runtime, Value,
+    qjs, Array, Atom, Context, Ctx, Error as QuickJsError, Filter, Object, Runtime, Value,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{SanitizedError, SecretSet};
+use crate::protocol::{SanitizedError, SecretSet, UsageResult};
 
 const MAX_SCRIPT_BYTES: usize = 256 * 1024;
 const MAX_SUBSTITUTED_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
-const MAX_WORKER_INPUT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_WORKER_OUTPUT_BYTES: usize = 128 * 1024;
+const MAX_REQUEST_WORKER_INPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_REQUEST_WORKER_OUTPUT_BYTES: usize = 128 * 1024;
+const MAX_EXTRACTOR_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_EXTRACTOR_WORKER_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_NORMALIZED_RESULT_BYTES: usize = 256 * 1024;
+const MAX_EXTRACTOR_WORKER_OUTPUT_BYTES: usize = MAX_NORMALIZED_RESULT_BYTES + 1024;
+const MAX_RESULT_STRING_BYTES: usize = 4096;
+// With the stable public field order, empty strings for all four string fields,
+// zeroes for all three numeric fields, and `isValid:true`, one normalized
+// UsageResult is at least 110 JSON bytes. A JSON array adds one comma per item
+// after the first plus two brackets, so 2,362 minimum-sized items cannot fit
+// within 256 KiB while 2,361 can.
+const MIN_NORMALIZED_RESULT_BYTES: usize = 110;
+const MAX_RESULT_COUNT: usize =
+    (MAX_NORMALIZED_RESULT_BYTES - 1) / (MIN_NORMALIZED_RESULT_BYTES + 1);
 const SCRIPT_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 const ALLOCATION_ALIGNMENT: usize = std::mem::align_of::<u64>();
 #[cfg(target_vendor = "apple")]
@@ -42,6 +55,39 @@ const SUPERVISOR_DEADLINE: Duration = Duration::from_millis(1000);
 const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(2);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Initial, synthetic-contract Wakaka preset. The extractor accepts either a
+/// wallet record or a list of quota plans from the response's `data` object.
+pub const WAKAKA_PRESET_SCRIPT: &str = r#"({
+  request: {
+    url: "{{baseUrl}}/v1/usage",
+    method: "GET",
+    headers: { Authorization: "Bearer {{apiKey}}" },
+    body: undefined
+  },
+  extractor: response => {
+    const data = response.data ?? response;
+    if (Array.isArray(data.plans) && data.plans.length > 0) {
+      return data.plans.map(plan => ({
+        isValid: response.success ?? true,
+        invalidMessage: response.message ?? null,
+        remaining: plan.remaining,
+        unit: plan.unit ?? null,
+        planName: plan.name ?? null,
+        total: plan.total ?? null,
+        used: plan.used ?? null,
+        extra: plan.reset ?? null
+      }));
+    }
+    return {
+      isValid: response.success ?? true,
+      invalidMessage: response.message ?? null,
+      remaining: data.balance,
+      unit: data.currency ?? "USD",
+      planName: "Wallet"
+    };
+  }
+})"#;
 
 #[derive(Clone, PartialEq)]
 pub struct ScriptRequest {
@@ -68,10 +114,46 @@ struct WorkerSecrets {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExtractorWorkerInput {
+    script: String,
+    response_json: String,
+    base_url: String,
+    secrets: WorkerSecrets,
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
 enum WorkerOutput {
     Request { request: WireRequest },
     Error { category: WorkerErrorCategory },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+enum ExtractorWorkerOutput {
+    Results { results: Vec<WireUsageResult> },
+    Error { category: WorkerErrorCategory },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum ExtractorWorkerResponse<'a> {
+    Results { results: &'a [UsageResult] },
+    Error { category: WorkerErrorCategory },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireUsageResult {
+    is_valid: bool,
+    invalid_message: Option<String>,
+    remaining: Option<f64>,
+    unit: Option<String>,
+    plan_name: Option<String>,
+    total: Option<f64>,
+    used: Option<f64>,
+    extra: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -91,6 +173,38 @@ enum WorkerErrorCategory {
     ScriptMemory,
     RequestValidation,
     RequestTooLarge,
+    ExtractorExecution,
+    ResultValidation,
+    SidecarLifecycle,
+}
+
+#[derive(Clone, Copy)]
+enum WorkerMode {
+    Request,
+    Extractor,
+}
+
+impl WorkerMode {
+    const fn argument(self) -> &'static str {
+        match self {
+            Self::Request => "--request-worker",
+            Self::Extractor => "--extractor-worker",
+        }
+    }
+
+    const fn input_limit(self) -> usize {
+        match self {
+            Self::Request => MAX_REQUEST_WORKER_INPUT_BYTES,
+            Self::Extractor => MAX_EXTRACTOR_WORKER_INPUT_BYTES,
+        }
+    }
+
+    const fn output_limit(self) -> usize {
+        match self {
+            Self::Request => MAX_REQUEST_WORKER_OUTPUT_BYTES,
+            Self::Extractor => MAX_EXTRACTOR_WORKER_OUTPUT_BYTES,
+        }
+    }
 }
 
 pub fn replace_tokens(script: &str, base_url: &str, secrets: &SecretSet) -> String {
@@ -118,7 +232,7 @@ pub fn evaluate_request(
 
     let worst_case_size = worker_input_worst_case_size(script, base_url, secrets)
         .ok_or_else(request_too_large_error)?;
-    if worst_case_size > MAX_WORKER_INPUT_BYTES {
+    if worst_case_size > MAX_REQUEST_WORKER_INPUT_BYTES {
         return Err(request_too_large_error());
     }
     if Instant::now() >= deadline {
@@ -135,14 +249,15 @@ pub fn evaluate_request(
         },
     };
     let encoded = serde_json::to_vec(&input).map_err(|_| script_worker_error())?;
-    if encoded.len() > MAX_WORKER_INPUT_BYTES {
+    if encoded.len() > MAX_REQUEST_WORKER_INPUT_BYTES {
         return Err(request_too_large_error());
     }
     if Instant::now() >= deadline {
         return Err(script_timeout_error());
     }
 
-    match supervise_request_worker(encoded, deadline)? {
+    let output = supervise_script_worker(encoded, deadline, WorkerMode::Request)?;
+    match serde_json::from_slice(&output).map_err(|_| script_worker_error())? {
         WorkerOutput::Request { request } => Ok(ScriptRequest {
             url: request.url,
             method: request.method,
@@ -151,6 +266,158 @@ pub fn evaluate_request(
         }),
         WorkerOutput::Error { category } => Err(category.into_sanitized_error()),
     }
+}
+
+pub fn evaluate_extractor(
+    script: &str,
+    response: &serde_json::Value,
+) -> Result<Vec<UsageResult>, SanitizedError> {
+    evaluate_extractor_with_context(script, response, "", &SecretSet::default())
+}
+
+pub fn evaluate_extractor_with_context(
+    script: &str,
+    response: &serde_json::Value,
+    base_url: &str,
+    secrets: &SecretSet,
+) -> Result<Vec<UsageResult>, SanitizedError> {
+    let deadline = Instant::now() + SUPERVISOR_DEADLINE;
+    if script.len() > MAX_SCRIPT_BYTES {
+        return Err(request_too_large_error());
+    }
+
+    let response_json = serde_json::to_string(response).map_err(|_| result_validation_error())?;
+    if response_json.len() > MAX_EXTRACTOR_RESPONSE_BYTES {
+        return Err(result_validation_error());
+    }
+    if Instant::now() >= deadline {
+        return Err(script_timeout_error());
+    }
+
+    let worst_case_size =
+        extractor_worker_input_worst_case_size(script, &response_json, base_url, secrets)
+            .ok_or_else(request_too_large_error)?;
+    if worst_case_size > MAX_EXTRACTOR_WORKER_INPUT_BYTES {
+        return Err(request_too_large_error());
+    }
+
+    let input = ExtractorWorkerInput {
+        script: script.into(),
+        response_json,
+        base_url: base_url.into(),
+        secrets: WorkerSecrets {
+            api_key: secrets.api_key.clone(),
+            access_token: secrets.access_token.clone(),
+            user_id: secrets.user_id.clone(),
+        },
+    };
+    let encoded = serde_json::to_vec(&input).map_err(|_| script_worker_error())?;
+    if encoded.len() > MAX_EXTRACTOR_WORKER_INPUT_BYTES {
+        return Err(request_too_large_error());
+    }
+    if Instant::now() >= deadline {
+        return Err(script_timeout_error());
+    }
+
+    let output = supervise_script_worker(encoded, deadline, WorkerMode::Extractor)?;
+    match serde_json::from_slice(&output).map_err(|_| script_worker_error())? {
+        ExtractorWorkerOutput::Results { results } => validate_wire_results(results),
+        ExtractorWorkerOutput::Error { category } => Err(category.into_sanitized_error()),
+    }
+}
+
+fn extractor_worker_input_worst_case_size(
+    script: &str,
+    response_json: &str,
+    base_url: &str,
+    secrets: &SecretSet,
+) -> Option<usize> {
+    [
+        script.len(),
+        response_json.len(),
+        base_url.len(),
+        secrets.api_key.len(),
+        secrets.access_token.len(),
+        secrets.user_id.len(),
+    ]
+    .into_iter()
+    .try_fold(1024usize, |size, field_size| {
+        size.checked_add(field_size.checked_mul(6)?)
+    })
+}
+
+fn validate_wire_results(
+    wire_results: Vec<WireUsageResult>,
+) -> Result<Vec<UsageResult>, SanitizedError> {
+    if wire_results.is_empty() || wire_results.len() > MAX_RESULT_COUNT {
+        return Err(result_validation_error());
+    }
+    let mut results = Vec::new();
+    results
+        .try_reserve_exact(wire_results.len())
+        .map_err(|_| result_validation_error())?;
+    let mut encoded_size = 2usize;
+    for wire in wire_results {
+        let result = validate_wire_result(wire)?;
+        push_normalized_result(&mut results, result, &mut encoded_size)?;
+    }
+    Ok(results)
+}
+
+fn validate_wire_result(wire: WireUsageResult) -> Result<UsageResult, SanitizedError> {
+    Ok(UsageResult {
+        is_valid: wire.is_valid,
+        invalid_message: validate_wire_string(wire.invalid_message)?,
+        remaining: validate_wire_number(wire.remaining)?,
+        unit: validate_wire_string(wire.unit)?,
+        plan_name: validate_wire_string(wire.plan_name)?,
+        total: validate_wire_number(wire.total)?,
+        used: validate_wire_number(wire.used)?,
+        extra: validate_wire_string(wire.extra)?,
+    })
+}
+
+fn validate_wire_string(value: Option<String>) -> Result<Option<String>, SanitizedError> {
+    if value
+        .as_ref()
+        .is_some_and(|value| value.len() > MAX_RESULT_STRING_BYTES)
+    {
+        Err(result_validation_error())
+    } else {
+        Ok(value)
+    }
+}
+
+fn validate_wire_number(value: Option<f64>) -> Result<Option<f64>, SanitizedError> {
+    if value.is_some_and(|value| !value.is_finite()) {
+        Err(result_validation_error())
+    } else {
+        Ok(value)
+    }
+}
+
+fn push_normalized_result(
+    results: &mut Vec<UsageResult>,
+    result: UsageResult,
+    encoded_size: &mut usize,
+) -> Result<(), SanitizedError> {
+    let result_size = serde_json::to_vec(&result)
+        .map_err(|_| result_validation_error())?
+        .len();
+    let separator = usize::from(!results.is_empty());
+    let next_size = encoded_size
+        .checked_add(separator)
+        .and_then(|size| size.checked_add(result_size))
+        .ok_or_else(result_validation_error)?;
+    if next_size > MAX_NORMALIZED_RESULT_BYTES {
+        return Err(result_validation_error());
+    }
+    results
+        .try_reserve(1)
+        .map_err(|_| result_validation_error())?;
+    results.push(result);
+    *encoded_size = next_size;
+    Ok(())
 }
 
 fn worker_input_worst_case_size(
@@ -171,16 +438,17 @@ fn worker_input_worst_case_size(
     })
 }
 
-fn supervise_request_worker(
+fn supervise_script_worker(
     input: Vec<u8>,
     deadline: Instant,
-) -> Result<WorkerOutput, SanitizedError> {
+    mode: WorkerMode,
+) -> Result<Vec<u8>, SanitizedError> {
     let executable = request_worker_executable()?;
     if Instant::now() >= deadline {
         return Err(script_timeout_error());
     }
 
-    let mut command = request_worker_command(executable);
+    let mut command = script_worker_command(executable, mode);
     let mut child = command.spawn().map_err(|_| script_worker_error())?;
     let Some(mut stdin) = child.stdin.take() else {
         terminate_worker(&mut child);
@@ -192,7 +460,7 @@ fn supervise_request_worker(
     };
 
     let writer = match thread::Builder::new()
-        .name("relay-request-worker-stdin".into())
+        .name("relay-script-worker-stdin".into())
         .spawn(move || stdin.write_all(&input))
     {
         Ok(writer) => writer,
@@ -202,12 +470,12 @@ fn supervise_request_worker(
         }
     };
     let reader = match thread::Builder::new()
-        .name("relay-request-worker-stdout".into())
+        .name("relay-script-worker-stdout".into())
         .spawn(move || {
             let mut output = Vec::new();
             stdout
                 .by_ref()
-                .take((MAX_WORKER_OUTPUT_BYTES + 1) as u64)
+                .take((mode.output_limit() + 1) as u64)
                 .read_to_end(&mut output)?;
             Ok::<Vec<u8>, io::Error>(output)
         }) {
@@ -247,16 +515,16 @@ fn supervise_request_worker(
         .ok()
         .and_then(Result::ok)
         .ok_or_else(script_worker_error)?;
-    if !status.success() || !write_succeeded || output.len() > MAX_WORKER_OUTPUT_BYTES {
+    if !status.success() || !write_succeeded || output.len() > mode.output_limit() {
         return Err(script_worker_error());
     }
-    serde_json::from_slice(&output).map_err(|_| script_worker_error())
+    Ok(output)
 }
 
-fn request_worker_command(executable: PathBuf) -> Command {
+fn script_worker_command(executable: PathBuf, mode: WorkerMode) -> Command {
     let mut command = Command::new(executable);
     command
-        .arg("--request-worker")
+        .arg(mode.argument())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -301,11 +569,15 @@ fn terminate_worker(child: &mut Child) {
 impl WorkerErrorCategory {
     fn from_sanitized_error(error: &SanitizedError) -> Self {
         match error.category.as_str() {
+            "ScriptSyntax" => Self::ScriptSyntax,
             "ScriptTimeout" => Self::ScriptTimeout,
             "ScriptMemory" => Self::ScriptMemory,
             "RequestValidation" => Self::RequestValidation,
             "RequestTooLarge" => Self::RequestTooLarge,
-            _ => Self::ScriptSyntax,
+            "ExtractorExecution" => Self::ExtractorExecution,
+            "ResultValidation" => Self::ResultValidation,
+            "SidecarLifecycle" => Self::SidecarLifecycle,
+            _ => Self::SidecarLifecycle,
         }
     }
 
@@ -316,13 +588,16 @@ impl WorkerErrorCategory {
             Self::ScriptMemory => script_memory_error(),
             Self::RequestValidation => request_validation_error(),
             Self::RequestTooLarge => request_too_large_error(),
+            Self::ExtractorExecution => extractor_execution_error(),
+            Self::ResultValidation => result_validation_error(),
+            Self::SidecarLifecycle => sidecar_lifecycle_error(),
         }
     }
 }
 
 #[doc(hidden)]
 pub fn run_request_worker_mode() -> i32 {
-    let output = read_worker_input()
+    let output = read_worker_input(WorkerMode::Request)
         .and_then(evaluate_request_in_worker)
         .map(|request| WorkerOutput::Request {
             request: WireRequest {
@@ -337,7 +612,7 @@ pub fn run_request_worker_mode() -> i32 {
         });
 
     let encoded = match serde_json::to_vec(&output) {
-        Ok(encoded) if encoded.len() <= MAX_WORKER_OUTPUT_BYTES => encoded,
+        Ok(encoded) if encoded.len() <= MAX_REQUEST_WORKER_OUTPUT_BYTES => encoded,
         _ => match serde_json::to_vec(&WorkerOutput::Error {
             category: WorkerErrorCategory::RequestTooLarge,
         }) {
@@ -351,14 +626,42 @@ pub fn run_request_worker_mode() -> i32 {
     0
 }
 
-fn read_worker_input() -> Result<WorkerInput, SanitizedError> {
+#[doc(hidden)]
+pub fn run_extractor_worker_mode() -> i32 {
+    let evaluated = read_worker_input(WorkerMode::Extractor).and_then(evaluate_extractor_in_worker);
+    let output = match &evaluated {
+        Ok(results) => ExtractorWorkerResponse::Results { results },
+        Err(error) => ExtractorWorkerResponse::Error {
+            category: WorkerErrorCategory::from_sanitized_error(error),
+        },
+    };
+
+    let encoded = match serde_json::to_vec(&output) {
+        Ok(encoded) if encoded.len() <= MAX_EXTRACTOR_WORKER_OUTPUT_BYTES => encoded,
+        _ => match serde_json::to_vec(&ExtractorWorkerResponse::Error {
+            category: WorkerErrorCategory::ResultValidation,
+        }) {
+            Ok(encoded) => encoded,
+            Err(_) => return 1,
+        },
+    };
+    if io::stdout().lock().write_all(&encoded).is_err() {
+        return 1;
+    }
+    0
+}
+
+fn read_worker_input<T>(mode: WorkerMode) -> Result<T, SanitizedError>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let mut encoded = Vec::new();
     io::stdin()
         .lock()
-        .take((MAX_WORKER_INPUT_BYTES + 1) as u64)
+        .take((mode.input_limit() + 1) as u64)
         .read_to_end(&mut encoded)
         .map_err(|_| script_worker_error())?;
-    if encoded.len() > MAX_WORKER_INPUT_BYTES {
+    if encoded.len() > mode.input_limit() {
         return Err(request_too_large_error());
     }
     serde_json::from_slice(&encoded).map_err(|_| script_worker_error())
@@ -371,6 +674,22 @@ fn evaluate_request_in_worker(input: WorkerInput) -> Result<ScriptRequest, Sanit
         user_id: input.secrets.user_id,
     };
     evaluate_request_with_quickjs(&input.script, &input.base_url, &secrets)
+}
+
+fn evaluate_extractor_in_worker(
+    input: ExtractorWorkerInput,
+) -> Result<Vec<UsageResult>, SanitizedError> {
+    let secrets = SecretSet {
+        api_key: input.secrets.api_key,
+        access_token: input.secrets.access_token,
+        user_id: input.secrets.user_id,
+    };
+    evaluate_extractor_with_quickjs(
+        &input.script,
+        &input.response_json,
+        &input.base_url,
+        &secrets,
+    )
 }
 
 fn evaluate_request_with_quickjs(
@@ -419,6 +738,273 @@ fn evaluate_request_with_quickjs(
     context.with(|ctx| evaluate_and_validate_native_request(&ctx, source, &signals))
 }
 
+fn evaluate_extractor_with_quickjs(
+    script: &str,
+    response_json: &str,
+    base_url: &str,
+    secrets: &SecretSet,
+) -> Result<Vec<UsageResult>, SanitizedError> {
+    let deadline = Instant::now() + SCRIPT_DEADLINE;
+    if script.len() > MAX_SCRIPT_BYTES {
+        return Err(request_too_large_error());
+    }
+    if response_json.len() > MAX_EXTRACTOR_RESPONSE_BYTES {
+        return Err(result_validation_error());
+    }
+
+    let replaced = replace_tokens_for_evaluation(script, base_url, secrets)?;
+    let source_len = replaced
+        .len()
+        .checked_add("(\n\n)".len())
+        .ok_or_else(request_too_large_error)?;
+    let mut source = String::new();
+    source
+        .try_reserve_exact(source_len)
+        .map_err(|_| script_memory_error())?;
+    source.push_str("(\n");
+    source.push_str(&replaced);
+    source.push_str("\n)");
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupt_signal = Arc::clone(&interrupted);
+    let allocation_failed = Arc::new(AtomicBool::new(false));
+    let allocator =
+        LimitingAllocator::new(SCRIPT_MEMORY_LIMIT_BYTES, Arc::clone(&allocation_failed));
+    let runtime = Runtime::new_with_alloc(allocator).map_err(|_| script_memory_error())?;
+    runtime.set_interrupt_handler(Some(Box::new(move || {
+        if Instant::now() >= deadline {
+            interrupt_signal.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    })));
+    let context = Context::full(&runtime).map_err(|_| script_memory_error())?;
+    let signals = RuntimeSignals {
+        interrupted: &interrupted,
+        allocation_failed: &allocation_failed,
+    };
+
+    context
+        .with(|ctx| evaluate_and_normalize_native_extractor(&ctx, source, response_json, &signals))
+}
+
+fn evaluate_and_normalize_native_extractor<'js>(
+    ctx: &Ctx<'js>,
+    source: String,
+    response_json: &str,
+    signals: &RuntimeSignals<'_>,
+) -> Result<Vec<UsageResult>, SanitizedError> {
+    let plain_marker = checked_extractor_quickjs(
+        ctx,
+        Object::new(ctx.clone()),
+        signals,
+        extractor_execution_error,
+    )?;
+    let plain_class = unsafe { qjs::JS_GetClassID(plain_marker.as_raw()) };
+    let plain_prototype = plain_marker
+        .get_prototype()
+        .ok_or_else(extractor_execution_error)?;
+    let array_marker = checked_extractor_quickjs(
+        ctx,
+        Array::new(ctx.clone()),
+        signals,
+        extractor_execution_error,
+    )?;
+    let array_class = unsafe { qjs::JS_GetClassID(array_marker.as_object().as_raw()) };
+    let array_prototype = array_marker
+        .as_object()
+        .get_prototype()
+        .ok_or_else(extractor_execution_error)?;
+
+    let script_value = checked_quickjs(ctx, ctx.eval::<Value<'js>, _>(source), signals)?;
+    let script_object = require_plain_object(
+        &script_value,
+        plain_class,
+        &plain_prototype,
+        extractor_execution_error,
+    )?;
+    let extractor_value = get_own_enumerable_field(
+        ctx,
+        &script_object,
+        "extractor",
+        signals,
+        extractor_execution_error,
+    )?
+    .ok_or_else(extractor_execution_error)?;
+    let extractor = extractor_value
+        .as_function()
+        .cloned()
+        .ok_or_else(extractor_execution_error)?;
+
+    let response = checked_extractor_quickjs(
+        ctx,
+        ctx.json_parse(response_json),
+        signals,
+        extractor_execution_error,
+    )?;
+    let extracted = checked_extractor_quickjs(
+        ctx,
+        extractor.call::<_, Value<'js>>((response,)),
+        signals,
+        extractor_execution_error,
+    )?;
+
+    let mut results = Vec::new();
+    let mut encoded_size = 2usize;
+    if let Some(array) = extracted.as_array() {
+        if unsafe { qjs::JS_GetClassID(extracted.as_raw()) } != array_class
+            || array
+                .as_object()
+                .get_prototype()
+                .is_none_or(|prototype| prototype != array_prototype)
+        {
+            return Err(result_validation_error());
+        }
+        let result_count = array.len();
+        if result_count == 0 || result_count > MAX_RESULT_COUNT {
+            return Err(result_validation_error());
+        }
+        results
+            .try_reserve_exact(result_count)
+            .map_err(|_| result_validation_error())?;
+        for value in array.iter::<Value<'js>>() {
+            let value = checked_extractor_quickjs(ctx, value, signals, extractor_execution_error)?;
+            let result =
+                normalize_usage_result(ctx, &value, plain_class, &plain_prototype, signals)?;
+            push_normalized_result(&mut results, result, &mut encoded_size)?;
+        }
+    } else {
+        results
+            .try_reserve_exact(1)
+            .map_err(|_| result_validation_error())?;
+        let result =
+            normalize_usage_result(ctx, &extracted, plain_class, &plain_prototype, signals)?;
+        push_normalized_result(&mut results, result, &mut encoded_size)?;
+    }
+    if let Some(error) = signals.terminal_error() {
+        return Err(error);
+    }
+    signals.terminal_error().map_or(Ok(results), Err)
+}
+
+fn normalize_usage_result<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    plain_class: qjs::JSClassID,
+    plain_prototype: &Object<'js>,
+    signals: &RuntimeSignals<'_>,
+) -> Result<UsageResult, SanitizedError> {
+    let object =
+        require_plain_object(value, plain_class, plain_prototype, result_validation_error)?;
+    reject_enumerable_symbol_properties(ctx, &object, signals)?;
+
+    let is_valid = optional_boolean_field(ctx, &object, "isValid", signals)?.unwrap_or(true);
+    Ok(UsageResult {
+        is_valid,
+        invalid_message: optional_string_field(ctx, &object, "invalidMessage", signals)?,
+        remaining: optional_number_field(ctx, &object, "remaining", signals)?,
+        unit: optional_string_field(ctx, &object, "unit", signals)?,
+        plan_name: optional_string_field(ctx, &object, "planName", signals)?,
+        total: optional_number_field(ctx, &object, "total", signals)?,
+        used: optional_number_field(ctx, &object, "used", signals)?,
+        extra: optional_string_field(ctx, &object, "extra", signals)?,
+    })
+}
+
+fn reject_enumerable_symbol_properties<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    signals: &RuntimeSignals<'_>,
+) -> Result<(), SanitizedError> {
+    let mut keys = object.own_keys::<Atom<'js>>(Filter::new().symbol().enum_only());
+    if let Some(key) = keys.next() {
+        let _ = checked_extractor_quickjs(ctx, key, signals, extractor_execution_error)?;
+        return Err(result_validation_error());
+    }
+    Ok(())
+}
+
+fn get_own_enumerable_field<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    field: &str,
+    signals: &RuntimeSignals<'_>,
+    error: fn() -> SanitizedError,
+) -> Result<Option<Value<'js>>, SanitizedError> {
+    let mut found = false;
+    for key in object.own_keys::<String>(Filter::new().string().enum_only()) {
+        let key = checked_extractor_quickjs(ctx, key, signals, error)?;
+        if key == field {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Ok(None);
+    }
+    checked_extractor_quickjs(ctx, object.get::<_, Value<'js>>(field), signals, error).map(Some)
+}
+
+fn optional_boolean_field<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    field: &str,
+    signals: &RuntimeSignals<'_>,
+) -> Result<Option<bool>, SanitizedError> {
+    match get_own_enumerable_field(ctx, object, field, signals, extractor_execution_error)? {
+        None => Ok(None),
+        Some(value) if value.is_null() || value.is_undefined() => Ok(None),
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(result_validation_error),
+    }
+}
+
+fn optional_number_field<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    field: &str,
+    signals: &RuntimeSignals<'_>,
+) -> Result<Option<f64>, SanitizedError> {
+    match get_own_enumerable_field(ctx, object, field, signals, extractor_execution_error)? {
+        None => Ok(None),
+        Some(value) if value.is_null() || value.is_undefined() => Ok(None),
+        Some(value) => value
+            .as_number()
+            .filter(|number| number.is_finite())
+            .map(Some)
+            .ok_or_else(result_validation_error),
+    }
+}
+
+fn optional_string_field<'js>(
+    ctx: &Ctx<'js>,
+    object: &Object<'js>,
+    field: &str,
+    signals: &RuntimeSignals<'_>,
+) -> Result<Option<String>, SanitizedError> {
+    match get_own_enumerable_field(ctx, object, field, signals, extractor_execution_error)? {
+        None => Ok(None),
+        Some(value) if value.is_null() || value.is_undefined() => Ok(None),
+        Some(value) => {
+            let value = value.as_string().ok_or_else(result_validation_error)?;
+            let value = checked_extractor_quickjs(
+                ctx,
+                value.to_string(),
+                signals,
+                extractor_execution_error,
+            )?;
+            if value.len() > MAX_RESULT_STRING_BYTES {
+                Err(result_validation_error())
+            } else {
+                Ok(Some(value))
+            }
+        }
+    }
+}
+
 struct RuntimeSignals<'a> {
     interrupted: &'a AtomicBool,
     allocation_failed: &'a AtomicBool,
@@ -458,6 +1044,29 @@ fn checked_quickjs<'js, T>(
     }
 }
 
+fn checked_extractor_quickjs<'js, T>(
+    ctx: &Ctx<'js>,
+    result: rquickjs::Result<T>,
+    signals: &RuntimeSignals<'_>,
+    error: fn() -> SanitizedError,
+) -> Result<T, SanitizedError> {
+    match result {
+        Ok(value) => signals.terminal_error().map_or(Ok(value), Err),
+        Err(quickjs_error) => {
+            if matches!(quickjs_error, QuickJsError::Exception) {
+                let _ = ctx.catch();
+            }
+            if let Some(terminal) = signals.terminal_error() {
+                Err(terminal)
+            } else if matches!(quickjs_error, QuickJsError::Allocation) {
+                Err(script_memory_error())
+            } else {
+                Err(error())
+            }
+        }
+    }
+}
+
 fn evaluate_and_validate_native_request<'js>(
     ctx: &Ctx<'js>,
     source: String,
@@ -470,13 +1079,23 @@ fn evaluate_and_validate_native_request<'js>(
         .ok_or_else(script_worker_error)?;
 
     let request_value = checked_quickjs(ctx, ctx.eval::<Value<'js>, _>(source), signals)?;
-    let request = require_plain_object(&request_value, plain_class, &plain_prototype)?;
+    let request = require_plain_object(
+        &request_value,
+        plain_class,
+        &plain_prototype,
+        request_validation_error,
+    )?;
     let fields = own_enumerable_string_properties(ctx, &request, signals)?;
 
     let url = require_string_field(ctx, fields.get("url"), signals)?;
     let method = require_string_field(ctx, fields.get("method"), signals)?;
     let headers_value = fields.get("headers").ok_or_else(request_validation_error)?;
-    let headers_object = require_plain_object(headers_value, plain_class, &plain_prototype)?;
+    let headers_object = require_plain_object(
+        headers_value,
+        plain_class,
+        &plain_prototype,
+        request_validation_error,
+    )?;
     let header_values = own_enumerable_string_properties(ctx, &headers_object, signals)?;
     let mut headers = BTreeMap::new();
     for (name, value) in header_values {
@@ -527,18 +1146,19 @@ fn require_plain_object<'js>(
     value: &Value<'js>,
     plain_class: qjs::JSClassID,
     plain_prototype: &Object<'js>,
+    error: fn() -> SanitizedError,
 ) -> Result<Object<'js>, SanitizedError> {
     let Some(object) = value.as_object().cloned() else {
-        return Err(request_validation_error());
+        return Err(error());
     };
     if unsafe { qjs::JS_GetClassID(value.as_raw()) } != plain_class {
-        return Err(request_validation_error());
+        return Err(error());
     }
     if object
         .get_prototype()
         .is_some_and(|prototype| prototype != *plain_prototype)
     {
-        return Err(request_validation_error());
+        return Err(error());
     }
     Ok(object)
 }
@@ -804,16 +1424,34 @@ fn script_syntax_error() -> SanitizedError {
 }
 
 fn script_worker_error() -> SanitizedError {
-    sanitized_error(
-        "ScriptSyntax",
-        "Relay request worker could not complete evaluation.",
-    )
+    sidecar_lifecycle_error()
 }
 
 fn request_validation_error() -> SanitizedError {
     sanitized_error(
         "RequestValidation",
         "Relay request script did not produce a valid request.",
+    )
+}
+
+fn extractor_execution_error() -> SanitizedError {
+    sanitized_error(
+        "ExtractorExecution",
+        "Relay usage extractor could not be executed.",
+    )
+}
+
+fn result_validation_error() -> SanitizedError {
+    sanitized_error(
+        "ResultValidation",
+        "Relay usage extractor did not produce a valid result.",
+    )
+}
+
+fn sidecar_lifecycle_error() -> SanitizedError {
+    sanitized_error(
+        "SidecarLifecycle",
+        "Relay script worker could not complete evaluation.",
     )
 }
 
@@ -924,5 +1562,122 @@ mod windows_process_tests {
     #[test]
     fn worker_process_uses_create_no_window() {
         assert_eq!(request_worker_creation_flags(), 0x0800_0000);
+    }
+}
+
+#[cfg(test)]
+mod wire_result_validation_tests {
+    use super::*;
+
+    fn minimal_wire_result() -> WireUsageResult {
+        WireUsageResult {
+            is_valid: true,
+            invalid_message: None,
+            remaining: None,
+            unit: None,
+            plan_name: None,
+            total: None,
+            used: None,
+            extra: None,
+        }
+    }
+
+    fn wire_error(results: Vec<WireUsageResult>) -> SanitizedError {
+        match validate_wire_results(results) {
+            Ok(_) => panic!("wire results unexpectedly validated"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn parent_rejects_wire_count_above_derived_cap() {
+        let results = (0..=MAX_RESULT_COUNT)
+            .map(|_| minimal_wire_result())
+            .collect();
+        assert_eq!(wire_error(results).category, "ResultValidation");
+    }
+
+    #[test]
+    fn result_count_cap_matches_the_minimum_normalized_wire_shape() {
+        fn array_size(count: usize, item_size: usize) -> usize {
+            count * item_size + count.saturating_sub(1) + 2
+        }
+
+        let minimal = UsageResult {
+            is_valid: true,
+            invalid_message: Some(String::new()),
+            remaining: Some(0.0),
+            unit: Some(String::new()),
+            plan_name: Some(String::new()),
+            total: Some(0.0),
+            used: Some(0.0),
+            extra: Some(String::new()),
+        };
+        assert_eq!(
+            serde_json::to_vec(&minimal).unwrap().len(),
+            MIN_NORMALIZED_RESULT_BYTES
+        );
+        assert_eq!(MAX_RESULT_COUNT, 2361);
+        assert!(
+            array_size(MAX_RESULT_COUNT, MIN_NORMALIZED_RESULT_BYTES)
+                <= MAX_NORMALIZED_RESULT_BYTES
+        );
+        assert!(
+            array_size(MAX_RESULT_COUNT + 1, MIN_NORMALIZED_RESULT_BYTES)
+                > MAX_NORMALIZED_RESULT_BYTES
+        );
+    }
+
+    #[test]
+    fn parent_rejects_oversized_wire_strings_and_cumulative_size() {
+        let mut oversized_string = minimal_wire_result();
+        oversized_string.unit = Some("a".repeat(MAX_RESULT_STRING_BYTES + 1));
+        assert_eq!(
+            wire_error(vec![oversized_string]).category,
+            "ResultValidation"
+        );
+
+        let results = (0..100)
+            .map(|_| {
+                let mut result = minimal_wire_result();
+                result.extra = Some("x".repeat(MAX_RESULT_STRING_BYTES));
+                result
+            })
+            .collect();
+        assert_eq!(wire_error(results).category, "ResultValidation");
+    }
+
+    #[test]
+    fn parent_rejects_nonfinite_wire_numbers() {
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut result = minimal_wire_result();
+            result.remaining = Some(number);
+            assert_eq!(wire_error(vec![result]).category, "ResultValidation");
+        }
+    }
+
+    #[test]
+    fn worker_protocol_rejects_unknown_fields_and_has_lifecycle_category() {
+        let malformed = serde_json::json!({
+            "status": "results",
+            "results": [{
+                "isValid": true,
+                "invalidMessage": null,
+                "remaining": null,
+                "unit": null,
+                "planName": null,
+                "total": null,
+                "used": null,
+                "extra": null,
+                "unexpected": "field"
+            }]
+        });
+        assert!(serde_json::from_value::<ExtractorWorkerOutput>(malformed).is_err());
+        assert_eq!(
+            WorkerErrorCategory::SidecarLifecycle
+                .into_sanitized_error()
+                .category,
+            "SidecarLifecycle"
+        );
     }
 }

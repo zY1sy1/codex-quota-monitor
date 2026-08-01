@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "data": {
+    "mode": "wallet",
+    "balance": 18.42,
+    "currency": "USD"
+  }
+}

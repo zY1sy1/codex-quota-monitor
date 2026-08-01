@@ -109,7 +109,7 @@ pub struct ResponseMeta {
     pub duration_ms: u64,
 }
 
-#[derive(Clone, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SanitizedError {
     pub category: String,
