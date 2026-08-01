@@ -19,6 +19,8 @@ BeforeAll {
             $shortcut.WorkingDirectory = [IO.Path]::GetFullPath($TestDrive)
             $shortcut.Description = 'Codex quota monitor test'
             $shortcut.IconLocation = '%SystemRoot%\System32\shell32.dll,1'
+            $shortcut.WindowStyle = 7
+            $shortcut.Hotkey = 'CTRL+ALT+Q'
             $shortcut.Save()
         }
         finally {
@@ -48,6 +50,8 @@ BeforeAll {
                 WorkingDirectory = [string]$shortcut.WorkingDirectory
                 Description = [string]$shortcut.Description
                 IconLocation = [string]$shortcut.IconLocation
+                WindowStyle = [int]$shortcut.WindowStyle
+                Hotkey = [string]$shortcut.Hotkey
             }
         }
         finally {
@@ -65,6 +69,10 @@ Describe 'desktop shortcut icon updater' {
     It 'installs the icon and changes no launch properties' {
         $shortcutPath = Join-Path $TestDrive 'Codex 额度监控.lnk'
         $localAppData = Join-Path $TestDrive 'Local AppData'
+        $expectedShortcutPath = [IO.Path]::GetFullPath($shortcutPath)
+        $expectedIconPath = [IO.Path]::GetFullPath(
+            (Join-Path $localAppData 'CodexQuotaMonitor\assets\CodexQuotaMonitor.ico')
+        )
         New-Item -ItemType Directory -Path $localAppData -Force | Out-Null
         New-TestDesktopShortcut -Path $shortcutPath
         $before = Read-TestDesktopShortcut -Path $shortcutPath
@@ -79,9 +87,13 @@ Describe 'desktop shortcut icon updater' {
         $after.Arguments | Should -BeExactly $before.Arguments
         $after.WorkingDirectory | Should -BeExactly $before.WorkingDirectory
         $after.Description | Should -BeExactly $before.Description
-        $after.IconLocation | Should -BeExactly ($result.InstalledIconPath + ',0')
-        Test-Path -LiteralPath $result.InstalledIconPath -PathType Leaf | Should -BeTrue
-        [IO.File]::ReadAllBytes($result.InstalledIconPath) |
+        $after.WindowStyle | Should -BeExactly $before.WindowStyle
+        $after.Hotkey | Should -BeExactly $before.Hotkey
+        $result.ShortcutPath | Should -BeExactly $expectedShortcutPath
+        $result.InstalledIconPath | Should -BeExactly $expectedIconPath
+        $after.IconLocation | Should -BeExactly "$expectedIconPath,0"
+        Test-Path -LiteralPath $expectedIconPath -PathType Leaf | Should -BeTrue
+        [IO.File]::ReadAllBytes($expectedIconPath) |
             Should -Be ([IO.File]::ReadAllBytes($BlueIcon))
     }
 
