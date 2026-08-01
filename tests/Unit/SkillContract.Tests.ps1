@@ -111,11 +111,18 @@ Describe 'Codex quota monitor management skill contract' {
             'Test-CodexQuotaMonitorHealth.ps1'
             'Uninstall-CodexQuotaMonitor.ps1'
         ) | Sort-Object
-        $actual = @(Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'scripts') -Filter '*.ps1' -File |
-            Select-Object -ExpandProperty Name |
-            Sort-Object)
+        $normalized = $SkillContent.Replace('\', '/')
+        $actual = @(
+            [regex]::Matches($normalized, '(?i)\./scripts/(?<name>[A-Za-z0-9-]+\.ps1)') |
+                ForEach-Object { $_.Groups['name'].Value } |
+                Sort-Object -Unique
+        )
 
         $actual | Should -Be $declared
+        foreach ($scriptName in $declared) {
+            Test-Path -LiteralPath (Join-Path $RepositoryRoot "scripts\$scriptName") -PathType Leaf |
+                Should -BeTrue
+        }
     }
 
     It 'rejects swapped intent-to-script mappings' {

@@ -75,6 +75,23 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 
 快捷方式使用安装时解析到的 `pwsh.exe`，以 STA 和隐藏控制台方式启动已安装的伴随程序。切换“开机启动”会同步更新快捷方式和本地设置；不会修改注册表，也不会影响其他 Windows 用户。
 
+## 桌面快捷方式图标
+
+项目提供纯白和白蓝两套自有设计图标：
+
+- `assets/codex-quota-monitor-white.ico`；
+- `assets/codex-quota-monitor-white-blue.ico`。
+
+已有桌面快捷方式名为 `Codex 额度监控.lnk` 时，可在仓库根目录运行：
+
+```powershell
+pwsh -NoProfile -File .\scripts\Set-CodexQuotaMonitorShortcutIcon.ps1
+```
+
+该脚本把白蓝图标复制到 `%LOCALAPPDATA%\CodexQuotaMonitor\assets\CodexQuotaMonitor.ico`，只更新桌面快捷方式的图标位置，不改变目标、参数、工作目录或开机启动快捷方式。在修改快捷方式前，若源图标缺失、尺寸不符合要求或图标复制/校验失败，快捷方式不会被修改；修改后的验证失败会触发回滚，回滚异常也会明确报告。
+
+本项目是非官方工具，与 OpenAI 不存在隶属、认可或合作关系。项目图标不使用 OpenAI/Codex 官方花结或字标。
+
 ## 数据来源与刷新
 
 监控程序启动本地 `codex app-server` 子进程，并通过标准输入/输出使用 JSONL 协议通信。初始化后，它通过 `account/read` 判断当前 Codex 账户类型，通过 `account/rateLimits/read` 获取额度窗口。
