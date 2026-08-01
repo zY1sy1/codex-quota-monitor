@@ -14,6 +14,7 @@ VIEW_SIZE: Final = 128
 ICO_SIZES: Final = (16, 24, 32, 48, 64, 128, 256)
 SUPERSAMPLE: Final = 4
 Point = tuple[float, float]
+Box = tuple[float, float, float, float]
 
 PLATE_ORIGIN: Final[Point] = (5, 5)
 PLATE_SIZE: Final = VIEW_SIZE - (2 * PLATE_ORIGIN[0])
@@ -117,6 +118,13 @@ def scaled(value: float, factor: int = SUPERSAMPLE) -> int:
     return round(value * factor)
 
 
+def pillow_outline_box(centerline_box: Box, stroke_width: float) -> Box:
+    """Expand an SVG centerline box to Pillow's inward-outline outer box."""
+    half_width = stroke_width / 2
+    left, top, right, bottom = centerline_box
+    return (left - half_width, top - half_width, right + half_width, bottom + half_width)
+
+
 def draw_round_line(draw: ImageDraw.ImageDraw, points: list[tuple[float, float]], fill: tuple[int, int, int], width: float) -> None:
     """Draw a polyline with round caps and joins in source coordinates."""
     scaled_points = [(scaled(x), scaled(y)) for x, y in points]
@@ -143,9 +151,10 @@ def render_icon(name: str, size: int) -> Image.Image:
     canvas = Image.new("RGBA", (scaled(VIEW_SIZE), scaled(VIEW_SIZE)), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
     plate_end = (PLATE_ORIGIN[0] + PLATE_SIZE, PLATE_ORIGIN[1] + PLATE_SIZE)
+    plate_centerline_box = (PLATE_ORIGIN[0], PLATE_ORIGIN[1], plate_end[0], plate_end[1])
     draw.rounded_rectangle(
-        (scaled(PLATE_ORIGIN[0]), scaled(PLATE_ORIGIN[1]), scaled(plate_end[0]), scaled(plate_end[1])),
-        radius=scaled(PLATE_CORNER_RADIUS),
+        tuple(scaled(value) for value in pillow_outline_box(plate_centerline_box, PLATE_STROKE_WIDTH)),
+        radius=scaled(PLATE_CORNER_RADIUS + (PLATE_STROKE_WIDTH / 2)),
         fill="#FFFFFF",
         outline=colors["border"],
         width=scaled(PLATE_STROKE_WIDTH),
@@ -156,7 +165,11 @@ def render_icon(name: str, size: int) -> Image.Image:
         GAUGE_CENTER[0] + GAUGE_RADIUS,
         GAUGE_CENTER[1] + GAUGE_RADIUS,
     )
-    draw.ellipse(tuple(scaled(value) for value in gauge_box), outline=colors["track"], width=scaled(GAUGE_TRACK_WIDTH))
+    draw.ellipse(
+        tuple(scaled(value) for value in pillow_outline_box(gauge_box, GAUGE_TRACK_WIDTH)),
+        outline=colors["track"],
+        width=scaled(GAUGE_TRACK_WIDTH),
+    )
 
     arc_points = []
     start_angle = math.atan2(ARC_START[1] - GAUGE_CENTER[1], ARC_START[0] - GAUGE_CENTER[0])
