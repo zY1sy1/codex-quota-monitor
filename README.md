@@ -77,7 +77,7 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 
 ## 桌面快捷方式图标
 
-项目提供纯白和白蓝两套原创图标：
+项目提供纯白和白蓝两套自有设计图标：
 
 - `assets/codex-quota-monitor-white.ico`；
 - `assets/codex-quota-monitor-white-blue.ico`。
@@ -88,7 +88,7 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 pwsh -NoProfile -File .\scripts\Set-CodexQuotaMonitorShortcutIcon.ps1
 ```
 
-该脚本把白蓝图标复制到 `%LOCALAPPDATA%\CodexQuotaMonitor\assets\CodexQuotaMonitor.ico`，只更新桌面快捷方式的图标位置，不改变目标、参数、工作目录或开机启动快捷方式。源图标缺失、尺寸不完整或复制失败时，原快捷方式保持不变。
+该脚本把白蓝图标复制到 `%LOCALAPPDATA%\CodexQuotaMonitor\assets\CodexQuotaMonitor.ico`，只更新桌面快捷方式的图标位置，不改变目标、参数、工作目录或开机启动快捷方式。在修改快捷方式前，若源图标缺失、尺寸不符合要求或图标复制/校验失败，快捷方式不会被修改；修改后的验证失败会触发回滚，回滚异常也会明确报告。
 
 本项目是非官方工具，与 OpenAI 不存在隶属、认可或合作关系。项目图标不使用 OpenAI/Codex 官方花结或字标。
 
