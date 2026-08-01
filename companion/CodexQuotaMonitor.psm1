@@ -613,6 +613,7 @@ function Invoke-CodexQuotaMonitorRuntime {
             }
         }
         else {
+            Add-Type -AssemblyName WindowsBase -ErrorAction Stop
             $runtime.DispatcherTimer = [Windows.Threading.DispatcherTimer]::new()
             $runtime.DispatcherTimer.Interval = [TimeSpan]::FromMilliseconds($TickMilliseconds)
             $dispatcherHandlerScript = {
