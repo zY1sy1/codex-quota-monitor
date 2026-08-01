@@ -16,7 +16,7 @@
 - 修改：`tests/Unit/SkillContract.Tests.ps1:133`
 - 测试：`tests/Unit/SkillContract.Tests.ps1`
 
-- [ ] **步骤 1：加入失败的 CRLF 回归断言**
+- [x] **步骤 1：加入失败的 CRLF 回归断言**
 
 在现有 `defines positive mutation, privacy, auth, preserve-data, and close-versus-exit rules` 测试之后加入：
 
@@ -28,7 +28,7 @@
     }
 ```
 
-- [ ] **步骤 2：运行单元测试并确认新增断言按预期失败**
+- [x] **步骤 2：运行单元测试并确认新增断言按预期失败**
 
 运行：
 
@@ -38,7 +38,7 @@ pwsh -NoLogo -NoProfile -File .\build\Test.ps1 -Suite Unit -CI
 
 预期：命令退出码为 `1`；输出明确包含 `accepts policy lines with CRLF endings` 失败，并指向 `Test-SkillPolicyContract` 返回 `False`。在当前 D 盘 CRLF 检出中，原有正向策略契约断言也可能同时失败，这是同一根因。
 
-- [ ] **步骤 3：确认暂存范围仍为空**
+- [x] **步骤 3：确认暂存范围仍为空**
 
 运行：
 
@@ -55,7 +55,7 @@ git diff -- tests/Unit/SkillContract.Tests.ps1
 - 修改：`tests/Unit/SkillContract.Tests.ps1:49-50`
 - 测试：`tests/Unit/SkillContract.Tests.ps1`
 
-- [ ] **步骤 1：让两条行尾锚定规则接受可选回车符**
+- [x] **步骤 1：让两条行尾锚定规则接受可选回车符**
 
 把 `Test-SkillPolicyContract` 中对应的两条规则改为：
 
@@ -66,7 +66,7 @@ git diff -- tests/Unit/SkillContract.Tests.ps1
 
 不要修改其他规则，也不要对 `$Content` 做全局换行归一化。
 
-- [ ] **步骤 2：运行单元测试并确认回归转绿**
+- [x] **步骤 2：运行单元测试并确认回归转绿**
 
 运行：
 
@@ -76,7 +76,7 @@ pwsh -NoLogo -NoProfile -File .\build\Test.ps1 -Suite Unit -CI
 
 预期：退出码为 `0`；`defines positive mutation, privacy, auth, preserve-data, and close-versus-exit rules` 与 `accepts policy lines with CRLF endings` 均通过，单元测试失败数为 `0`。
 
-- [ ] **步骤 3：运行完整测试套件**
+- [x] **步骤 3：运行完整测试套件**
 
 运行：
 
@@ -86,7 +86,7 @@ pwsh -NoLogo -NoProfile -File .\build\Test.ps1 -Suite All -CI
 
 预期：退出码为 `0`；`Tests Passed: 355, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0`。
 
-- [ ] **步骤 4：检查差异并只提交测试修复**
+- [x] **步骤 4：检查差异并只提交测试修复**
 
 运行：
 
@@ -107,7 +107,7 @@ git commit -m "test: accept CRLF in skill policy contract"
 **文件：**
 - 不新增或修改代码文件
 
-- [ ] **步骤 1：推送修复分支**
+- [x] **步骤 1：推送修复分支**
 
 运行：
 
@@ -117,7 +117,7 @@ git push -u origin agent/fix-crlf-skill-contract
 
 预期：远端创建 `agent/fix-crlf-skill-contract`，本地分支开始跟踪对应远端分支。
 
-- [ ] **步骤 2：创建合并到 `main` 的 Pull Request**
+- [x] **步骤 2：创建合并到 `main` 的 Pull Request**
 
 使用 GitHub 连接器创建 PR，参数固定为：
 
@@ -131,7 +131,7 @@ draft: false
 
 PR 正文说明：根因是 `$` 行尾锚点不接受 CRLF 中的回车符；修改只影响测试；验证结果为完整 355 项通过。
 
-- [ ] **步骤 3：核验 PR 与远端提交**
+- [x] **步骤 3：核验 PR 与远端提交**
 
 运行：
 
