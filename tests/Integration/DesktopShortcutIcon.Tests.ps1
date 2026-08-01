@@ -115,4 +115,68 @@ Describe 'desktop shortcut icon updater' {
         $after = [Convert]::ToHexString([IO.File]::ReadAllBytes($shortcutPath))
         $after | Should -BeExactly $before
     }
+
+    It 'rejects a directory collision at the stable icon path without changing the shortcut' {
+        $shortcutPath = Join-Path $TestDrive 'directory collision.lnk'
+        $localAppData = Join-Path $TestDrive 'Directory Collision Local AppData'
+        $collisionPath = Join-Path $localAppData 'CodexQuotaMonitor\assets\CodexQuotaMonitor.ico'
+        New-Item -ItemType Directory -Path $collisionPath -Force | Out-Null
+        New-TestDesktopShortcut -Path $shortcutPath
+        $before = [Convert]::ToHexString([IO.File]::ReadAllBytes($shortcutPath))
+
+        {
+            & $SetIconScript `
+                -ShortcutPath $shortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $localAppData
+        } | Should -Throw '*destination collides*'
+
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($shortcutPath)) |
+            Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath $collisionPath -Force).Count | Should -Be 0
+    }
+
+    It 'preserves an existing stable icon when staging is denied before replacement' {
+        $shortcutPath = Join-Path $TestDrive 'staging denied.lnk'
+        $localAppData = Join-Path $TestDrive 'Staging Denied Local AppData'
+        $assetsDirectory = Join-Path $localAppData 'CodexQuotaMonitor\assets'
+        $stableIconPath = Join-Path $assetsDirectory 'CodexQuotaMonitor.ico'
+        New-Item -ItemType Directory -Path $assetsDirectory -Force | Out-Null
+        $priorIconBytes = [byte[]](11, 22, 33, 44, 55)
+        [IO.File]::WriteAllBytes($stableIconPath, $priorIconBytes)
+        New-TestDesktopShortcut -Path $shortcutPath
+        $shortcutBefore = [Convert]::ToHexString([IO.File]::ReadAllBytes($shortcutPath))
+
+        $originalAcl = Get-Acl -LiteralPath $assetsDirectory
+        $blockedAcl = Get-Acl -LiteralPath $assetsDirectory
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $denyCreateFiles = [Security.AccessControl.FileSystemAccessRule]::new(
+            $identity,
+            [Security.AccessControl.FileSystemRights]::CreateFiles,
+            [Security.AccessControl.AccessControlType]::Deny
+        )
+        $blockedAcl.AddAccessRule($denyCreateFiles) | Out-Null
+        $failure = $null
+        try {
+            Set-Acl -LiteralPath $assetsDirectory -AclObject $blockedAcl
+            try {
+                & $SetIconScript `
+                    -ShortcutPath $shortcutPath `
+                    -IconSourcePath $BlueIcon `
+                    -LocalAppData $localAppData
+            }
+            catch {
+                $failure = $_
+            }
+        }
+        finally {
+            Set-Acl -LiteralPath $assetsDirectory -AclObject $originalAcl
+        }
+
+        $failure | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath $stableIconPath -PathType Leaf | Should -BeTrue
+        [IO.File]::ReadAllBytes($stableIconPath) | Should -Be $priorIconBytes
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($shortcutPath)) |
+            Should -BeExactly $shortcutBefore
+    }
 }
