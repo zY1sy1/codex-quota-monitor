@@ -3,12 +3,119 @@
 param(
     [string]$ShortcutPath = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Codex 额度监控.lnk'),
     [string]$IconSourcePath = (Join-Path $PSScriptRoot '..\assets\codex-quota-monitor-white-blue.ico'),
-    [string]$LocalAppData = $env:LOCALAPPDATA
+    [string]$LocalAppData = $env:LOCALAPPDATA,
+    [Parameter(DontShow)]
+    [AllowNull()]
+    [scriptblock]$FaultInjector
 )
 
 $ErrorActionPreference = 'Stop'
 
 $script:RequiredIcoSizes = @(16, 24, 32, 48, 64, 128, 256)
+Add-Type -AssemblyName PresentationCore
+
+function New-InvalidIcoException {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Message,
+        [AllowNull()][Exception]$InnerException
+    )
+
+    $fullMessage = "The invalid ICO file: $Message"
+    if ($null -eq $InnerException) {
+        return [IO.InvalidDataException]::new($fullMessage)
+    }
+    return [IO.InvalidDataException]::new($fullMessage, $InnerException)
+}
+
+function Get-UInt32BigEndian {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][byte[]]$Bytes,
+        [Parameter(Mandatory)][int]$Offset
+    )
+
+    return [uint32](
+        ([uint32]$Bytes[$Offset] -shl 24) -bor
+        ([uint32]$Bytes[$Offset + 1] -shl 16) -bor
+        ([uint32]$Bytes[$Offset + 2] -shl 8) -bor
+        [uint32]$Bytes[$Offset + 3]
+    )
+}
+
+function Test-PngIconPayload {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][byte[]]$FileBytes,
+        [Parameter(Mandatory)][int]$PayloadOffset,
+        [Parameter(Mandatory)][int]$PayloadLength,
+        [Parameter(Mandatory)][int]$ExpectedSize
+    )
+
+    $pngSignature = [byte[]](137, 80, 78, 71, 13, 10, 26, 10)
+    if ($PayloadLength -lt 33) {
+        throw (New-InvalidIcoException -Message 'a PNG payload does not contain a complete IHDR.' -InnerException $null)
+    }
+    for ($index = 0; $index -lt $pngSignature.Count; $index++) {
+        if ($FileBytes[$PayloadOffset + $index] -ne $pngSignature[$index]) {
+            throw (New-InvalidIcoException -Message 'an image payload does not have a PNG signature.' -InnerException $null)
+        }
+    }
+
+    $ihdrLength = Get-UInt32BigEndian -Bytes $FileBytes -Offset ($PayloadOffset + 8)
+    $ihdrType = [Text.Encoding]::ASCII.GetString($FileBytes, $PayloadOffset + 12, 4)
+    if ($ihdrLength -ne 13 -or $ihdrType -cne 'IHDR') {
+        throw (New-InvalidIcoException -Message 'a PNG payload does not start with a complete IHDR.' -InnerException $null)
+    }
+
+    $ihdrWidth = Get-UInt32BigEndian -Bytes $FileBytes -Offset ($PayloadOffset + 16)
+    $ihdrHeight = Get-UInt32BigEndian -Bytes $FileBytes -Offset ($PayloadOffset + 20)
+    if ($ihdrWidth -ne $ExpectedSize -or $ihdrHeight -ne $ExpectedSize) {
+        throw (New-InvalidIcoException -Message 'PNG IHDR dimensions do not match the ICO directory entry.' -InnerException $null)
+    }
+    if ($FileBytes[$PayloadOffset + 24] -ne 8 -or $FileBytes[$PayloadOffset + 25] -ne 6) {
+        throw (New-InvalidIcoException -Message 'PNG entries must use 8-bit RGBA pixels.' -InnerException $null)
+    }
+    if ($FileBytes[$PayloadOffset + 26] -ne 0 -or
+        $FileBytes[$PayloadOffset + 27] -ne 0 -or
+        $FileBytes[$PayloadOffset + 28] -notin 0, 1) {
+        throw (New-InvalidIcoException -Message 'PNG compression, filter, or interlace values are invalid.' -InnerException $null)
+    }
+
+    $payload = [byte[]]::new($PayloadLength)
+    [Array]::Copy($FileBytes, $PayloadOffset, $payload, 0, $PayloadLength)
+    $stream = [IO.MemoryStream]::new($payload, $false)
+    try {
+        try {
+            $decoder = [Windows.Media.Imaging.BitmapDecoder]::Create(
+                $stream,
+                [Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,
+                [Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+            )
+            if ($decoder.Frames.Count -ne 1) {
+                throw [IO.InvalidDataException]::new('The PNG payload did not decode to exactly one frame.')
+            }
+            $frame = $decoder.Frames[0]
+            if ($frame.PixelWidth -ne $ExpectedSize -or $frame.PixelHeight -ne $ExpectedSize) {
+                throw [IO.InvalidDataException]::new('Decoded PNG dimensions do not match the ICO directory entry.')
+            }
+
+            $bitsPerPixel = [int]$frame.Format.BitsPerPixel
+            if ($bitsPerPixel -le 0) {
+                throw [IO.InvalidDataException]::new('The decoded PNG pixel format is invalid.')
+            }
+            $stride = [int][Math]::Ceiling(($frame.PixelWidth * $bitsPerPixel) / 8.0)
+            $decodedPixels = [byte[]]::new($stride * $frame.PixelHeight)
+            $frame.CopyPixels($decodedPixels, $stride, 0)
+        }
+        catch {
+            throw (New-InvalidIcoException -Message 'a PNG payload could not be fully decoded.' -InnerException $_.Exception)
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
 
 function Get-IcoSizes {
     [CmdletBinding()]
@@ -19,22 +126,22 @@ function Get-IcoSizes {
 
     $bytes = [IO.File]::ReadAllBytes($Path)
     if ($bytes.Length -lt 6) {
-        throw [IO.InvalidDataException]::new('The ICO file is too short to contain a header.')
+        throw (New-InvalidIcoException -Message 'the header is incomplete.' -InnerException $null)
     }
 
     $reserved = [BitConverter]::ToUInt16($bytes, 0)
     $type = [BitConverter]::ToUInt16($bytes, 2)
     $entryCount = [BitConverter]::ToUInt16($bytes, 4)
     if ($reserved -ne 0 -or $type -ne 1) {
-        throw [IO.InvalidDataException]::new('The source icon is not a valid ICO file.')
+        throw (New-InvalidIcoException -Message 'the header signature is not valid.' -InnerException $null)
     }
-    if ($entryCount -eq 0) {
-        throw [IO.InvalidDataException]::new('The ICO file contains no image entries.')
+    if ($entryCount -ne $script:RequiredIcoSizes.Count) {
+        throw (New-InvalidIcoException -Message 'exactly seven image entries are required.' -InnerException $null)
     }
 
     $directoryLength = 6 + (16 * [int]$entryCount)
     if ($directoryLength -gt $bytes.Length) {
-        throw [IO.InvalidDataException]::new('The ICO file directory is incomplete.')
+        throw (New-InvalidIcoException -Message 'the image directory is incomplete.' -InnerException $null)
     }
 
     $sizes = foreach ($entryIndex in 0..($entryCount - 1)) {
@@ -46,19 +153,24 @@ function Get-IcoSizes {
         $payloadEnd = [UInt64]$payloadOffset + [UInt64]$payloadLength
 
         if ($width -ne $height) {
-            throw [IO.InvalidDataException]::new('The ICO file contains a non-square image entry.')
+            throw (New-InvalidIcoException -Message 'an image directory entry is not square.' -InnerException $null)
         }
         if ($payloadLength -eq 0) {
-            throw [IO.InvalidDataException]::new('The ICO file contains an empty image entry.')
+            throw (New-InvalidIcoException -Message 'an image payload is empty.' -InnerException $null)
         }
         if ($payloadOffset -lt $directoryLength -or $payloadEnd -gt [UInt64]$bytes.Length) {
-            throw [IO.InvalidDataException]::new('The ICO file contains an image entry outside the file.')
+            throw (New-InvalidIcoException -Message 'an image payload lies outside the file.' -InnerException $null)
         }
 
+        Test-PngIconPayload `
+            -FileBytes $bytes `
+            -PayloadOffset ([int]$payloadOffset) `
+            -PayloadLength ([int]$payloadLength) `
+            -ExpectedSize $width
         $width
     }
 
-    return @($sizes | Sort-Object -Unique)
+    return @($sizes | Sort-Object)
 }
 
 function Get-ShortcutState {
@@ -128,11 +240,36 @@ function Test-RequiredIcoSizes {
     )
 
     $sizes = @(Get-IcoSizes -Path $Path)
-    if ($sizes.Count -ne $script:RequiredIcoSizes.Count -or
-        (Compare-Object -ReferenceObject $script:RequiredIcoSizes -DifferenceObject $sizes)) {
-        throw [IO.InvalidDataException]::new(
-            "The source icon must contain exactly these sizes: $($script:RequiredIcoSizes -join ', ')."
-        )
+    if ($sizes.Count -ne $script:RequiredIcoSizes.Count) {
+        throw (New-InvalidIcoException -Message 'the image entry count is not exactly seven.' -InnerException $null)
+    }
+    for ($index = 0; $index -lt $script:RequiredIcoSizes.Count; $index++) {
+        if ($sizes[$index] -ne $script:RequiredIcoSizes[$index]) {
+            throw (New-InvalidIcoException `
+                -Message "the exact required sizes are $($script:RequiredIcoSizes -join ', ')." `
+                -InnerException $null)
+        }
+    }
+}
+
+function Invoke-ShortcutIconFault {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][scriptblock]$Injector,
+        [Parameter(Mandatory)]
+        [ValidateSet(
+            'AfterIconReplacement',
+            'AfterShortcutUpdate',
+            'BeforeShortcutRollback',
+            'BeforeIconRollback',
+            'BeforeCleanup'
+        )]
+        [string]$Stage,
+        [Parameter(Mandatory)]$Context
+    )
+
+    if ($null -ne $Injector) {
+        & $Injector $Stage $Context | Out-Null
     }
 }
 
@@ -241,10 +378,22 @@ $transactionId = [Guid]::NewGuid().ToString('N')
 $temporaryIconPath = "$installedIconPath.$transactionId.tmp"
 $priorIconBackupPath = "$installedIconPath.$transactionId.prior"
 $iconRestorePath = "$installedIconPath.$transactionId.restore"
+$displacedIconPath = "$installedIconPath.$transactionId.displaced"
 $shortcutBackupPath = "$fullShortcutPath.$transactionId.backup"
+$faultContext = [pscustomobject]@{
+    ShortcutPath = $fullShortcutPath
+    InstalledIconPath = $installedIconPath
+    TemporaryIconPath = $temporaryIconPath
+    PriorIconBackupPath = $priorIconBackupPath
+    IconRestorePath = $iconRestorePath
+    DisplacedIconPath = $displacedIconPath
+    ShortcutBackupPath = $shortcutBackupPath
+    CleanupArtifactPath = $null
+}
 $temporaryIconOwned = $false
 $priorIconBackupOwned = $false
 $iconRestoreOwned = $false
+$displacedIconOwned = $false
 $shortcutBackupOwned = $false
 $stableIconWritten = $false
 $shortcutBackedUp = $false
@@ -293,6 +442,10 @@ try {
     if ((Get-FileSha256 -Path $installedIconPath) -cne $stagedIconHash) {
         throw [IO.InvalidDataException]::new('The installed icon bytes do not match the staged icon.')
     }
+    Invoke-ShortcutIconFault `
+        -Injector $FaultInjector `
+        -Stage 'AfterIconReplacement' `
+        -Context $faultContext
 
     $shortcutBackupOwned = $true
     [IO.File]::Copy($fullShortcutPath, $shortcutBackupPath, $false)
@@ -302,6 +455,10 @@ try {
     $shortcutBackedUp = $true
     $newIconLocation = "$installedIconPath,0"
     Set-ShortcutIconLocation -Path $fullShortcutPath -IconLocation $newIconLocation
+    Invoke-ShortcutIconFault `
+        -Injector $FaultInjector `
+        -Stage 'AfterShortcutUpdate' `
+        -Context $faultContext
 
     $after = Get-ShortcutState -Path $fullShortcutPath
     foreach ($property in 'TargetPath', 'Arguments', 'WorkingDirectory', 'Description', 'WindowStyle', 'Hotkey') {
@@ -328,6 +485,10 @@ catch {
 
     if ($shortcutBackedUp) {
         try {
+            Invoke-ShortcutIconFault `
+                -Injector $FaultInjector `
+                -Stage 'BeforeShortcutRollback' `
+                -Context $faultContext
             if (-not (Test-Path -LiteralPath $shortcutBackupPath -PathType Leaf)) {
                 throw [IO.FileNotFoundException]::new('The shortcut rollback backup is missing.', $shortcutBackupPath)
             }
@@ -350,6 +511,10 @@ catch {
 
     if ($stableIconWritten) {
         try {
+            Invoke-ShortcutIconFault `
+                -Injector $FaultInjector `
+                -Stage 'BeforeIconRollback' `
+                -Context $faultContext
             if ($initialStableState -eq 'ExistingLeaf') {
                 if (-not (Test-Path -LiteralPath $priorIconBackupPath -PathType Leaf)) {
                     throw [IO.FileNotFoundException]::new('The icon rollback backup is missing.', $priorIconBackupPath)
@@ -364,7 +529,13 @@ catch {
                 $currentStableItem = Get-Item -LiteralPath $installedIconPath -Force -ErrorAction SilentlyContinue
                 if ($null -ne $currentStableItem -and -not $currentStableItem.PSIsContainer -and
                     -not (Test-IsReparsePoint -Item $currentStableItem)) {
-                    [IO.File]::Replace($iconRestorePath, $installedIconPath, $null, $true)
+                    $displacedIconOwned = $true
+                    [IO.File]::Replace(
+                        $iconRestorePath,
+                        $installedIconPath,
+                        $displacedIconPath,
+                        $true
+                    )
                 }
                 elseif ($null -eq $currentStableItem) {
                     [IO.File]::Move($iconRestorePath, $installedIconPath)
@@ -403,6 +574,7 @@ finally {
     $cleanupPaths = @(
         [pscustomobject]@{ Path = $temporaryIconPath; Remove = $temporaryIconOwned }
         [pscustomobject]@{ Path = $iconRestorePath; Remove = $iconRestoreOwned }
+        [pscustomobject]@{ Path = $displacedIconPath; Remove = $displacedIconOwned }
         [pscustomobject]@{
             Path = $priorIconBackupPath
             Remove = $priorIconBackupOwned -and -not $preservePriorIconBackup
@@ -415,6 +587,11 @@ finally {
     foreach ($artifact in $cleanupPaths) {
         if ($artifact.Remove) {
             try {
+                $faultContext.CleanupArtifactPath = $artifact.Path
+                Invoke-ShortcutIconFault `
+                    -Injector $FaultInjector `
+                    -Stage 'BeforeCleanup' `
+                    -Context $faultContext
                 Remove-KnownTransactionFile -Path $artifact.Path
             }
             catch {

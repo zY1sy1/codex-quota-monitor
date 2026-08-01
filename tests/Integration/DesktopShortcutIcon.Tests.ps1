@@ -63,6 +63,86 @@ BeforeAll {
             }
         }
     }
+
+    function Get-TestIcoEntry {
+        param(
+            [Parameter(Mandatory)][byte[]]$Bytes,
+            [Parameter(Mandatory)][int]$Index
+        )
+
+        $entryOffset = 6 + (16 * $Index)
+        [pscustomobject]@{
+            DirectoryOffset = $entryOffset
+            Width = if ($Bytes[$entryOffset] -eq 0) { 256 } else { [int]$Bytes[$entryOffset] }
+            PayloadLength = [BitConverter]::ToUInt32($Bytes, $entryOffset + 8)
+            PayloadOffset = [BitConverter]::ToUInt32($Bytes, $entryOffset + 12)
+        }
+    }
+
+    function Set-TestUInt32LittleEndian {
+        param(
+            [Parameter(Mandatory)][byte[]]$Bytes,
+            [Parameter(Mandatory)][int]$Offset,
+            [Parameter(Mandatory)][uint32]$Value
+        )
+
+        [BitConverter]::GetBytes($Value).CopyTo($Bytes, $Offset)
+    }
+
+    function Set-TestUInt32BigEndian {
+        param(
+            [Parameter(Mandatory)][byte[]]$Bytes,
+            [Parameter(Mandatory)][int]$Offset,
+            [Parameter(Mandatory)][uint32]$Value
+        )
+
+        $encoded = [BitConverter]::GetBytes($Value)
+        if ([BitConverter]::IsLittleEndian) {
+            [Array]::Reverse($encoded)
+        }
+        $encoded.CopyTo($Bytes, $Offset)
+    }
+
+    function New-TestSetterFixture {
+        param(
+            [Parameter(Mandatory)][string]$Name
+        )
+
+        $fixtureRoot = Join-Path $TestDrive $Name
+        $localAppData = Join-Path $fixtureRoot 'Local AppData'
+        $assetsDirectory = Join-Path $localAppData 'CodexQuotaMonitor\assets'
+        $stableIconPath = Join-Path $assetsDirectory 'CodexQuotaMonitor.ico'
+        $shortcutPath = Join-Path $fixtureRoot 'Codex 额度监控.lnk'
+        New-Item -ItemType Directory -Path $assetsDirectory -Force | Out-Null
+        $priorIconBytes = [byte[]](101, 102, 103, 104, 105, 106)
+        [IO.File]::WriteAllBytes($stableIconPath, $priorIconBytes)
+        New-TestDesktopShortcut -Path $shortcutPath
+
+        [pscustomobject]@{
+            ShortcutPath = $shortcutPath
+            ShortcutBytes = [IO.File]::ReadAllBytes($shortcutPath)
+            LocalAppData = $localAppData
+            AssetsDirectory = $assetsDirectory
+            StableIconPath = $stableIconPath
+            PriorIconBytes = $priorIconBytes
+        }
+    }
+
+    function Get-TestIconArtifacts {
+        param([Parameter(Mandatory)]$Fixture)
+
+        @(Get-ChildItem -LiteralPath $Fixture.AssetsDirectory -Force -File |
+            Where-Object Name -Like 'CodexQuotaMonitor.ico.*')
+    }
+
+    function Get-TestShortcutBackups {
+        param([Parameter(Mandatory)]$Fixture)
+
+        $parent = Split-Path -Parent $Fixture.ShortcutPath
+        $leaf = Split-Path -Leaf $Fixture.ShortcutPath
+        @(Get-ChildItem -LiteralPath $parent -Force -File |
+            Where-Object Name -Like "$leaf.*.backup")
+    }
 }
 
 Describe 'desktop shortcut icon updater' {
@@ -178,5 +258,266 @@ Describe 'desktop shortcut icon updater' {
         [IO.File]::ReadAllBytes($stableIconPath) | Should -Be $priorIconBytes
         [Convert]::ToHexString([IO.File]::ReadAllBytes($shortcutPath)) |
             Should -BeExactly $shortcutBefore
+    }
+
+    It 'rejects malformed ICO payload <Kind> without changing existing state' -ForEach @(
+        @{ Kind = 'corrupt PNG signature' }
+        @{ Kind = 'truncated IHDR' }
+        @{ Kind = 'IHDR dimension mismatch' }
+        @{ Kind = 'duplicate directory size and payload' }
+    ) {
+        $fixture = New-TestSetterFixture -Name "malformed $Kind"
+        $malformedIcon = Join-Path $TestDrive "$Kind.ico"
+        $bytes = [IO.File]::ReadAllBytes($BlueIcon)
+        $first = Get-TestIcoEntry -Bytes $bytes -Index 0
+
+        switch ($Kind) {
+            'corrupt PNG signature' {
+                $bytes[$first.PayloadOffset] = 0
+            }
+            'truncated IHDR' {
+                Set-TestUInt32LittleEndian `
+                    -Bytes $bytes `
+                    -Offset ($first.DirectoryOffset + 8) `
+                    -Value 20
+            }
+            'IHDR dimension mismatch' {
+                Set-TestUInt32BigEndian `
+                    -Bytes $bytes `
+                    -Offset ($first.PayloadOffset + 16) `
+                    -Value ([uint32]($first.Width + 1))
+            }
+            'duplicate directory size and payload' {
+                [Array]::Copy($bytes, 6, $bytes, 6 + (16 * 6), 16)
+            }
+        }
+        [IO.File]::WriteAllBytes($malformedIcon, $bytes)
+
+        {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $malformedIcon `
+                -LocalAppData $fixture.LocalAppData
+        } | Should -Throw '*invalid ICO*'
+
+        [IO.File]::ReadAllBytes($fixture.ShortcutPath) | Should -Be $fixture.ShortcutBytes
+        [IO.File]::ReadAllBytes($fixture.StableIconPath) | Should -Be $fixture.PriorIconBytes
+        @(Get-TestIconArtifacts -Fixture $fixture).Count | Should -Be 0
+        @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
+    }
+
+    It 'restores the previous icon after a primary failure following icon replacement' {
+        $fixture = New-TestSetterFixture -Name 'fault after icon replacement'
+        $stages = [Collections.Generic.List[string]]::new()
+        $faultInjector = {
+            param($Stage, $Context)
+            $stages.Add($Stage)
+            if ($Stage -eq 'AfterIconReplacement') {
+                throw 'primary fault after icon replacement'
+            }
+        }.GetNewClosure()
+        $failure = $null
+
+        try {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $fixture.LocalAppData `
+                -FaultInjector $faultInjector
+        }
+        catch {
+            $failure = $_
+        }
+
+        $failure.Exception | Should -Not -BeOfType ([AggregateException])
+        $failure.Exception.Message | Should -Match 'primary fault after icon replacement'
+        $stages | Should -Contain 'BeforeIconRollback'
+        [IO.File]::ReadAllBytes($fixture.StableIconPath) | Should -Be $fixture.PriorIconBytes
+        [IO.File]::ReadAllBytes($fixture.ShortcutPath) | Should -Be $fixture.ShortcutBytes
+        @(Get-TestIconArtifacts -Fixture $fixture).Count | Should -Be 0
+        @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
+    }
+
+    It 'restores both user files after a primary failure following shortcut update' {
+        $fixture = New-TestSetterFixture -Name 'fault after shortcut update'
+        $stages = [Collections.Generic.List[string]]::new()
+        $faultInjector = {
+            param($Stage, $Context)
+            $stages.Add($Stage)
+            if ($Stage -eq 'AfterShortcutUpdate') {
+                throw 'primary fault after shortcut update'
+            }
+        }.GetNewClosure()
+        $failure = $null
+
+        try {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $fixture.LocalAppData `
+                -FaultInjector $faultInjector
+        }
+        catch {
+            $failure = $_
+        }
+
+        $failure.Exception | Should -Not -BeOfType ([AggregateException])
+        $failure.Exception.Message | Should -Match 'primary fault after shortcut update'
+        $stages | Should -Contain 'BeforeShortcutRollback'
+        $stages | Should -Contain 'BeforeIconRollback'
+        [IO.File]::ReadAllBytes($fixture.StableIconPath) | Should -Be $fixture.PriorIconBytes
+        [IO.File]::ReadAllBytes($fixture.ShortcutPath) | Should -Be $fixture.ShortcutBytes
+        @(Get-TestIconArtifacts -Fixture $fixture).Count | Should -Be 0
+        @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
+    }
+
+    It 'still restores the icon and retains the shortcut backup when shortcut rollback fails' {
+        $fixture = New-TestSetterFixture -Name 'shortcut rollback fault'
+        $stages = [Collections.Generic.List[string]]::new()
+        $faultInjector = {
+            param($Stage, $Context)
+            $stages.Add($Stage)
+            if ($Stage -eq 'AfterShortcutUpdate') {
+                throw 'primary shortcut transaction fault'
+            }
+            if ($Stage -eq 'BeforeShortcutRollback') {
+                throw 'shortcut restore fault'
+            }
+        }.GetNewClosure()
+        $failure = $null
+
+        try {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $fixture.LocalAppData `
+                -FaultInjector $faultInjector
+        }
+        catch {
+            $failure = $_
+        }
+
+        $failure.Exception | Should -BeOfType ([AggregateException])
+        $failure.Exception.InnerExceptions.Count | Should -Be 2
+        $failure.Exception.ToString() | Should -Match 'primary shortcut transaction fault'
+        $failure.Exception.ToString() | Should -Match 'shortcut restore fault'
+        $stages | Should -Contain 'BeforeIconRollback'
+        [IO.File]::ReadAllBytes($fixture.StableIconPath) | Should -Be $fixture.PriorIconBytes
+        $shortcutBackups = @(Get-TestShortcutBackups -Fixture $fixture)
+        $shortcutBackups.Count | Should -Be 1
+        [IO.File]::ReadAllBytes($shortcutBackups[0].FullName) | Should -Be $fixture.ShortcutBytes
+        @(Get-TestIconArtifacts -Fixture $fixture).Count | Should -Be 0
+    }
+
+    It 'still restores the shortcut and retains the icon backup when icon rollback fails' {
+        $fixture = New-TestSetterFixture -Name 'icon rollback fault'
+        $stages = [Collections.Generic.List[string]]::new()
+        $faultInjector = {
+            param($Stage, $Context)
+            $stages.Add($Stage)
+            if ($Stage -eq 'AfterShortcutUpdate') {
+                throw 'primary icon transaction fault'
+            }
+            if ($Stage -eq 'BeforeIconRollback') {
+                throw 'icon restore fault'
+            }
+        }.GetNewClosure()
+        $failure = $null
+
+        try {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $fixture.LocalAppData `
+                -FaultInjector $faultInjector
+        }
+        catch {
+            $failure = $_
+        }
+
+        $failure.Exception | Should -BeOfType ([AggregateException])
+        $failure.Exception.InnerExceptions.Count | Should -Be 2
+        $failure.Exception.ToString() | Should -Match 'primary icon transaction fault'
+        $failure.Exception.ToString() | Should -Match 'icon restore fault'
+        [IO.File]::ReadAllBytes($fixture.ShortcutPath) | Should -Be $fixture.ShortcutBytes
+        $iconBackups = @(Get-TestIconArtifacts -Fixture $fixture |
+            Where-Object Name -Like '*.prior')
+        $iconBackups.Count | Should -Be 1
+        [IO.File]::ReadAllBytes($iconBackups[0].FullName) | Should -Be $fixture.PriorIconBytes
+        @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
+    }
+
+    It 'attempts both rollbacks and retains both backups when both restores fail' {
+        $fixture = New-TestSetterFixture -Name 'both rollback faults'
+        $stages = [Collections.Generic.List[string]]::new()
+        $faultInjector = {
+            param($Stage, $Context)
+            $stages.Add($Stage)
+            switch ($Stage) {
+                'AfterShortcutUpdate' { throw 'primary both transaction fault' }
+                'BeforeShortcutRollback' { throw 'shortcut rollback fault' }
+                'BeforeIconRollback' { throw 'icon rollback fault' }
+            }
+        }.GetNewClosure()
+        $failure = $null
+
+        try {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $fixture.LocalAppData `
+                -FaultInjector $faultInjector
+        }
+        catch {
+            $failure = $_
+        }
+
+        $failure.Exception | Should -BeOfType ([AggregateException])
+        $failure.Exception.InnerExceptions.Count | Should -Be 3
+        $failure.Exception.ToString() | Should -Match 'primary both transaction fault'
+        $failure.Exception.ToString() | Should -Match 'shortcut rollback fault'
+        $failure.Exception.ToString() | Should -Match 'icon rollback fault'
+        $stages | Should -Contain 'BeforeShortcutRollback'
+        $stages | Should -Contain 'BeforeIconRollback'
+        $shortcutBackups = @(Get-TestShortcutBackups -Fixture $fixture)
+        $iconBackups = @(Get-TestIconArtifacts -Fixture $fixture |
+            Where-Object Name -Like '*.prior')
+        $shortcutBackups.Count | Should -Be 1
+        $iconBackups.Count | Should -Be 1
+        [IO.File]::ReadAllBytes($shortcutBackups[0].FullName) | Should -Be $fixture.ShortcutBytes
+        [IO.File]::ReadAllBytes($iconBackups[0].FullName) | Should -Be $fixture.PriorIconBytes
+    }
+
+    It 'keeps committed state and the failed artifact when cleanup fails' {
+        $fixture = New-TestSetterFixture -Name 'cleanup fault'
+        $faultInjector = {
+            param($Stage, $Context)
+            if ($Stage -eq 'BeforeCleanup' -and $Context.CleanupArtifactPath -like '*.prior') {
+                throw 'injected cleanup fault'
+            }
+        }
+        $failure = $null
+
+        try {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $BlueIcon `
+                -LocalAppData $fixture.LocalAppData `
+                -FaultInjector $faultInjector
+        }
+        catch {
+            $failure = $_
+        }
+
+        $failure.Exception.ToString() | Should -Match 'injected cleanup fault'
+        [IO.File]::ReadAllBytes($fixture.StableIconPath) |
+            Should -Be ([IO.File]::ReadAllBytes($BlueIcon))
+        (Read-TestDesktopShortcut -Path $fixture.ShortcutPath).IconLocation |
+            Should -BeExactly "$($fixture.StableIconPath),0"
+        $iconBackups = @(Get-TestIconArtifacts -Fixture $fixture |
+            Where-Object Name -Like '*.prior')
+        $iconBackups.Count | Should -Be 1
+        [IO.File]::ReadAllBytes($iconBackups[0].FullName) | Should -Be $fixture.PriorIconBytes
+        @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
     }
 }
