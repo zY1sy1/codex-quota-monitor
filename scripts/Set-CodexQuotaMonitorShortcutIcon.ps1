@@ -43,6 +43,110 @@ function Get-UInt32BigEndian {
     )
 }
 
+function Get-PngCrc32 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][byte[]]$Bytes,
+        [Parameter(Mandatory)][int]$Offset,
+        [Parameter(Mandatory)][int]$Count
+    )
+
+    [uint32]$crc = [uint32]::MaxValue
+    [uint32]$polynomial = [Convert]::ToUInt32('EDB88320', 16)
+    for ($byteIndex = 0; $byteIndex -lt $Count; $byteIndex++) {
+        $crc = [uint32]($crc -bxor [uint32]$Bytes[$Offset + $byteIndex])
+        for ($bitIndex = 0; $bitIndex -lt 8; $bitIndex++) {
+            if (($crc -band 1) -ne 0) {
+                $crc = [uint32](($crc -shr 1) -bxor $polynomial)
+            }
+            else {
+                $crc = [uint32]($crc -shr 1)
+            }
+        }
+    }
+    return [uint32]($crc -bxor [uint32]::MaxValue)
+}
+
+function Test-PngChunkStream {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][byte[]]$FileBytes,
+        [Parameter(Mandatory)][int]$PayloadOffset,
+        [Parameter(Mandatory)][int]$PayloadLength
+    )
+
+    [uint64]$payloadLimit = [uint64]$PayloadLength
+    [uint64]$cursor = 8
+    $chunkIndex = 0
+    $sawIdat = $false
+    $sawIend = $false
+
+    while ($cursor -lt $payloadLimit) {
+        if (($payloadLimit - $cursor) -lt 12) {
+            throw (New-InvalidIcoException -Message 'a PNG chunk header, data, or CRC is truncated.' -InnerException $null)
+        }
+
+        $chunkHeaderOffset = [int]([uint64]$PayloadOffset + $cursor)
+        [uint64]$chunkLength = Get-UInt32BigEndian -Bytes $FileBytes -Offset $chunkHeaderOffset
+        [uint64]$typeOffset = $cursor + 4
+        [uint64]$dataOffset = $cursor + 8
+        [uint64]$crcOffset = $dataOffset + $chunkLength
+        [uint64]$chunkEnd = $crcOffset + 4
+        if ($crcOffset -lt $dataOffset -or $chunkEnd -lt $crcOffset -or $chunkEnd -gt $payloadLimit) {
+            throw (New-InvalidIcoException -Message 'a PNG chunk declares an impossible or truncated length.' -InnerException $null)
+        }
+
+        $absoluteTypeOffset = [int]([uint64]$PayloadOffset + $typeOffset)
+        $absoluteCrcOffset = [int]([uint64]$PayloadOffset + $crcOffset)
+        $chunkType = [Text.Encoding]::ASCII.GetString($FileBytes, $absoluteTypeOffset, 4)
+        if ($chunkIndex -eq 0 -and ($chunkType -cne 'IHDR' -or $chunkLength -ne 13)) {
+            throw (New-InvalidIcoException -Message 'the first PNG chunk must be a 13-byte IHDR.' -InnerException $null)
+        }
+        if ($chunkIndex -gt 0 -and $chunkType -ceq 'IHDR') {
+            throw (New-InvalidIcoException -Message 'a PNG payload contains more than one IHDR.' -InnerException $null)
+        }
+
+        $crcInputLength = [uint64]4 + $chunkLength
+        if ($crcInputLength -gt [int]::MaxValue) {
+            throw (New-InvalidIcoException -Message 'a PNG chunk is too large to validate safely.' -InnerException $null)
+        }
+        $expectedCrc = Get-UInt32BigEndian -Bytes $FileBytes -Offset $absoluteCrcOffset
+        $actualCrc = Get-PngCrc32 `
+            -Bytes $FileBytes `
+            -Offset $absoluteTypeOffset `
+            -Count ([int]$crcInputLength)
+        if ($actualCrc -ne $expectedCrc) {
+            throw (New-InvalidIcoException -Message "PNG chunk '$chunkType' has an invalid CRC." -InnerException $null)
+        }
+
+        if ($chunkType -ceq 'IDAT') {
+            $sawIdat = $true
+        }
+        elseif ($chunkType -ceq 'IEND') {
+            if ($chunkLength -ne 0) {
+                throw (New-InvalidIcoException -Message 'the PNG IEND chunk must have zero length.' -InnerException $null)
+            }
+            $sawIend = $true
+            if ($chunkEnd -ne $payloadLimit) {
+                throw (New-InvalidIcoException -Message 'the PNG IEND chunk must end exactly at the payload boundary.' -InnerException $null)
+            }
+        }
+
+        $cursor = $chunkEnd
+        $chunkIndex++
+        if ($sawIend) {
+            break
+        }
+    }
+
+    if (-not $sawIdat) {
+        throw (New-InvalidIcoException -Message 'a PNG payload contains no IDAT chunk.' -InnerException $null)
+    }
+    if (-not $sawIend -or $cursor -ne $payloadLimit) {
+        throw (New-InvalidIcoException -Message 'a PNG payload has no complete terminal IEND chunk.' -InnerException $null)
+    }
+}
+
 function Test-PngIconPayload {
     [CmdletBinding()]
     param(
@@ -61,6 +165,11 @@ function Test-PngIconPayload {
             throw (New-InvalidIcoException -Message 'an image payload does not have a PNG signature.' -InnerException $null)
         }
     }
+
+    Test-PngChunkStream `
+        -FileBytes $FileBytes `
+        -PayloadOffset $PayloadOffset `
+        -PayloadLength $PayloadLength
 
     $ihdrLength = Get-UInt32BigEndian -Bytes $FileBytes -Offset ($PayloadOffset + 8)
     $ihdrType = [Text.Encoding]::ASCII.GetString($FileBytes, $PayloadOffset + 12, 4)

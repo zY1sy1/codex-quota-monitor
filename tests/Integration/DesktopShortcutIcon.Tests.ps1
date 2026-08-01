@@ -306,6 +306,52 @@ Describe 'desktop shortcut icon updater' {
         @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
     }
 
+    It 'rejects an incomplete PNG chunk stream <Kind> without changing existing state' -ForEach @(
+        @{ Kind = 'missing terminal IEND' }
+        @{ Kind = 'bytes declared after terminal IEND' }
+    ) {
+        $fixture = New-TestSetterFixture -Name "chunk stream $Kind"
+        $malformedIcon = Join-Path $TestDrive "chunk stream $Kind.ico"
+        $bytes = [IO.File]::ReadAllBytes($BlueIcon)
+        $last = Get-TestIcoEntry -Bytes $bytes -Index 6
+
+        switch ($Kind) {
+            'missing terminal IEND' {
+                $shorter = [byte[]]::new($bytes.Length - 12)
+                [Array]::Copy($bytes, $shorter, $shorter.Length)
+                Set-TestUInt32LittleEndian `
+                    -Bytes $shorter `
+                    -Offset ($last.DirectoryOffset + 8) `
+                    -Value ([uint32]($last.PayloadLength - 12))
+                $bytes = $shorter
+            }
+            'bytes declared after terminal IEND' {
+                $longer = [byte[]]::new($bytes.Length + 4)
+                [Array]::Copy($bytes, $longer, $bytes.Length)
+                $trailingBytes = [byte[]](1, 2, 3, 4)
+                $trailingBytes.CopyTo($longer, $bytes.Length)
+                Set-TestUInt32LittleEndian `
+                    -Bytes $longer `
+                    -Offset ($last.DirectoryOffset + 8) `
+                    -Value ([uint32]($last.PayloadLength + 4))
+                $bytes = $longer
+            }
+        }
+        [IO.File]::WriteAllBytes($malformedIcon, $bytes)
+
+        {
+            & $SetIconScript `
+                -ShortcutPath $fixture.ShortcutPath `
+                -IconSourcePath $malformedIcon `
+                -LocalAppData $fixture.LocalAppData
+        } | Should -Throw '*invalid ICO*'
+
+        [IO.File]::ReadAllBytes($fixture.ShortcutPath) | Should -Be $fixture.ShortcutBytes
+        [IO.File]::ReadAllBytes($fixture.StableIconPath) | Should -Be $fixture.PriorIconBytes
+        @(Get-TestIconArtifacts -Fixture $fixture).Count | Should -Be 0
+        @(Get-TestShortcutBackups -Fixture $fixture).Count | Should -Be 0
+    }
+
     It 'restores the previous icon after a primary failure following icon replacement' {
         $fixture = New-TestSetterFixture -Name 'fault after icon replacement'
         $stages = [Collections.Generic.List[string]]::new()
