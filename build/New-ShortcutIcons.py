@@ -13,6 +13,26 @@ from PIL import Image, ImageDraw
 VIEW_SIZE: Final = 128
 ICO_SIZES: Final = (16, 24, 32, 48, 64, 128, 256)
 SUPERSAMPLE: Final = 4
+Point = tuple[float, float]
+
+PLATE_ORIGIN: Final[Point] = (5, 5)
+PLATE_SIZE: Final = VIEW_SIZE - (2 * PLATE_ORIGIN[0])
+PLATE_CORNER_RADIUS: Final = 29
+PLATE_STROKE_WIDTH: Final = 4
+
+GAUGE_CENTER: Final[Point] = (64, 64)
+GAUGE_RADIUS: Final = 41
+GAUGE_TRACK_WIDTH: Final = 12
+
+ARC_START: Final[Point] = (GAUGE_CENTER[0], GAUGE_CENTER[1] - GAUGE_RADIUS)
+ARC_END_DELTA: Final[Point] = (-37.9, 56.5)
+ARC_END: Final[Point] = (ARC_START[0] + ARC_END_DELTA[0], ARC_START[1] + ARC_END_DELTA[1])
+ARC_STROKE_WIDTH: Final = 12
+ARC_SEGMENTS: Final = 160
+
+GLYPH_CHEVRON: Final[tuple[Point, Point, Point]] = ((47, 51), (60, 64), (47, 77))
+GLYPH_BASELINE: Final[tuple[Point, Point]] = ((66, 78), (84, 78))
+GLYPH_STROKE_WIDTH: Final = 7
 
 VARIANTS: Final = {
     "white": {
@@ -30,6 +50,35 @@ VARIANTS: Final = {
         "glyph": "#1E3A8A",
     },
 }
+
+
+def number(value: float) -> str:
+    """Format source-coordinate values for the exact SVG contract."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def arc_path() -> str:
+    """Serialize the shared arc geometry as its SVG path data."""
+    return (
+        f"M{number(ARC_START[0])} {number(ARC_START[1])}"
+        f"a{number(GAUGE_RADIUS)} {number(GAUGE_RADIUS)} 0 1 1"
+        f"{number(ARC_END_DELTA[0])} {number(ARC_END_DELTA[1])}"
+    )
+
+
+def glyph_path() -> str:
+    """Serialize the shared terminal glyph geometry as its SVG path data."""
+    start, corner, end = GLYPH_CHEVRON
+    first_delta = (corner[0] - start[0], corner[1] - start[1])
+    second_delta = (end[0] - corner[0], end[1] - corner[1])
+    baseline_start, baseline_end = GLYPH_BASELINE
+    return (
+        f"m{number(start[0])} {number(start[1])}"
+        f" {number(first_delta[0])} {number(first_delta[1])}"
+        f"{number(second_delta[0])} {number(second_delta[1])}"
+        f"M{number(baseline_start[0])} {number(baseline_start[1])}"
+        f"h{number(baseline_end[0] - baseline_start[0])}"
+    )
 
 
 def svg_document(name: str) -> str:
@@ -50,10 +99,10 @@ def svg_document(name: str) -> str:
     return (
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" role=\"img\" aria-label=\"Quota monitor gauge\">\n"
         f"{defs}"
-        f"  <rect x=\"5\" y=\"5\" width=\"118\" height=\"118\" rx=\"29\" fill=\"#FFFFFF\" stroke=\"{colors['border']}\" stroke-width=\"4\"/>\n"
-        f"  <circle cx=\"64\" cy=\"64\" r=\"41\" fill=\"none\" stroke=\"{colors['track']}\" stroke-width=\"12\"/>\n"
-        f"  <path d=\"M64 23a41 41 0 1 1-37.9 56.5\" fill=\"none\" stroke=\"{arc_stroke}\" stroke-width=\"12\" stroke-linecap=\"round\"/>\n"
-        f"  <path d=\"m47 51 13 13-13 13M66 78h18\" fill=\"none\" stroke=\"{colors['glyph']}\" stroke-width=\"7\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+        f"  <rect x=\"{number(PLATE_ORIGIN[0])}\" y=\"{number(PLATE_ORIGIN[1])}\" width=\"{number(PLATE_SIZE)}\" height=\"{number(PLATE_SIZE)}\" rx=\"{number(PLATE_CORNER_RADIUS)}\" fill=\"#FFFFFF\" stroke=\"{colors['border']}\" stroke-width=\"{number(PLATE_STROKE_WIDTH)}\"/>\n"
+        f"  <circle cx=\"{number(GAUGE_CENTER[0])}\" cy=\"{number(GAUGE_CENTER[1])}\" r=\"{number(GAUGE_RADIUS)}\" fill=\"none\" stroke=\"{colors['track']}\" stroke-width=\"{number(GAUGE_TRACK_WIDTH)}\"/>\n"
+        f"  <path d=\"{arc_path()}\" fill=\"none\" stroke=\"{arc_stroke}\" stroke-width=\"{number(ARC_STROKE_WIDTH)}\" stroke-linecap=\"round\"/>\n"
+        f"  <path d=\"{glyph_path()}\" fill=\"none\" stroke=\"{colors['glyph']}\" stroke-width=\"{number(GLYPH_STROKE_WIDTH)}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
         "</svg>\n"
     )
 
@@ -93,29 +142,46 @@ def render_icon(name: str, size: int) -> Image.Image:
     colors = VARIANTS[name]
     canvas = Image.new("RGBA", (scaled(VIEW_SIZE), scaled(VIEW_SIZE)), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle((scaled(5), scaled(5), scaled(123), scaled(123)), radius=scaled(29), fill="#FFFFFF", outline=colors["border"], width=scaled(4))
-    draw.ellipse((scaled(23), scaled(23), scaled(105), scaled(105)), outline=colors["track"], width=scaled(12))
+    plate_end = (PLATE_ORIGIN[0] + PLATE_SIZE, PLATE_ORIGIN[1] + PLATE_SIZE)
+    draw.rounded_rectangle(
+        (scaled(PLATE_ORIGIN[0]), scaled(PLATE_ORIGIN[1]), scaled(plate_end[0]), scaled(plate_end[1])),
+        radius=scaled(PLATE_CORNER_RADIUS),
+        fill="#FFFFFF",
+        outline=colors["border"],
+        width=scaled(PLATE_STROKE_WIDTH),
+    )
+    gauge_box = (
+        GAUGE_CENTER[0] - GAUGE_RADIUS,
+        GAUGE_CENTER[1] - GAUGE_RADIUS,
+        GAUGE_CENTER[0] + GAUGE_RADIUS,
+        GAUGE_CENTER[1] + GAUGE_RADIUS,
+    )
+    draw.ellipse(tuple(scaled(value) for value in gauge_box), outline=colors["track"], width=scaled(GAUGE_TRACK_WIDTH))
 
     arc_points = []
-    for step in range(161):
-        angle = math.radians(-90 + (247.7 * step / 160))
-        arc_points.append((64 + 41 * math.cos(angle), 64 + 41 * math.sin(angle)))
+    start_angle = math.atan2(ARC_START[1] - GAUGE_CENTER[1], ARC_START[0] - GAUGE_CENTER[0])
+    end_angle = math.atan2(ARC_END[1] - GAUGE_CENTER[1], ARC_END[0] - GAUGE_CENTER[0])
+    for step in range(ARC_SEGMENTS + 1):
+        angle = start_angle + ((end_angle - start_angle) * step / ARC_SEGMENTS)
+        arc_points.append((GAUGE_CENTER[0] + GAUGE_RADIUS * math.cos(angle), GAUGE_CENTER[1] + GAUGE_RADIUS * math.sin(angle)))
+    arc_points[0] = ARC_START
+    arc_points[-1] = ARC_END
     if name == "white":
-        draw_round_line(draw, arc_points, rgb(colors["arc_start"]), 12)
+        draw_round_line(draw, arc_points, rgb(colors["arc_start"]), ARC_STROKE_WIDTH)
     else:
         for start, end in zip(arc_points, arc_points[1:]):
             midpoint_x = (start[0] + end[0]) / 2
             midpoint_y = (start[1] + end[1]) / 2
-            draw_round_line(draw, [start, end], diagonal_gradient(rgb(colors["arc_start"]), rgb(colors["arc_end"]), midpoint_x, midpoint_y), 12)
-        radius = scaled(6)
+            draw_round_line(draw, [start, end], diagonal_gradient(rgb(colors["arc_start"]), rgb(colors["arc_end"]), midpoint_x, midpoint_y), ARC_STROKE_WIDTH)
+        radius = scaled(ARC_STROKE_WIDTH / 2)
         for point in (arc_points[0], arc_points[-1]):
             x, y = scaled(point[0]), scaled(point[1])
             color = diagonal_gradient(rgb(colors["arc_start"]), rgb(colors["arc_end"]), point[0], point[1])
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
 
     glyph = rgb(colors["glyph"])
-    draw_round_line(draw, [(47, 51), (60, 64), (47, 77)], glyph, 7)
-    draw_round_line(draw, [(66, 78), (84, 78)], glyph, 7)
+    draw_round_line(draw, list(GLYPH_CHEVRON), glyph, GLYPH_STROKE_WIDTH)
+    draw_round_line(draw, list(GLYPH_BASELINE), glyph, GLYPH_STROKE_WIDTH)
     return canvas.resize((size, size), Image.Resampling.LANCZOS)
 
 
