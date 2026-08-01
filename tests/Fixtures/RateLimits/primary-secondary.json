@@ -1,0 +1,22 @@
+{
+  "rateLimitsByLimitId": {
+    "codex": {
+      "limitId": "codex",
+      "limitName": "Codex",
+      "primary": {
+        "usedPercent": 25.5,
+        "windowDurationMins": 300,
+        "resetsAt": 1783933200,
+        "rateLimitReachedType": "not_reached",
+        "ignoredCredits": 7450
+      },
+      "secondary": {
+        "usedPercent": null,
+        "windowDurationMins": 10080,
+        "resetsAt": 1784534400,
+        "rateLimitReachedType": null,
+        "ignoredCredits": null
+      }
+    }
+  }
+}

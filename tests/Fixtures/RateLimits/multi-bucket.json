@@ -1,0 +1,48 @@
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "Codex",
+    "primary": {
+      "usedPercent": 12.3,
+      "windowDurationMins": 300,
+      "resetsAt": 1783933200,
+      "rateLimitReachedType": "not_reached"
+    },
+    "secondary": {
+      "usedPercent": 60.0,
+      "windowDurationMins": 10080,
+      "resetsAt": 1784534400,
+      "rateLimitReachedType": "not_reached"
+    }
+  },
+  "rateLimitsByLimitId": {
+    "codex-review": {
+      "limitId": "codex-review",
+      "limitName": "Code review",
+      "primary": {
+        "usedPercent": 99.0,
+        "windowDurationMins": 60,
+        "resetsAt": 1783929900,
+        "rateLimitReachedType": "hard_limit"
+      },
+      "secondary": null,
+      "ignoredPlanType": "review"
+    },
+    "codex": {
+      "limitId": "codex",
+      "limitName": "Codex",
+      "primary": {
+        "usedPercent": 12.3,
+        "windowDurationMins": 300,
+        "resetsAt": 1783933200,
+        "rateLimitReachedType": "not_reached"
+      },
+      "secondary": {
+        "usedPercent": 60.0,
+        "windowDurationMins": 10080,
+        "resetsAt": 1784534400,
+        "rateLimitReachedType": "not_reached"
+      }
+    }
+  }
+}

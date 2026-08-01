@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Codex quota gauge">
+  <rect width="128" height="128" rx="28" fill="#101827"/>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="#263244" stroke-width="12"/>
+  <path d="M64 22a42 42 0 1 1-38.8 58.1" fill="none" stroke="#10A37F" stroke-width="12" stroke-linecap="round"/>
+  <path d="m47 51 13 13-13 13M66 78h18" fill="none" stroke="#F7FAFC" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
