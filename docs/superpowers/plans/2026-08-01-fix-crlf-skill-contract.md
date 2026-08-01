@@ -47,7 +47,7 @@ git status --short
 git diff -- tests/Unit/SkillContract.Tests.ps1
 ```
 
-预期：仅 `tests/Unit/SkillContract.Tests.ps1` 出现未提交代码修改；本地 `.superpowers/` 和 `.worktrees/` 仍保持未跟踪且不加入暂存区。
+预期：仅 `tests/Unit/SkillContract.Tests.ps1` 出现未提交代码修改；`/.worktrees/` 已被 `.gitignore` 忽略且不得提交；`.superpowers/` 如存在则保持未跟踪且不得提交。
 
 ### 任务 2：实施最小的 CRLF 行尾兼容修复
 
@@ -100,7 +100,7 @@ git diff --cached --stat
 git commit -m "test: accept CRLF in skill policy contract"
 ```
 
-预期：暂存区只包含 `tests/Unit/SkillContract.Tests.ps1`；提交成功，设计文档提交保持不变，`.superpowers/` 和 `.worktrees/` 不被提交。
+预期：暂存区只包含 `tests/Unit/SkillContract.Tests.ps1`；提交成功，设计文档提交保持不变；`/.worktrees/` 已被 `.gitignore` 忽略且不得提交；`.superpowers/` 如存在则保持未跟踪且不得提交。
 
 ### 任务 3：发布修复分支并核验远端
 
@@ -141,4 +141,4 @@ git ls-remote --heads origin main agent/fix-crlf-skill-contract
 git status -sb
 ```
 
-预期：PR 为打开、非草稿、目标 `main`、来源 `agent/fix-crlf-skill-contract`；远端存在两个分支；本地代码无未提交修改，只有 `.superpowers/` 和 `.worktrees/` 保持未跟踪。
+预期：PR 为打开、非草稿、目标 `main`、来源 `agent/fix-crlf-skill-contract`；远端存在两个分支；工作树无代码修改；`.worktrees/` 被忽略，`.superpowers/` 如存在则保持未跟踪。
