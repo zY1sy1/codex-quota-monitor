@@ -1,26 +1,26 @@
-# CRLF-Tolerant Skill Contract Test
+# Skill 契约测试的 CRLF 兼容设计
 
-## Context
+## 背景
 
-The merged `main` branch passes the quota-monitor runtime and integration tests, but one skill-policy contract assertion fails when the repository is checked out with Windows CRLF line endings. The same Git blobs pass from the older LF-only worktree. Two multiline regular expressions anchor policy sentences with `$` and therefore leave a trailing carriage return unmatched under CRLF.
+合并后的 `main` 分支可以通过额度监控器的运行时和集成测试，但仓库使用 Windows CRLF 换行符检出时，有一项 skill 策略契约断言失败。同一组 Git 文件在旧的纯 LF worktree 中可以通过测试。根因是两条多行正则表达式使用 `$` 锚定策略语句的行尾，导致 CRLF 中残留的回车符无法匹配。
 
-## Chosen approach
+## 选定方案
 
-Keep the skill content and repository line-ending policy unchanged. Update only the two line-anchored policy patterns in `tests/Unit/SkillContract.Tests.ps1` so they accept an optional carriage return before the line ending.
+保持 skill 内容和仓库换行策略不变。只修改 `tests/Unit/SkillContract.Tests.ps1` 中两条带行尾锚点的策略匹配规则，使其允许换行前存在一个可选的回车符。
 
-Add a deterministic regression assertion that converts the skill text to CRLF in memory and requires the policy contract to accept it. This makes the bug reproducible even when tests run from an LF checkout.
+增加一项确定性的回归断言：在内存中把 skill 文本转换为 CRLF，然后要求策略契约仍能通过。这样，即使测试运行在 LF 检出的仓库中，也能稳定复现并防止该问题再次出现。
 
-## Scope
+## 修改范围
 
-- Modify `tests/Unit/SkillContract.Tests.ps1` only.
-- Preserve all existing positive and negative policy checks.
-- Do not change plugin runtime behavior, `SKILL.md`, installation state, or user data.
-- Do not introduce a repository-wide `.gitattributes` policy.
+- 只修改 `tests/Unit/SkillContract.Tests.ps1`。
+- 保留现有全部正向和反向策略检查。
+- 不修改插件运行逻辑、`SKILL.md`、安装状态或用户数据。
+- 不引入影响整个仓库的 `.gitattributes` 换行策略。
 
-## Verification
+## 验证方法
 
-1. Confirm the new CRLF regression assertion fails before the regex fix.
-2. Apply the minimal optional-carriage-return change.
-3. Run `SkillContract.Tests.ps1` and confirm all focused assertions pass.
-4. Run the full unit and integration suite and require all 354 tests plus the new regression assertion to pass.
-5. Confirm `git diff --check` and the working-tree scope.
+1. 在修改正则表达式前，确认新增的 CRLF 回归断言按预期失败。
+2. 实施允许可选回车符的最小修改。
+3. 运行 `SkillContract.Tests.ps1`，确认全部针对性断言通过。
+4. 运行完整单元测试和集成测试，要求原有 354 项测试及新增回归断言全部通过。
+5. 检查 `git diff --check` 和工作树修改范围。
