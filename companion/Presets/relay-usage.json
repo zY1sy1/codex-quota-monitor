@@ -1,0 +1,32 @@
+{
+  "SchemaVersion": 1,
+  "Presets": [
+    {
+      "Id": "wakaka",
+      "Name": "Wakaka",
+      "TemplateType": "Wakaka",
+      "EndpointPath": "/v1/usage",
+      "Script": "({request:{url:\"{{baseUrl}}/v1/usage\",method:\"GET\",headers:{Authorization:\"Bearer {{apiKey}}\"}},extractor:function(response){const data=response.data??response;if(Array.isArray(data.plans)&&data.plans.length>0){return data.plans.map(function(plan){return {isValid:response.success??true,invalidMessage:response.message??null,remaining:plan.remaining,unit:plan.unit??null,planName:plan.name??null,total:plan.total??null,used:plan.used??null,extra:plan.reset??null};});}return {isValid:response.success??true,invalidMessage:response.message??null,remaining:data.balance,unit:data.currency??\"USD\",planName:\"Wallet\"};}})",
+      "DefaultTimeoutSeconds": 10,
+      "DefaultIntervalMinutes": 10
+    },
+    {
+      "Id": "general",
+      "Name": "General",
+      "TemplateType": "General",
+      "EndpointPath": "/user/balance",
+      "Script": "({request:{url:\"{{baseUrl}}/user/balance\",method:\"GET\",headers:{Authorization:\"Bearer {{apiKey}}\"}},extractor:function(response){const data=response.data??response;return {isValid:response.success??true,invalidMessage:response.message??null,remaining:data.balance??data.quota,unit:data.currency??\"USD\",planName:data.planName??null};}})",
+      "DefaultTimeoutSeconds": 10,
+      "DefaultIntervalMinutes": 10
+    },
+    {
+      "Id": "new-api",
+      "Name": "New API",
+      "TemplateType": "NewApi",
+      "EndpointPath": "/api/user/self",
+      "Script": "({request:{url:\"{{baseUrl}}/api/user/self\",method:\"GET\",headers:{Authorization:\"Bearer {{accessToken}}\",\"New-Api-User\":\"{{userId}}\"}},extractor:function(response){const data=response.data??response;return {isValid:response.success??true,invalidMessage:response.message??null,remaining:data.quota??data.balance,unit:data.currency??\"USD\",planName:data.username??null};}})",
+      "DefaultTimeoutSeconds": 10,
+      "DefaultIntervalMinutes": 10
+    }
+  ]
+}
