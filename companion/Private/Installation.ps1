@@ -613,7 +613,8 @@ function Set-MonitorStartupPreference {
         [Parameter(Mandatory)][bool]$Enabled,
         [Parameter(Mandatory)][object]$Paths,
         [Parameter(Mandatory)][string]$RuntimeScriptPath,
-        [AllowNull()][string]$PwshPath
+        [AllowNull()][string]$PwshPath,
+        [AllowNull()][string]$LauncherScript
     )
 
     if ($Enabled) {
@@ -621,10 +622,14 @@ function Set-MonitorStartupPreference {
             $localAppData = Split-Path -Parent $Paths.Root
             $PwshPath = Resolve-MonitorPwshPath -LocalAppData $localAppData
         }
+        if ([string]::IsNullOrWhiteSpace($LauncherScript)) {
+            $LauncherScript = Join-Path $Paths.App 'Start-CodexQuotaMonitor.vbs'
+        }
         $null = New-MonitorStartupShortcut `
             -ShortcutPath $Paths.StartupShortcut `
             -EntryScript $RuntimeScriptPath `
-            -PwshPath $PwshPath
+            -PwshPath $PwshPath `
+            -LauncherScript $LauncherScript
     }
     else {
         Remove-MonitorStartupShortcut -ShortcutPath $Paths.StartupShortcut
@@ -1009,7 +1014,8 @@ function Invoke-CodexQuotaMonitorInstall {
             -Enabled ([bool]$settings.Startup) `
             -Paths $paths `
             -RuntimeScriptPath $entryScript `
-            -PwshPath $PwshPath
+            -PwshPath $PwshPath `
+            -LauncherScript (Join-Path $paths.App 'Start-CodexQuotaMonitor.vbs')
 
         if (-not $SkipStart) {
             Start-MonitorInstalledRuntime `
