@@ -1,8 +1,10 @@
 BeforeAll {
     $settingsScript = "$PSScriptRoot\..\..\companion\Private\Settings.ps1"
+    $credentialsScript = "$PSScriptRoot\..\..\companion\Private\RelayCredentials.ps1"
     $storeScript = "$PSScriptRoot\..\..\companion\Private\RelayProviderStore.ps1"
     $presetPath = "$PSScriptRoot\..\..\companion\Presets\relay-usage.json"
     . $settingsScript
+    . $credentialsScript
     if (Test-Path -LiteralPath $storeScript -PathType Leaf) {
         . $storeScript
     }
@@ -76,9 +78,11 @@ Describe 'relay provider persistence' {
     It 'round-trips atomically without a BOM, temp file, or plaintext sentinel' {
         $path = Join-Path $TestDrive 'round-trip\relay-providers.json'
         $plainTextSentinel = 'PLAINTEXT_API_KEY_SENTINEL_430'
-        $document = New-TestRelayProviderDocument -ApiKey (
-            [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('cipher-bytes-only'))
-        )
+        $cipherText = Protect-RelaySecret -PlainText $plainTextSentinel -ProtectBytes {
+            param($bytes)
+            ,([byte[]]($bytes | ForEach-Object { $_ -bxor 0xA5 }))
+        }
+        $document = New-TestRelayProviderDocument -ApiKey $cipherText
 
         Write-RelayProviderStore -Path $path -Document $document
 
@@ -86,6 +90,7 @@ Describe 'relay provider persistence' {
         $json = [Text.Encoding]::UTF8.GetString($bytes)
         $bytes[0..([Math]::Min(2, $bytes.Length - 1))] -join ',' | Should -Not -BeExactly '239,187,191'
         $json | Should -Not -Match ([regex]::Escape($plainTextSentinel))
+        $json | Should -Match ([regex]::Escape($cipherText))
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
         (Read-RelayProviderStore -Path $path).Providers[0].Name | Should -BeExactly 'Wakaka'
     }
