@@ -134,9 +134,11 @@ Describe 'Codex quota monitor production composition' {
 
         @($health.PSObject.Properties.Name) | Should -Be @(
             'SchemaVersion', 'Status', 'PlanType', 'QuotaWindowCount', 'LastSuccessAt',
-            'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt'
+            'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt',
+            'RelayProviderCount', 'RelayLiveCount', 'RelayStaleCount', 'RelayInvalidCount',
+            'RelayHostState', 'DisplayMode', 'Theme'
         )
-        $health.SchemaVersion | Should -Be 1
+        $health.SchemaVersion | Should -Be 2
         $health.Status | Should -BeExactly 'Live'
         $health.PlanType | Should -BeExactly 'plus'
         $health.QuotaWindowCount | Should -Be 2
@@ -145,6 +147,13 @@ Describe 'Codex quota monitor production composition' {
         $health.LastErrorMessage | Should -BeNullOrEmpty
         $health.ProcessId | Should -Be $PID
         [datetimeoffset]$health.UpdatedAt | Should -BeGreaterThan ([datetimeoffset]'2020-01-01')
+        $health.RelayProviderCount | Should -Be 0
+        $health.RelayLiveCount | Should -Be 0
+        $health.RelayStaleCount | Should -Be 0
+        $health.RelayInvalidCount | Should -Be 0
+        $health.RelayHostState | Should -BeExactly 'Disabled'
+        $health.DisplayMode | Should -BeExactly 'Full'
+        $health.Theme | Should -BeExactly 'Dark'
 
         $result.Status | Should -BeExactly 'Live'
         $result.PlanType | Should -BeExactly 'plus'
