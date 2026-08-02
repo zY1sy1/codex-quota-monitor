@@ -15,6 +15,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ring::{
+    aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM},
+    rand::{SecureRandom, SystemRandom},
+};
 use rquickjs::{
     allocator::{Allocator, RustAllocator},
     qjs, Array, Atom, Context, Ctx, Error as QuickJsError, Filter, Object, Runtime, Value,
@@ -27,12 +31,19 @@ const MAX_SCRIPT_BYTES: usize = 256 * 1024;
 const MAX_SUBSTITUTED_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_REQUEST_WORKER_INPUT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_REQUEST_WORKER_OUTPUT_BYTES: usize = 128 * 1024;
 const MAX_EXTRACTOR_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_EXTRACTOR_WORKER_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_NORMALIZED_RESULT_BYTES: usize = 256 * 1024;
-const MAX_EXTRACTOR_WORKER_OUTPUT_BYTES: usize = MAX_NORMALIZED_RESULT_BYTES + 1024;
 const MAX_RESULT_STRING_BYTES: usize = 4096;
+const WORKER_IPC_KEY_BYTES: usize = 32;
+const WORKER_IPC_NONCE_BYTES: usize = 12;
+const WORKER_IPC_TAG_BYTES: usize = 16;
+const WORKER_IPC_HEADER_BYTES: usize = 4 + WORKER_IPC_NONCE_BYTES;
+const WORKER_IPC_OVERHEAD: usize = WORKER_IPC_HEADER_BYTES + WORKER_IPC_TAG_BYTES;
+const WORKER_IPC_MAGIC: &[u8; 4] = b"RQW1";
+const MAX_REQUEST_WORKER_OUTPUT_BYTES: usize = 128 * 1024 + WORKER_IPC_OVERHEAD;
+const MAX_EXTRACTOR_WORKER_OUTPUT_BYTES: usize =
+    MAX_NORMALIZED_RESULT_BYTES + 1024 + WORKER_IPC_OVERHEAD;
 // With the stable public field order, empty strings for all four string fields,
 // zeroes for all three numeric fields, and `isValid:true`, one normalized
 // UsageResult is at least 110 JSON bytes. A JSON array adds one comma per item
@@ -103,6 +114,8 @@ struct WorkerInput {
     script: String,
     base_url: String,
     secrets: WorkerSecrets,
+    #[serde(default)]
+    ipc_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -120,6 +133,8 @@ struct ExtractorWorkerInput {
     response_json: String,
     base_url: String,
     secrets: WorkerSecrets,
+    #[serde(default)]
+    ipc_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -239,6 +254,7 @@ pub fn evaluate_request(
         return Err(script_timeout_error());
     }
 
+    let ipc_key = new_worker_ipc_key()?;
     let input = WorkerInput {
         script: script.into(),
         base_url: base_url.into(),
@@ -247,6 +263,7 @@ pub fn evaluate_request(
             access_token: secrets.access_token.clone(),
             user_id: secrets.user_id.clone(),
         },
+        ipc_key: Some(ipc_key.clone()),
     };
     let encoded = serde_json::to_vec(&input).map_err(|_| script_worker_error())?;
     if encoded.len() > MAX_REQUEST_WORKER_INPUT_BYTES {
@@ -257,6 +274,7 @@ pub fn evaluate_request(
     }
 
     let output = supervise_script_worker(encoded, deadline, WorkerMode::Request)?;
+    let output = open_worker_output(&output, &ipc_key).ok_or_else(script_worker_error)?;
     match serde_json::from_slice(&output).map_err(|_| script_worker_error())? {
         WorkerOutput::Request { request } => Ok(ScriptRequest {
             url: request.url,
@@ -294,6 +312,7 @@ pub fn evaluate_extractor_with_context(
         return Err(script_timeout_error());
     }
 
+    let ipc_key = new_worker_ipc_key()?;
     let worst_case_size =
         extractor_worker_input_worst_case_size(script, &response_json, base_url, secrets)
             .ok_or_else(request_too_large_error)?;
@@ -310,6 +329,7 @@ pub fn evaluate_extractor_with_context(
             access_token: secrets.access_token.clone(),
             user_id: secrets.user_id.clone(),
         },
+        ipc_key: Some(ipc_key.clone()),
     };
     let encoded = serde_json::to_vec(&input).map_err(|_| script_worker_error())?;
     if encoded.len() > MAX_EXTRACTOR_WORKER_INPUT_BYTES {
@@ -320,6 +340,7 @@ pub fn evaluate_extractor_with_context(
     }
 
     let output = supervise_script_worker(encoded, deadline, WorkerMode::Extractor)?;
+    let output = open_worker_output(&output, &ipc_key).ok_or_else(script_worker_error)?;
     match serde_json::from_slice(&output).map_err(|_| script_worker_error())? {
         ExtractorWorkerOutput::Results { results } => validate_wire_results(results),
         ExtractorWorkerOutput::Error { category } => Err(category.into_sanitized_error()),
@@ -566,6 +587,107 @@ fn terminate_worker(child: &mut Child) {
     let _ = child.wait();
 }
 
+fn new_worker_ipc_key() -> Result<String, SanitizedError> {
+    let mut key = [0_u8; WORKER_IPC_KEY_BYTES];
+    SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| script_worker_error())?;
+    Ok(hex_encode(&key))
+}
+
+fn parse_worker_ipc_key(encoded: &str) -> Option<[u8; WORKER_IPC_KEY_BYTES]> {
+    if encoded.len() != WORKER_IPC_KEY_BYTES * 2 {
+        return None;
+    }
+    let mut key = [0_u8; WORKER_IPC_KEY_BYTES];
+    let bytes = encoded.as_bytes();
+    for (index, value) in key.iter_mut().enumerate() {
+        let high = hex_value(bytes[index * 2])?;
+        let low = hex_value(bytes[index * 2 + 1])?;
+        *value = (high << 4) | low;
+    }
+    Some(key)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[(byte >> 4) as usize]));
+        encoded.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    encoded
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Worker stdout is an authenticated opaque channel. Raw request fields and
+/// extractor values never cross the public stdout/stderr boundary.
+fn seal_worker_output(plaintext: &[u8], key: &[u8; WORKER_IPC_KEY_BYTES]) -> Option<Vec<u8>> {
+    let unbound = UnboundKey::new(&AES_256_GCM, key).ok()?;
+    let sealing_key = LessSafeKey::new(unbound);
+    let mut nonce = [0_u8; WORKER_IPC_NONCE_BYTES];
+    SystemRandom::new().fill(&mut nonce).ok()?;
+    let mut ciphertext = plaintext.to_vec();
+    sealing_key
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(nonce),
+            Aad::from(WORKER_IPC_MAGIC.as_slice()),
+            &mut ciphertext,
+        )
+        .ok()?;
+
+    let mut output = Vec::with_capacity(WORKER_IPC_HEADER_BYTES + ciphertext.len());
+    output.extend_from_slice(WORKER_IPC_MAGIC);
+    output.extend_from_slice(&nonce);
+    output.extend_from_slice(&ciphertext);
+    Some(output)
+}
+
+fn open_worker_output(encoded: &[u8], key: &str) -> Option<Vec<u8>> {
+    let key = parse_worker_ipc_key(key)?;
+    if encoded.len() < WORKER_IPC_OVERHEAD || !encoded.starts_with(WORKER_IPC_MAGIC) {
+        return None;
+    }
+    let nonce: [u8; WORKER_IPC_NONCE_BYTES] =
+        encoded[4..WORKER_IPC_HEADER_BYTES].try_into().ok()?;
+    let mut ciphertext = encoded[WORKER_IPC_HEADER_BYTES..].to_vec();
+    let unbound = UnboundKey::new(&AES_256_GCM, &key).ok()?;
+    let opening_key = LessSafeKey::new(unbound);
+    let plaintext = opening_key
+        .open_in_place(
+            Nonce::assume_unique_for_key(nonce),
+            Aad::from(WORKER_IPC_MAGIC.as_slice()),
+            &mut ciphertext,
+        )
+        .ok()?;
+    Some(plaintext.to_vec())
+}
+
+fn write_worker_output(
+    encoded: Vec<u8>,
+    fallback: Vec<u8>,
+    key: Option<[u8; WORKER_IPC_KEY_BYTES]>,
+    max_bytes: usize,
+) -> i32 {
+    let output = key
+        .as_ref()
+        .and_then(|key| seal_worker_output(&encoded, key))
+        .filter(|output| output.len() <= max_bytes)
+        .unwrap_or(fallback);
+    if output.len() > max_bytes || io::stdout().lock().write_all(&output).is_err() {
+        return 1;
+    }
+    0
+}
+
 impl WorkerErrorCategory {
     fn from_sanitized_error(error: &SanitizedError) -> Self {
         match error.category.as_str() {
@@ -597,58 +719,86 @@ impl WorkerErrorCategory {
 
 #[doc(hidden)]
 pub fn run_request_worker_mode() -> i32 {
-    let output = read_worker_input(WorkerMode::Request)
-        .and_then(evaluate_request_in_worker)
-        .map(|request| WorkerOutput::Request {
-            request: WireRequest {
-                url: request.url,
-                method: request.method,
-                headers: request.headers,
-                body: request.body,
+    let (output, key) = match read_worker_input::<WorkerInput>(WorkerMode::Request) {
+        Ok(input) => {
+            let key = input.ipc_key.as_deref().and_then(parse_worker_ipc_key);
+            let output = key
+                .as_ref()
+                .map(|_| evaluate_request_in_worker(input))
+                .unwrap_or_else(|| Err(script_worker_error()))
+                .map(|request| WorkerOutput::Request {
+                    request: WireRequest {
+                        url: request.url,
+                        method: request.method,
+                        headers: request.headers,
+                        body: request.body,
+                    },
+                })
+                .unwrap_or_else(|error| WorkerOutput::Error {
+                    category: WorkerErrorCategory::from_sanitized_error(&error),
+                });
+            (output, key)
+        }
+        Err(error) => (
+            WorkerOutput::Error {
+                category: WorkerErrorCategory::from_sanitized_error(&error),
             },
-        })
-        .unwrap_or_else(|error| WorkerOutput::Error {
-            category: WorkerErrorCategory::from_sanitized_error(&error),
-        });
+            None,
+        ),
+    };
 
     let encoded = match serde_json::to_vec(&output) {
-        Ok(encoded) if encoded.len() <= MAX_REQUEST_WORKER_OUTPUT_BYTES => encoded,
-        _ => match serde_json::to_vec(&WorkerOutput::Error {
-            category: WorkerErrorCategory::RequestTooLarge,
-        }) {
-            Ok(encoded) => encoded,
-            Err(_) => return 1,
-        },
+        Ok(encoded) => encoded,
+        Err(_) => return 1,
     };
-    if io::stdout().lock().write_all(&encoded).is_err() {
-        return 1;
-    }
-    0
+    let fallback = match serde_json::to_vec(&WorkerOutput::Error {
+        category: WorkerErrorCategory::SidecarLifecycle,
+    }) {
+        Ok(encoded) => encoded,
+        Err(_) => return 1,
+    };
+    write_worker_output(encoded, fallback, key, MAX_REQUEST_WORKER_OUTPUT_BYTES)
 }
 
 #[doc(hidden)]
 pub fn run_extractor_worker_mode() -> i32 {
-    let evaluated = read_worker_input(WorkerMode::Extractor).and_then(evaluate_extractor_in_worker);
-    let output = match &evaluated {
-        Ok(results) => ExtractorWorkerResponse::Results { results },
-        Err(error) => ExtractorWorkerResponse::Error {
-            category: WorkerErrorCategory::from_sanitized_error(error),
-        },
+    let (encoded, key) = match read_worker_input::<ExtractorWorkerInput>(WorkerMode::Extractor) {
+        Ok(input) => {
+            let key = input.ipc_key.as_deref().and_then(parse_worker_ipc_key);
+            let evaluated = key
+                .as_ref()
+                .map(|_| evaluate_extractor_in_worker(input))
+                .unwrap_or_else(|| Err(script_worker_error()));
+            let output = match &evaluated {
+                Ok(results) => ExtractorWorkerResponse::Results { results },
+                Err(error) => ExtractorWorkerResponse::Error {
+                    category: WorkerErrorCategory::from_sanitized_error(error),
+                },
+            };
+            let encoded = match serde_json::to_vec(&output) {
+                Ok(encoded) => encoded,
+                Err(_) => return 1,
+            };
+            (encoded, key)
+        }
+        Err(error) => (
+            match serde_json::to_vec(&ExtractorWorkerResponse::Error {
+                category: WorkerErrorCategory::from_sanitized_error(&error),
+            }) {
+                Ok(encoded) => encoded,
+                Err(_) => return 1,
+            },
+            None,
+        ),
     };
 
-    let encoded = match serde_json::to_vec(&output) {
-        Ok(encoded) if encoded.len() <= MAX_EXTRACTOR_WORKER_OUTPUT_BYTES => encoded,
-        _ => match serde_json::to_vec(&ExtractorWorkerResponse::Error {
-            category: WorkerErrorCategory::ResultValidation,
-        }) {
-            Ok(encoded) => encoded,
-            Err(_) => return 1,
-        },
+    let fallback = match serde_json::to_vec(&ExtractorWorkerResponse::Error {
+        category: WorkerErrorCategory::SidecarLifecycle,
+    }) {
+        Ok(encoded) => encoded,
+        Err(_) => return 1,
     };
-    if io::stdout().lock().write_all(&encoded).is_err() {
-        return 1;
-    }
-    0
+    write_worker_output(encoded, fallback, key, MAX_EXTRACTOR_WORKER_OUTPUT_BYTES)
 }
 
 fn read_worker_input<T>(mode: WorkerMode) -> Result<T, SanitizedError>

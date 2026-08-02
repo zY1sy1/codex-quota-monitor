@@ -464,6 +464,35 @@ fn secret_sentinels_never_cross_failure_stdout_or_stderr() {
 }
 
 #[test]
+fn direct_worker_modes_never_emit_credential_sentinels() {
+    const SECRET: &str = "DIRECT_WORKER_SENTINEL_614";
+
+    let request_input = json!({
+        "script": format!(
+            "({{request:{{url:'https://relay.example/usage',method:'GET',headers:{{Authorization:'Bearer {SECRET}'}},body:undefined}},extractor:r=>r}})"
+        ),
+        "baseUrl": "https://relay.example",
+        "secrets": {"apiKey": SECRET, "accessToken": SECRET, "userId": SECRET}
+    });
+    let request_bytes = serde_json::to_vec(&request_input).expect("encode request worker input");
+    let (status, stdout, stderr) = run_host_with_args(&["--request-worker"], &request_bytes);
+    assert!(status.success());
+    assert_secret_absent(&stdout, &stderr, SECRET);
+
+    let extractor_input = json!({
+        "script": "({extractor:r=>({isValid:false,invalidMessage:r.secret,unit:'USD'})})",
+        "responseJson": format!(r#"{{"secret":"{SECRET}"}}"#),
+        "baseUrl": "https://relay.example",
+        "secrets": {"apiKey": SECRET, "accessToken": SECRET, "userId": SECRET}
+    });
+    let extractor_bytes =
+        serde_json::to_vec(&extractor_input).expect("encode extractor worker input");
+    let (status, stdout, stderr) = run_host_with_args(&["--extractor-worker"], &extractor_bytes);
+    assert!(status.success());
+    assert_secret_absent(&stdout, &stderr, SECRET);
+}
+
+#[test]
 fn input_io_errors_emit_one_lifecycle_response_without_raw_details() {
     struct FailingReader;
 

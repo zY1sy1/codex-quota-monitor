@@ -597,6 +597,7 @@ name = "relay-quota-host"
 version = "0.1.0"
 dependencies = [
  "reqwest",
+ "ring",
  "rquickjs",
  "rustls",
  "serde",
