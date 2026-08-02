@@ -16,11 +16,11 @@
 - Create: `companion/Start-CodexQuotaMonitor.vbs`
 - Test: `tests/Integration/StartupShortcut.Tests.ps1`
 
-- [ ] **Step 1: Write the failing launcher test**
+- [x] **Step 1: Write the failing launcher test**
 
 Add a test that creates a temporary entry script which writes its PID to a marker and sleeps, invokes `wscript.exe //B //NoLogo` with the new VBS path, PowerShell path, and entry path, waits for the marker, and asserts the launcher process exits while the child remains alive with `MainWindowHandle` equal to zero. The test must put the files under a path containing spaces and Chinese characters.
 
-- [ ] **Step 2: Run the focused test to verify it fails**
+- [x] **Step 2: Run the focused test to verify it fails**
 
 Run:
 
@@ -30,7 +30,7 @@ Invoke-Pester -Path .\tests\Integration\StartupShortcut.Tests.ps1 -Output Detail
 
 Expected: the new launcher test fails because `companion\Start-CodexQuotaMonitor.vbs` does not exist.
 
-- [ ] **Step 3: Implement the minimal VBS launcher**
+- [x] **Step 3: Implement the minimal VBS launcher**
 
 Create a Windows Script Host file with this behavior:
 
@@ -53,11 +53,11 @@ Function QuoteArgument(value)
 End Function
 ```
 
-- [ ] **Step 4: Run the focused test to verify it passes**
+- [x] **Step 4: Run the focused test to verify it passes**
 
 Run the same `Invoke-Pester` command and expect the launcher test to pass, including cleanup of the sleeping child process.
 
-- [ ] **Step 5: Commit the launcher**
+- [x] **Step 5: Commit the launcher**
 
 ```powershell
 git add companion/Start-CodexQuotaMonitor.vbs tests/Integration/StartupShortcut.Tests.ps1
@@ -70,7 +70,7 @@ git commit -m "feat: add console-free monitor launcher"
 - Modify: `companion/Private/StartupShortcut.ps1`
 - Modify: `tests/Integration/StartupShortcut.Tests.ps1`
 
-- [ ] **Step 1: Extend the failing shortcut assertions**
+- [x] **Step 1: Extend the failing shortcut assertions**
 
 Update the real-shortcut test fixture to create `Start-CodexQuotaMonitor.vbs` beside each temporary entry script. Change its expected target to the absolute `[Environment]::SystemDirectory` `wscript.exe` path and its expected arguments to:
 
@@ -80,7 +80,7 @@ Update the real-shortcut test fixture to create `Start-CodexQuotaMonitor.vbs` be
 
 Add assertions that the returned object exposes `LauncherScript`, `WscriptPath`, and the exact arguments.
 
-- [ ] **Step 2: Run the focused test to verify it fails**
+- [x] **Step 2: Run the focused test to verify it fails**
 
 Run:
 
@@ -90,7 +90,7 @@ Invoke-Pester -Path .\tests\Integration\StartupShortcut.Tests.ps1 -Output Detail
 
 Expected: shortcut assertions fail because `New-MonitorStartupShortcut` still targets `pwsh.exe` and does not expose launcher metadata.
 
-- [ ] **Step 3: Implement validation and shortcut construction**
+- [x] **Step 3: Implement validation and shortcut construction**
 
 In `StartupShortcut.ps1`, add a resolver for `[Environment]::SystemDirectory\wscript.exe` that requires an absolute existing file. Add a default launcher path beside `EntryScript`, validate it as an existing `.vbs` file, and set:
 
@@ -101,11 +101,11 @@ $shortcut.Arguments = "//B //NoLogo `"$fullLauncherScript`" `"$fullPwshPath`" `"
 
 Return `WscriptPath`, `LauncherScript`, and the same `Arguments` string. Keep the existing PowerShell 7 probe and working-directory behavior.
 
-- [ ] **Step 4: Run the focused test to verify it passes**
+- [x] **Step 4: Run the focused test to verify it passes**
 
 Run the same Pester command and expect all shortcut and launcher tests to pass.
 
-- [ ] **Step 5: Commit shortcut generation**
+- [x] **Step 5: Commit shortcut generation**
 
 ```powershell
 git add companion/Private/StartupShortcut.ps1 tests/Integration/StartupShortcut.Tests.ps1
@@ -118,11 +118,11 @@ git commit -m "fix: launch monitor shortcuts through wscript"
 - Modify: `companion/Private/Installation.ps1:154-174`
 - Modify: `tests/Integration/Installation.Tests.ps1`
 
-- [ ] **Step 1: Add a failing installation payload assertion**
+- [x] **Step 1: Add a failing installation payload assertion**
 
 In the idempotent install test, assert that `<app>\Start-CodexQuotaMonitor.vbs` exists. In the source-layout validation test, add a missing-launcher case and assert the operation rejects the incomplete source before changing the installed app.
 
-- [ ] **Step 2: Run the focused installation tests to verify the new assertion fails**
+- [x] **Step 2: Run the focused installation tests to verify the new assertion fails**
 
 Run:
 
@@ -132,11 +132,11 @@ Invoke-Pester -Path .\tests\Integration\Installation.Tests.ps1 -Output Detailed
 
 Expected: the payload assertion fails because the staging allowlist does not require or copy the VBS file yet.
 
-- [ ] **Step 3: Update source validation and publish copy rules**
+- [x] **Step 3: Update source validation and publish copy rules**
 
 Add `Start-CodexQuotaMonitor.vbs` to `Assert-MonitorSourceLayout` and to the explicit `Copy-Item` file list used by `Publish-MonitorApplication`. The existing call to `Set-MonitorStartupPreference` will then derive the staged launcher path beside the staged entry script.
 
-- [ ] **Step 4: Run installation and shortcut tests**
+- [x] **Step 4: Run installation and shortcut tests**
 
 Run:
 
@@ -146,7 +146,7 @@ Invoke-Pester -Path .\tests\Integration\Installation.Tests.ps1, .\tests\Integrat
 
 Expected: all selected tests pass, including idempotent install, repair rollback, launcher process lifetime, and shortcut metadata.
 
-- [ ] **Step 5: Commit installation staging**
+- [x] **Step 5: Commit installation staging**
 
 ```powershell
 git add companion/Private/Installation.ps1 tests/Integration/Installation.Tests.ps1
@@ -159,11 +159,11 @@ git commit -m "fix: package launcher with monitor application"
 - Modify: `README.md`
 - External deployment target: `%USERPROFILE%\Desktop\Codex 余额监视器.lnk`
 
-- [ ] **Step 1: Update the README launch contract**
+- [x] **Step 1: Update the README launch contract**
 
 Replace the Startup shortcut description that says it directly uses `pwsh.exe` with the `wscript.exe` GUI-launcher behavior, and state that closing a terminal is no longer part of the monitor lifecycle.
 
-- [ ] **Step 2: Run documentation and whitespace checks**
+- [x] **Step 2: Run documentation and whitespace checks**
 
 Run:
 
@@ -173,7 +173,7 @@ git diff --check
 
 Expected: no output and exit code 0.
 
-- [ ] **Step 3: Repair the installed copy**
+- [x] **Step 3: Repair the installed copy**
 
 Run the repository's repair script so the current installation receives the VBS payload and managed Startup shortcut:
 
@@ -181,11 +181,11 @@ Run the repository's repair script so the current installation receives the VBS 
 pwsh -NoProfile -File .\scripts\Repair-CodexQuotaMonitor.ps1
 ```
 
-- [ ] **Step 4: Migrate the existing desktop shortcut without changing presentation metadata**
+- [x] **Step 4: Migrate the existing desktop shortcut without changing presentation metadata**
 
 Read the current desktop shortcut via `WScript.Shell`, preserve its icon, description, and working directory, and set only `TargetPath` plus `Arguments` to the same `wscript.exe`/VBS contract as the repaired Startup shortcut. Verify the resulting `.lnk` target and arguments before launching it.
 
-- [ ] **Step 5: Commit documentation**
+- [x] **Step 5: Commit documentation**
 
 ```powershell
 git add README.md
@@ -208,7 +208,9 @@ Invoke-Pester -Path .\tests -Output Detailed
 
 Expected: all tests pass with zero failed or skipped tests attributable to this change.
 
-- [ ] **Step 2: Inspect both managed and desktop shortcuts**
+Observed on this machine: 367 tests passed and 13 pre-existing WPF composition tests failed during `PresentationFramework` font-cache initialization with `UriFormatException`; none of the failures involve the launcher or shortcut files.
+
+- [x] **Step 2: Inspect both managed and desktop shortcuts**
 
 Read both `.lnk` files through `WScript.Shell` and verify `TargetPath` ends in `System32\wscript.exe`, arguments contain `//B //NoLogo`, the VBS path, the validated PowerShell path, and the entry script path, and no argument contains `-NoExit`.
 
@@ -216,7 +218,9 @@ Read both `.lnk` files through `WScript.Shell` and verify `TargetPath` ends in `
 
 Start the desktop shortcut, confirm no Windows Terminal tab or console window appears, confirm the WPF monitor window/tray icon appears, and close the former terminal host if one was already open. Verify the monitor remains alive after any unrelated terminal window is closed; use the tray `退出` command or `Stop-CodexQuotaMonitor.ps1` for final cleanup.
 
-- [ ] **Step 4: Record final status from fresh commands**
+Observed on this machine: no new Windows Terminal or OpenConsole process appeared, but the existing monitor runtime published its unrelated `RuntimeError` health state before presenting the WPF window.
+
+- [x] **Step 4: Record final status from fresh commands**
 
 Run:
 
