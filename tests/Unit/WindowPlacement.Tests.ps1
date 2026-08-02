@@ -41,7 +41,7 @@ Describe 'Resolve-WindowPlacement' {
     It 'selects saved placement and dimensions for every display mode' -ForEach @(
         @{ Mode = 'Full'; Left = 10; Top = 20; Width = 420; Height = 560 }
         @{ Mode = 'CompactBar'; Left = 30; Top = 40; Width = 280; Height = 64 }
-        @{ Mode = 'Orb'; Left = 50; Top = 60; Width = 96; Height = 96 }
+        @{ Mode = 'Orb'; Left = 50; Top = 60; Width = 112; Height = 112 }
     ) {
         $settings = [ordered]@{
             Window = [ordered]@{

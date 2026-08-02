@@ -25,7 +25,7 @@ Describe 'Codex quota monitor production composition' {
         )
     }
 
-    It 'invokes the injected desktop initializer exactly once from the production runtime' {
+    It 'composes all display views and invokes the desktop initializer exactly once' {
         $localAppData = Join-Path $TestDrive 'Desktop Initializer'
         $startup = Join-Path $TestDrive 'Desktop Initializer Startup'
         New-Item -ItemType Directory -Path $startup -Force | Out-Null
@@ -35,10 +35,11 @@ Describe 'Codex quota monitor production composition' {
 
         $windowView = [pscustomobject][ordered]@{
             Window = [pscustomobject]@{}
-            Render = { param($PresentationRows) }
             SetFreshness = { param([bool]$IsLive, [string]$Text) }
             Dispose = { }
         }
+        $compactBarView = [pscustomobject][ordered]@{ Window = [pscustomobject]@{}; Dispose = { } }
+        $orbView = [pscustomobject][ordered]@{ Window = [pscustomobject]@{}; Dispose = { } }
         $trayView = [pscustomobject][ordered]@{
             SetSeverity = { param([string]$Severity) }
             SetTooltip = { param([string]$Tooltip) }
@@ -48,13 +49,30 @@ Describe 'Codex quota monitor production composition' {
             ShowAndActivate = { }
             Dispose = { }
         }
+        $displayController = [pscustomobject][ordered]@{
+            State = [pscustomobject]@{ Visible = $true; Mode = 'Full'; Theme = 'Dark'; FullLayout = 'Overview'; Topmost = $true }
+            SetSnapshot = { param($Rows) $calls.Add("snapshot:$(@($Rows).Count)") | Out-Null }
+            Dispose = { $calls.Add('dispose-display') | Out-Null }
+        }
         $overrides = [ordered]@{
             NewWindow = { Write-Output -NoEnumerate $windowView }.GetNewClosure()
+            NewCompactBar = { Write-Output -NoEnumerate $compactBarView }.GetNewClosure()
+            NewOrb = { Write-Output -NoEnumerate $orbView }.GetNewClosure()
             NewTray = { param([switch]$Visible) Write-Output -NoEnumerate $trayView }.GetNewClosure()
+            NewDisplay = {
+                param($Settings, $FullView, $CompactBarView, $OrbView, $SaveSettings, [switch]$DeferShow)
+                $FullView | Should -Be $windowView
+                $CompactBarView | Should -Be $compactBarView
+                $OrbView | Should -Be $orbView
+                $DeferShow | Should -BeTrue
+                $calls.Add('new-display') | Out-Null
+                Write-Output -NoEnumerate $displayController
+            }.GetNewClosure()
             NewInteraction = {
                 param(
                     $Settings,
                     $WindowView,
+                    $DisplayController,
                     $TrayView,
                     $SaveSettings,
                     $ApplyStartupPreference,
@@ -63,10 +81,15 @@ Describe 'Codex quota monitor production composition' {
                     $OpenTarget,
                     $LogDirectory
                 )
+                $DisplayController | Should -Be $displayController
                 Write-Output -NoEnumerate $interaction
             }.GetNewClosure()
             InitializeDesktop = {
-                param($WindowView, $TrayView, $Settings, $GetWorkAreas, $SetPlacement)
+                param(
+                    $WindowView, $CompactBarView, $OrbView, $DisplayController,
+                    $TrayView, $Settings, $GetWorkAreas, $SetPlacement
+                )
+                $DisplayController | Should -Be $displayController
                 $calls.Add('initialize-desktop') | Out-Null
             }.GetNewClosure()
         }
@@ -96,7 +119,10 @@ Describe 'Codex quota monitor production composition' {
             Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
         }
 
-        @($calls) | Should -Be @('initialize-desktop')
+        @($calls | Where-Object { $_ -notlike 'snapshot:*' -and $_ -ne 'dispose-display' }) |
+            Should -Be @('new-display', 'initialize-desktop')
+        @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0
+        @($calls | Where-Object { $_ -eq 'dispose-display' }).Count | Should -Be 1
         $result.Status | Should -BeExactly 'Live'
     }
 

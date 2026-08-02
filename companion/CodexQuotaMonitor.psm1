@@ -17,7 +17,11 @@ $privateFiles = @(
     'SessionController.ps1'
     'SingleInstance.ps1'
     'StartupShortcut.ps1'
+    'Theme.ps1'
     'WpfView.ps1'
+    'CompactBarView.ps1'
+    'QuotaOrbView.ps1'
+    'DisplayModeController.ps1'
     'TrayView.ps1'
     'InteractionController.ps1'
 )
@@ -146,6 +150,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         SetPlacement = ${function:Set-ResolvedWindowPlacement}
         InitializeDesktop = ${function:Initialize-MonitorDesktopPresentation}
         NewWindow = ${function:New-QuotaWindowView}
+        NewCompactBar = ${function:New-CompactBarView}
+        NewOrb = ${function:New-QuotaOrbView}
+        NewDisplay = ${function:New-MonitorDisplayModeController}
         NewTray = ${function:New-TrayView}
         NewInteraction = ${function:New-MonitorInteractionController}
         WriteHealth = ${function:Write-MonitorRuntimeHealthFile}
@@ -213,6 +220,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         RelayRows = @()
         CombinedRows = @()
         WindowView = $null
+        CompactBarView = $null
+        OrbView = $null
+        DisplayController = $null
         TrayView = $null
         Interaction = $null
         RefreshEvent = [Threading.AutoResetEvent]::new($false)
@@ -734,7 +744,7 @@ function Invoke-CodexQuotaMonitorRuntime {
     $refreshUi = {
         param([DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
 
-        if ($Headless -or $null -eq $runtime.WindowView -or $null -eq $runtime.TrayView) {
+        if ($Headless -or $null -eq $runtime.DisplayController -or $null -eq $runtime.TrayView) {
             return
         }
 
@@ -747,22 +757,14 @@ function Invoke-CodexQuotaMonitorRuntime {
                 $runtime.LastQuotaWindows
             }
         )
-        $presentationFunction = $runtime.Functions.PresentationRows
-        $rows = @(& $presentationFunction -QuotaWindows $displayWindows -Now $Now)
-        & $runtime.WindowView.Render $rows
+        & $runtime.DisplayController.SetSnapshot ([object[]]@($runtime.CombinedRows))
 
-        $remaining = @(
-            $displayWindows |
-                ForEach-Object { $_.RemainingPercent } |
-                Where-Object { $null -ne $_ }
-        )
-        $minimum = if ($remaining.Count -eq 0) { $null } else { ($remaining | Measure-Object -Minimum).Minimum }
-        $severityFunction = $runtime.Functions.Severity
-        $severity = & $severityFunction -MinimumRemaining $minimum -Offline:($session.Status -ne 'Live')
-        & $runtime.TrayView.SetSeverity $severity
+        $severityFunction = $runtime.Functions.CombinedSeverity
+        $severityState = & $severityFunction -Rows ([object[]]@($runtime.CombinedRows))
+        & $runtime.TrayView.SetSeverity ([string]$severityState.Severity)
 
-        $tooltipFunction = $runtime.Functions.Tooltip
-        $tooltip = & $tooltipFunction -QuotaWindows $displayWindows
+        $tooltipFunction = $runtime.Functions.CombinedTooltip
+        $tooltip = & $tooltipFunction -Rows ([object[]]@($runtime.CombinedRows))
         & $runtime.TrayView.SetTooltip ([string]$tooltip)
 
         if ($session.Status -eq 'Live') {
@@ -975,6 +977,10 @@ function Invoke-CodexQuotaMonitorRuntime {
         if (-not $Headless) {
             $newWindowFunction = $functions.NewWindow
             $runtime.WindowView = & $newWindowFunction
+            $newCompactBarFunction = $functions.NewCompactBar
+            $runtime.CompactBarView = & $newCompactBarFunction
+            $newOrbFunction = $functions.NewOrb
+            $runtime.OrbView = & $newOrbFunction
             $newTrayFunction = $functions.NewTray
             $runtime.TrayView = & $newTrayFunction -Visible:$false
 
@@ -1002,10 +1008,20 @@ function Invoke-CodexQuotaMonitorRuntime {
                 Start-Process -FilePath $Target | Out-Null
             }
 
+            $newDisplayFunction = $functions.NewDisplay
+            $runtime.DisplayController = & $newDisplayFunction `
+                -Settings $runtime.Settings `
+                -FullView $runtime.WindowView `
+                -CompactBarView $runtime.CompactBarView `
+                -OrbView $runtime.OrbView `
+                -SaveSettings $saveSettingsAction `
+                -DeferShow
+
             $newInteractionFunction = $functions.NewInteraction
             $runtime.Interaction = & $newInteractionFunction `
                 -Settings $runtime.Settings `
                 -WindowView $runtime.WindowView `
+                -DisplayController $runtime.DisplayController `
                 -TrayView $runtime.TrayView `
                 -SaveSettings $saveSettingsAction `
                 -ApplyStartupPreference $startupAction `
@@ -1017,6 +1033,9 @@ function Invoke-CodexQuotaMonitorRuntime {
             $initializeDesktopFunction = $functions.InitializeDesktop
             & $initializeDesktopFunction `
                 -WindowView $runtime.WindowView `
+                -CompactBarView $runtime.CompactBarView `
+                -OrbView $runtime.OrbView `
+                -DisplayController $runtime.DisplayController `
                 -TrayView $runtime.TrayView `
                 -Settings $runtime.Settings `
                 -GetWorkAreas $functions.WorkAreas `
@@ -1103,7 +1122,13 @@ function Invoke-CodexQuotaMonitorRuntime {
         if ($null -ne $runtime.Interaction) {
             try { & $runtime.Interaction.Dispose } catch { }
         }
-        if ($null -ne $runtime.WindowView) {
+        if ($null -ne $runtime.DisplayController) {
+            try { & $runtime.DisplayController.Dispose } catch { }
+            $runtime.WindowView = $null
+            $runtime.CompactBarView = $null
+            $runtime.OrbView = $null
+        }
+        elseif ($null -ne $runtime.WindowView) {
             try { & $runtime.WindowView.Dispose } catch { }
         }
         if ($null -ne $runtime.TrayView) {

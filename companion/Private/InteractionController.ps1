@@ -95,6 +95,10 @@ function New-MonitorInteractionController {
         [Parameter(Mandatory)]
         [object]$WindowView,
 
+        [Parameter()]
+        [AllowNull()]
+        [object]$DisplayController,
+
         [Parameter(Mandatory)]
         [object]$TrayView,
 
@@ -117,6 +121,10 @@ function New-MonitorInteractionController {
         [ValidateNotNullOrEmpty()]
         [string]$LogDirectory,
 
+        [Parameter()]
+        [AllowNull()]
+        [scriptblock]$OnManageRelays,
+
         [ValidateNotNullOrEmpty()]
         [string]$UsageUri = 'https://chatgpt.com/codex/settings/usage'
     )
@@ -129,6 +137,7 @@ function New-MonitorInteractionController {
     $state = [pscustomobject][ordered]@{
         Disposed = $false
     }
+    $usesDisplayController = $null -ne $DisplayController
     $getField = ${function:Get-MonitorInteractionField}
     $setField = ${function:Set-MonitorInteractionField}
     $convertCoordinate = ${function:ConvertTo-MonitorFiniteCoordinate}
@@ -141,6 +150,13 @@ function New-MonitorInteractionController {
         )
 
         if ($state.Disposed -or $null -eq $Placement) {
+            return
+        }
+
+        if ($usesDisplayController) {
+            & $DisplayController.PersistPlacement `
+                -Mode ([string]$DisplayController.State.Mode) `
+                -Placement $Placement
             return
         }
 
@@ -167,6 +183,10 @@ function New-MonitorInteractionController {
             return
         }
 
+        if ($usesDisplayController) {
+            & $DisplayController.HideAll
+            return
+        }
         & $WindowView.Hide
         & $setField -InputObject $windowSettings -Name 'Visible' -Value $false
         & $SaveSettings $Settings
@@ -177,6 +197,10 @@ function New-MonitorInteractionController {
             return
         }
 
+        if ($usesDisplayController) {
+            & $DisplayController.ShowCurrent
+            return
+        }
         if ($null -ne $WindowView.PSObject.Properties['Show']) {
             & $WindowView.Show
         }
@@ -190,8 +214,13 @@ function New-MonitorInteractionController {
             return
         }
 
-        $placement = & $WindowView.GetPlacement
-        $isVisible = [bool](& $getField -InputObject $placement -Name 'Visible')
+        $isVisible = if ($usesDisplayController) {
+            [bool]$DisplayController.State.Visible
+        }
+        else {
+            $placement = & $WindowView.GetPlacement
+            [bool](& $getField -InputObject $placement -Name 'Visible')
+        }
         if ($isVisible) {
             & $hide
         }
@@ -202,6 +231,21 @@ function New-MonitorInteractionController {
 
     $toggleTopmost = {
         if ($state.Disposed) {
+            return
+        }
+
+        if ($usesDisplayController) {
+            $current = [bool]$DisplayController.State.Topmost
+            $desired = -not $current
+            try {
+                & $DisplayController.SetTopmost $desired
+                & $TrayView.SetTopmostChecked $desired
+            }
+            catch {
+                try { & $DisplayController.SetTopmost $current } catch { }
+                try { & $TrayView.SetTopmostChecked $current } catch { }
+                throw
+            }
             return
         }
 
@@ -296,6 +340,51 @@ function New-MonitorInteractionController {
         }
     }.GetNewClosure()
 
+    $setDisplayMode = {
+        param([ValidateSet('Full', 'CompactBar', 'Orb')][string]$Mode)
+        if ($state.Disposed -or -not $usesDisplayController) { return }
+        $old = [string]$DisplayController.State.Mode
+        try { & $DisplayController.SetMode $Mode; & $TrayView.SetDisplayModeChecked $Mode }
+        catch {
+            try { & $DisplayController.SetMode $old } catch { }
+            try { & $TrayView.SetDisplayModeChecked $old } catch { }
+            throw
+        }
+    }.GetNewClosure()
+    $setTheme = {
+        param([ValidateSet('Light', 'Dark')][string]$Theme)
+        if ($state.Disposed -or -not $usesDisplayController) { return }
+        $old = [string]$DisplayController.State.Theme
+        try { & $DisplayController.SetTheme $Theme; & $TrayView.SetThemeChecked $Theme }
+        catch {
+            try { & $DisplayController.SetTheme $old } catch { }
+            try { & $TrayView.SetThemeChecked $old } catch { }
+            throw
+        }
+    }.GetNewClosure()
+    $setFullLayout = {
+        param([ValidateSet('Overview', 'Tabs')][string]$Layout)
+        if ($state.Disposed -or -not $usesDisplayController) { return }
+        $old = [string]$DisplayController.State.FullLayout
+        try { & $DisplayController.SetFullLayout $Layout; & $TrayView.SetFullLayoutChecked $Layout }
+        catch {
+            try { & $DisplayController.SetFullLayout $old } catch { }
+            try { & $TrayView.SetFullLayoutChecked $old } catch { }
+            throw
+        }
+    }.GetNewClosure()
+    $manageRelays = {
+        if (-not $state.Disposed -and $null -ne $OnManageRelays) { & $OnManageRelays }
+    }.GetNewClosure()
+    $displayStateChanged = {
+        param($displayState)
+        if ($state.Disposed) { return }
+        & $TrayView.SetDisplayModeChecked ([string]$displayState.Mode)
+        & $TrayView.SetThemeChecked ([string]$displayState.Theme)
+        & $TrayView.SetFullLayoutChecked ([string]$displayState.FullLayout)
+        & $TrayView.SetTopmostChecked ([bool]$displayState.Topmost)
+    }.GetNewClosure()
+
     $openUsage = {
         if (-not $state.Disposed) {
             & $OpenTarget $UsageUri
@@ -321,26 +410,42 @@ function New-MonitorInteractionController {
 
         $state.Disposed = $true
         $firstError = $null
-        try {
-            & $WindowView.SetCallbacks `
-                -OnDrag $null `
-                -OnToggleTopmost $null `
-                -OnHide $null `
-                -OnCloseRequested $null
+        if ($usesDisplayController -and
+            $null -ne $DisplayController.PSObject.Properties['SetStateChangedCallback']) {
+            try { & $DisplayController.SetStateChangedCallback $null }
+            catch { $firstError = $_ }
         }
-        catch {
-            $firstError = $_
+        if (-not $usesDisplayController) {
+            try {
+                & $WindowView.SetCallbacks `
+                    -OnDrag $null `
+                    -OnToggleTopmost $null `
+                    -OnHide $null `
+                    -OnCloseRequested $null
+            }
+            catch {
+                $firstError = $_
+            }
         }
 
         try {
-            & $TrayView.SetCallbacks `
-                -OnToggleVisibility $null `
-                -OnToggleTopmost $null `
-                -OnRefresh $null `
-                -OnToggleStartup $null `
-                -OnOpenUsage $null `
-                -OnOpenLogs $null `
-                -OnExit $null
+            if ($usesDisplayController) {
+                & $TrayView.SetCallbacks `
+                    -OnToggleVisibility $null -OnSetDisplayMode $null -OnSetTheme $null `
+                    -OnSetFullLayout $null -OnManageRelays $null -OnToggleTopmost $null `
+                    -OnRefresh $null -OnToggleStartup $null -OnOpenUsage $null `
+                    -OnOpenLogs $null -OnExit $null
+            }
+            else {
+                & $TrayView.SetCallbacks `
+                    -OnToggleVisibility $null `
+                    -OnToggleTopmost $null `
+                    -OnRefresh $null `
+                    -OnToggleStartup $null `
+                    -OnOpenUsage $null `
+                    -OnOpenLogs $null `
+                    -OnExit $null
+            }
         }
         catch {
             if ($null -eq $firstError) {
@@ -354,24 +459,41 @@ function New-MonitorInteractionController {
     }.GetNewClosure()
 
     try {
-        & $WindowView.SetCallbacks `
-            -OnDrag $persistPlacement `
-            -OnToggleTopmost $toggleTopmost `
-            -OnHide $hide `
-            -OnCloseRequested $hide
+        if ($usesDisplayController) {
+            & $TrayView.SetCallbacks `
+                -OnToggleVisibility $toggleVisibility -OnSetDisplayMode $setDisplayMode `
+                -OnSetTheme $setTheme -OnSetFullLayout $setFullLayout `
+                -OnManageRelays $manageRelays -OnToggleTopmost $toggleTopmost `
+                -OnRefresh $refresh -OnToggleStartup $toggleStartup `
+                -OnOpenUsage $openUsage -OnOpenLogs $openLogs -OnExit $exit
+            & $TrayView.SetDisplayModeChecked ([string]$DisplayController.State.Mode)
+            & $TrayView.SetThemeChecked ([string]$DisplayController.State.Theme)
+            & $TrayView.SetFullLayoutChecked ([string]$DisplayController.State.FullLayout)
+            & $TrayView.SetTopmostChecked ([bool]$DisplayController.State.Topmost)
+            if ($null -ne $DisplayController.PSObject.Properties['SetStateChangedCallback']) {
+                & $DisplayController.SetStateChangedCallback $displayStateChanged
+            }
+        }
+        else {
+            & $WindowView.SetCallbacks `
+                -OnDrag $persistPlacement `
+                -OnToggleTopmost $toggleTopmost `
+                -OnHide $hide `
+                -OnCloseRequested $hide
 
-        & $TrayView.SetCallbacks `
-            -OnToggleVisibility $toggleVisibility `
-            -OnToggleTopmost $toggleTopmost `
-            -OnRefresh $refresh `
-            -OnToggleStartup $toggleStartup `
-            -OnOpenUsage $openUsage `
-            -OnOpenLogs $openLogs `
-            -OnExit $exit
+            & $TrayView.SetCallbacks `
+                -OnToggleVisibility $toggleVisibility `
+                -OnToggleTopmost $toggleTopmost `
+                -OnRefresh $refresh `
+                -OnToggleStartup $toggleStartup `
+                -OnOpenUsage $openUsage `
+                -OnOpenLogs $openLogs `
+                -OnExit $exit
 
-        & $TrayView.SetTopmostChecked ([bool](
-            Get-MonitorInteractionField -InputObject $windowSettings -Name 'Topmost'
-        ))
+            & $TrayView.SetTopmostChecked ([bool](
+                Get-MonitorInteractionField -InputObject $windowSettings -Name 'Topmost'
+            ))
+        }
         & $TrayView.SetStartupChecked ([bool](
             Get-MonitorInteractionField -InputObject $Settings -Name 'Startup'
         ))

@@ -303,13 +303,35 @@ function Initialize-MonitorDesktopPresentation {
         [scriptblock]$GetWorkAreas,
 
         [Parameter(Mandatory, Position = 4)]
-        [scriptblock]$SetPlacement
+        [scriptblock]$SetPlacement,
+
+        [Parameter()][AllowNull()][object]$CompactBarView,
+        [Parameter()][AllowNull()][object]$OrbView,
+        [Parameter()][AllowNull()][object]$DisplayController
     )
 
     $windowSettings = Get-WindowPlacementField -InputObject $Settings -Name 'Window'
     $fullSettings = Get-WindowPlacementField -InputObject $windowSettings -Name 'Full'
     if ($null -eq $fullSettings) {
         $fullSettings = $windowSettings
+    }
+
+    if ($null -ne $DisplayController -and $null -ne $CompactBarView -and $null -ne $OrbView) {
+        $workAreas = @(& $GetWorkAreas)
+        foreach ($definition in @(
+            @('Full', $WindowView),
+            @('CompactBar', $CompactBarView),
+            @('Orb', $OrbView)
+        )) {
+            $node = Get-WindowPlacementField -InputObject $windowSettings -Name $definition[0]
+            & $SetPlacement -Window $definition[1].Window `
+                -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
+                -Top (Get-WindowPlacementField -InputObject $node -Name 'Top') `
+                -WorkAreas $workAreas | Out-Null
+        }
+        & $TrayView.SetVisible $true | Out-Null
+        & $DisplayController.ApplyVisibility | Out-Null
+        return
     }
 
     & $WindowView.SetTopmost ([bool](
@@ -464,7 +486,7 @@ function Resolve-MonitorModePlacement {
             if ($null -eq $savedWidth -or $savedWidth -le 0) { 420.0 } else { $savedWidth }
         }
         'CompactBar' { 280.0 }
-        'Orb' { 96.0 }
+        'Orb' { 112.0 }
     }
     $height = switch ($Mode) {
         'Full' {
@@ -474,7 +496,7 @@ function Resolve-MonitorModePlacement {
             if ($null -eq $savedHeight -or $savedHeight -le 0) { 560.0 } else { $savedHeight }
         }
         'CompactBar' { 64.0 }
-        'Orb' { 96.0 }
+        'Orb' { 112.0 }
     }
     $placement = Resolve-WindowPlacement `
         -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
