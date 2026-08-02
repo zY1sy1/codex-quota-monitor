@@ -15,7 +15,7 @@
 **Files:**
 - Verify only: `sidecar/relay-quota-host/Cargo.toml`
 
-- [ ] **Step 1: Confirm the branch and baseline**
+- [x] **Step 1: Confirm the branch and baseline**
 
 Run:
 
@@ -27,7 +27,7 @@ pwsh -NoLogo -NoProfile -NonInteractive -Sta -File .\build\Test.ps1 -Suite All -
 
 Expected: branch is `feature/relay-quota-monitor`, status is empty, and all 355 baseline Pester tests pass.
 
-- [ ] **Step 2: Install build tools on D: only when the probes fail**
+- [x] **Step 2: Install build tools on D: only when the probes fail**
 
 Run the probes first:
 
@@ -71,7 +71,7 @@ Expected: `cargo --version` and the Visual C++ installation probe both succeed. 
 - Create: `sidecar/relay-quota-host/tests/protocol_contract.rs`
 - Create by Cargo: `sidecar/relay-quota-host/Cargo.lock`
 
-- [ ] **Step 1: Write the failing protocol serialization test**
+- [x] **Step 1: Write the failing protocol serialization test**
 
 Create `tests/protocol_contract.rs` with the exact public boundary:
 
@@ -105,7 +105,7 @@ fn success_response_has_stable_camel_case_shape() {
 }
 ```
 
-- [ ] **Step 2: Run the test and verify the crate is absent**
+- [x] **Step 2: Run the test and verify the crate is absent**
 
 Run:
 
@@ -115,7 +115,7 @@ cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test protocol
 
 Expected: FAIL because `Cargo.toml` or `relay_quota_host::protocol` does not exist.
 
-- [ ] **Step 3: Add the exact crate manifest**
+- [x] **Step 3: Add the exact crate manifest**
 
 Create `Cargo.toml`:
 
@@ -154,7 +154,7 @@ pub mod script;
 
 Run `cargo generate-lockfile --manifest-path .\sidecar\relay-quota-host\Cargo.toml` and commit `Cargo.lock`.
 
-- [ ] **Step 4: Implement the protocol types without secret-bearing Debug output**
+- [x] **Step 4: Implement the protocol types without secret-bearing Debug output**
 
 `protocol.rs` defines these exact types:
 
@@ -205,7 +205,7 @@ pub struct UsageResult {
 
 Implement `HostResponse::success` and `HostResponse::failure` as an internally tagged untagged enum so successful JSON contains `results` and `meta`, failed JSON contains `error`, and neither branch serializes the absent branch.
 
-- [ ] **Step 5: Run and commit the protocol contract**
+- [x] **Step 5: Run and commit the protocol contract**
 
 Run:
 
@@ -229,7 +229,7 @@ git commit -m "feat: define relay host protocol"
 - Modify: `sidecar/relay-quota-host/src/script.rs`
 - Create: `sidecar/relay-quota-host/tests/request_script.rs`
 
-- [ ] **Step 1: Write failing request and sandbox tests**
+- [x] **Step 1: Write failing request and sandbox tests**
 
 ```rust
 use relay_quota_host::protocol::SecretSet;
@@ -260,7 +260,7 @@ fn direct_host_capabilities_are_absent() {
 }
 ```
 
-- [ ] **Step 2: Run and verify the missing implementation failure**
+- [x] **Step 2: Run and verify the missing implementation failure**
 
 Run:
 
@@ -270,7 +270,7 @@ cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test request_
 
 Expected: FAIL because `script::evaluate_request` is missing.
 
-- [ ] **Step 3: Implement bounded token replacement and the request shape**
+- [x] **Step 3: Implement bounded token replacement and the request shape**
 
 Add:
 
@@ -294,13 +294,13 @@ pub fn replace_tokens(script: &str, base_url: &str, secrets: &SecretSet) -> Stri
 
 `evaluate_request` must create `rquickjs::Runtime::new()`, set a 16 MiB memory limit and interrupt deadline, create a fresh `Context`, evaluate `JSON.stringify((SCRIPT).request)`, parse only the resulting JSON into a private `RawRequest`, require nonempty `url` and `method`, require every header value and body to be a string, and return `ScriptRequest`. It must reject scripts over 256 KiB and serialized requests over 64 KiB.
 
-- [ ] **Step 4: Add syntax, type, size, and global-absence cases**
+- [x] **Step 4: Add syntax, type, size, and global-absence cases**
 
 Extend the test with table cases for malformed JavaScript, missing request, array-valued header, object body, script size `262145`, and request JSON size `65537`. Each must return one of `ScriptSyntax`, `RequestValidation`, or `RequestTooLarge` without containing the API key sentinel.
 
 Add an ES2020 case using optional chaining and nullish coalescing, an arbitrary valid `POST` method case, and a memory-limit case that attempts `new ArrayBuffer(32 * 1024 * 1024)` and returns `ScriptMemory` without terminating the host process.
 
-- [ ] **Step 5: Run and commit QuickJS request evaluation**
+- [x] **Step 5: Run and commit QuickJS request evaluation**
 
 ```powershell
 cargo fmt --manifest-path .\sidecar\relay-quota-host\Cargo.toml -- --check
@@ -319,7 +319,7 @@ Expected: all request-script tests pass.
 - Create: `sidecar/relay-quota-host/tests/destination_policy.rs`
 - Create: `sidecar/relay-quota-host/tests/http_client.rs`
 
-- [ ] **Step 1: Write failing destination-policy tests**
+- [x] **Step 1: Write failing destination-policy tests**
 
 ```rust
 use relay_quota_host::destination::validate_destination;
@@ -340,7 +340,7 @@ fn loopback_http_and_explicit_custom_fingerprint_are_supported() {
 }
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```powershell
 cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test destination_policy --locked
@@ -348,7 +348,7 @@ cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test destinat
 
 Expected: FAIL because destination validation is not implemented.
 
-- [ ] **Step 3: Implement canonical effective origins**
+- [x] **Step 3: Implement canonical effective origins**
 
 `destination.rs` must parse with `url::Url`, reject embedded credentials, derive lowercase `scheme://host:effective-port`, treat only `localhost`, `127.0.0.0/8`, and `::1` as loopback, and return:
 
@@ -369,11 +369,11 @@ pub fn validate_destination(
 
 Built-ins require HTTPS except loopback and exact effective-origin equality. Custom requires the computed fingerprint to equal `trusted_destination` byte-for-byte. When Custom has no matching fingerprint, return `DestinationTrustRequired` with only canonical `destinationHost` and `destinationFingerprint`; do not create an HTTP client or send a request in that path.
 
-- [ ] **Step 4: Write the failing local HTTP integration test**
+- [x] **Step 4: Write the failing local HTTP integration test**
 
 Use `std::net::TcpListener` on `127.0.0.1:0` to return a JSON body and assert that `execute_request` sends the method/header/body, reports status, enforces timeout, rejects a response over 1 MiB, and maps non-2xx to `HttpStatus` with parsed integer `Retry-After`.
 
-- [ ] **Step 5: Implement the bounded reqwest client**
+- [x] **Step 5: Implement the bounded reqwest client**
 
 Use one per-command blocking client:
 
@@ -387,7 +387,7 @@ let client = reqwest::blocking::Client::builder()
 
 Parse `method` through `reqwest::Method::from_bytes`, add only validated string headers, send an optional string body, read at most `1_048_577` bytes, reject redirects rather than silently crossing origins, require 2xx, and deserialize JSON only after the size/status checks.
 
-- [ ] **Step 6: Run and commit destination plus HTTP**
+- [x] **Step 6: Run and commit destination plus HTTP**
 
 ```powershell
 cargo fmt --manifest-path .\sidecar\relay-quota-host\Cargo.toml -- --check
@@ -406,7 +406,7 @@ Expected: both integration test binaries pass.
 - Create: `sidecar/relay-quota-host/tests/fixtures/wakaka-wallet.json`
 - Create: `sidecar/relay-quota-host/tests/fixtures/wakaka-subscription.json`
 
-- [ ] **Step 1: Write failing extractor tests**
+- [x] **Step 1: Write failing extractor tests**
 
 ```rust
 use relay_quota_host::script::evaluate_extractor;
@@ -433,7 +433,7 @@ fn accepts_nonempty_arrays_and_rejects_coercive_fields() {
 }
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```powershell
 cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test extractor_contract --locked
@@ -441,9 +441,9 @@ cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test extracto
 
 Expected: FAIL because `evaluate_extractor` is missing.
 
-- [ ] **Step 3: Implement fresh-runtime extractor execution**
+- [x] **Step 3: Implement fresh-runtime extractor execution**
 
-`evaluate_extractor(script, response)` must create a second fresh QuickJS runtime with the same limits, inject the response only through a JSON literal produced by `serde_json`, evaluate `JSON.stringify((SCRIPT).extractor(RESPONSE))`, enforce a 256 KiB serialized-result limit, accept one object or a nonempty array, and validate exact field types. It must reject non-finite numeric fields after conversion and cap each string field at 4096 UTF-8 bytes.
+`evaluate_extractor(script, response)` must create a second fresh QuickJS runtime with the same limits, inject the response only through a JSON literal produced by `serde_json`, extract the `extractor` function, and invoke it detached with `response` as its only argument, matching CC Switch's `Function::call((response_js,))` behavior rather than binding `this` to the script object. It must enforce a 256 KiB serialized-result limit, accept one object or a nonempty array, and validate exact field types. It must reject non-finite numeric fields after conversion and cap each string field at 4096 UTF-8 bytes.
 
 Use this canonical defaulting rule:
 
@@ -461,11 +461,11 @@ let result = UsageResult {
 };
 ```
 
-- [ ] **Step 4: Add Wakaka wallet and subscription fixtures**
+- [x] **Step 4: Add Wakaka wallet and subscription fixtures**
 
 The wallet fixture contains an explicit `balance` and the subscription fixture contains two quota plans. Tests load the fixtures, use the committed Wakaka preset script string, and assert normalized USD wallet and named percentage-bearing plan records. Add synthetic General `/user/balance` and New API `/api/user/self` extractor cases in the same test file. Fixture values are synthetic and contain no credential or captured production response.
 
-- [ ] **Step 5: Run and commit extractor compatibility**
+- [x] **Step 5: Run and commit extractor compatibility**
 
 ```powershell
 cargo fmt --manifest-path .\sidecar\relay-quota-host\Cargo.toml -- --check
@@ -482,11 +482,11 @@ Expected: wallet, subscription, explicit-zero, multi-result, invalid-type, and e
 - Create: `sidecar/relay-quota-host/src/main.rs`
 - Create: `sidecar/relay-quota-host/tests/jsonl_process.rs`
 
-- [ ] **Step 1: Write a failing process-level round-trip test**
+- [x] **Step 1: Write a failing process-level round-trip test**
 
 Use `env!("CARGO_BIN_EXE_relay-quota-host")`, spawn with redirected stdin/stdout/stderr, write one command plus LF, close stdin, and assert one parseable response line with matching ID and no output on stderr. Add a malformed-input command and assert `Protocol` without echoing input.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```powershell
 cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test jsonl_process --locked
@@ -494,7 +494,7 @@ cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --test jsonl_pr
 
 Expected: FAIL because the binary entry point does not exist.
 
-- [ ] **Step 3: Implement the one-line command loop**
+- [x] **Step 3: Implement the one-line command loop**
 
 `main.rs` must implement the offline self-test and command loop:
 
@@ -519,11 +519,11 @@ fn main() {
 
 `handle_line` rejects input over 512 KiB before deserialization, clamps `timeoutMs` to 2000-30000, measures duration, runs request evaluation → destination validation → HTTP → fresh extractor evaluation, and maps every internal error to one of these sanitized categories: `Protocol`, `ScriptSyntax`, `ScriptTimeout`, `ScriptMemory`, `RequestValidation`, `RequestTooLarge`, `DestinationValidation`, `DestinationTrustRequired`, `Dns`, `Connectivity`, `Tls`, `Timeout`, `HttpStatus`, `ResponseTooLarge`, `InvalidJson`, `ExtractorExecution`, `ResultValidation`, or `SidecarLifecycle`. Panic details and raw errors never cross stdout/stderr.
 
-- [ ] **Step 4: Add lifecycle and redaction tests**
+- [x] **Step 4: Add lifecycle and redaction tests**
 
 Test two sequential commands to prove no shared JavaScript globals; close stdin to prove clean exit; send secret sentinels through script, headers, response, invalid JSON, and HTTP errors; assert the sentinel is absent from stdout and stderr. Test a QuickJS infinite loop and assert `ScriptTimeout` inside the 30-second host ceiling.
 
-- [ ] **Step 5: Run the complete sidecar suite**
+- [x] **Step 5: Run the complete sidecar suite**
 
 ```powershell
 cargo fmt --manifest-path .\sidecar\relay-quota-host\Cargo.toml -- --check
@@ -533,7 +533,7 @@ cargo test --manifest-path .\sidecar\relay-quota-host\Cargo.toml --locked
 
 Expected: formatting, clippy, and every Rust test pass.
 
-- [ ] **Step 6: Commit the executable composition**
+- [x] **Step 6: Commit the executable composition**
 
 ```powershell
 git add sidecar/relay-quota-host/src/main.rs sidecar/relay-quota-host/tests/jsonl_process.rs sidecar/relay-quota-host/src/lib.rs
@@ -548,16 +548,25 @@ Expected: commit succeeds and status is empty.
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-01-relay-script-host.md`
 
-- [ ] **Step 1: Build the release binary without packaging it yet**
+- [x] **Step 1: Build the release binary without packaging it yet**
 
 ```powershell
 cargo build --manifest-path .\sidecar\relay-quota-host\Cargo.toml --release --locked
-& .\sidecar\relay-quota-host\target\release\relay-quota-host.exe --self-test
+$start = [Diagnostics.ProcessStartInfo]::new()
+$start.FileName = (Resolve-Path '.\sidecar\relay-quota-host\target\release\relay-quota-host.exe').Path
+$start.ArgumentList.Add('--self-test')
+$start.UseShellExecute = $false
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+$start.CreateNoWindow = $true
+$process = [Diagnostics.Process]::Start($start)
+$output = $process.StandardOutput.ReadToEnd()
+$process.WaitForExit()
 ```
 
-Expected: release build succeeds and `--self-test` emits one line `relay-quota-host: ok` without network access.
+Expected: release build succeeds, the redirected GUI-subsystem process exits 0, and `--self-test` emits one line `relay-quota-host: ok` without network access. Explicit redirection is required because PowerShell does not attach a pipeline to a Windows GUI-subsystem executable when it is invoked with the call operator.
 
-- [ ] **Step 2: Mark completed checkboxes and commit the plan record**
+- [x] **Step 2: Mark completed checkboxes and commit the plan record**
 
 After recording the exact Rust test counts and release binary SHA-256 under this task, run:
 
@@ -567,3 +576,15 @@ git commit -m "docs: record relay host verification"
 ```
 
 Expected: the standalone sidecar is committed as source plus lockfile, independently testable, and ready for the PowerShell adapter plan.
+
+### Verification record
+
+- Verified commit before this documentation update: `7478d45112a818294abb904bfa01e16137ad0a44`.
+- `cargo fmt -- --check`: passed.
+- `cargo clippy --all-targets --locked -- -D warnings`: passed.
+- `cargo test --locked`: 129 passed, 0 failed, 0 ignored across 19 library, 7 destination, 24 extractor, 13 HTTP, 20 JSONL process, 5 protocol, 1 proxy, and 40 request-script tests.
+- Release self-test: exit code 0, stdout exactly `relay-quota-host: ok\n`, stderr empty.
+- Release binary size: 4,861,952 bytes.
+- Release binary SHA-256: `1C2BAF844C63B69ACD770389FDC1724B0BB75E082F12E5A25EBE29FA8DA89A30`.
+- Worker request and extractor responses use per-command AES-256-GCM authenticated IPC, so direct worker stdout never contains substituted credentials or normalized response fields.
+- Credential matching at the public JSONL boundary applies to command-derived strings. Stable protocol keys, categories, and constant messages are not treated as credential echoes.
