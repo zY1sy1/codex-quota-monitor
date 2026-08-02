@@ -166,6 +166,21 @@ function Resolve-MonitorPwshPath {
     throw [InvalidOperationException]::new('No launchable PowerShell 7 application was found for the current user.')
 }
 
+function Resolve-MonitorWscriptPath {
+    [CmdletBinding()]
+    param()
+
+    $path = Join-Path ([Environment]::SystemDirectory) 'wscript.exe'
+    if (-not [IO.Path]::IsPathFullyQualified($path) -or
+        -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw [InvalidOperationException]::new(
+            'The Windows Script Host executable required for console-free launch was not found.'
+        )
+    }
+
+    return [IO.Path]::GetFullPath($path)
+}
+
 function New-MonitorStartupShortcut {
     [CmdletBinding()]
     param(
@@ -176,6 +191,8 @@ function New-MonitorStartupShortcut {
         [string]$EntryScript,
 
         [string]$PwshPath = (Resolve-MonitorPwshPath),
+
+        [string]$LauncherScript,
 
         [string]$Description = 'Codex quota monitor'
     )
@@ -189,6 +206,16 @@ function New-MonitorStartupShortcut {
     if (-not [IO.Path]::IsPathFullyQualified($EntryScript) -or -not (Test-Path -LiteralPath $EntryScript -PathType Leaf)) {
         throw [ArgumentException]::new('EntryScript must identify an existing absolute script path.', 'EntryScript')
     }
+    if ([string]::IsNullOrWhiteSpace($LauncherScript)) {
+        $LauncherScript = Join-Path (Split-Path -Parent $EntryScript) 'Start-CodexQuotaMonitor.vbs'
+    }
+    if (-not [IO.Path]::IsPathFullyQualified($LauncherScript) -or
+        -not (Test-Path -LiteralPath $LauncherScript -PathType Leaf)) {
+        throw [ArgumentException]::new(
+            'LauncherScript must identify an existing absolute VBScript path.',
+            'LauncherScript'
+        )
+    }
     if (
         -not [IO.Path]::IsPathFullyQualified($PwshPath) -or
         -not (Test-Path -LiteralPath $PwshPath -PathType Leaf) -or
@@ -199,7 +226,10 @@ function New-MonitorStartupShortcut {
 
     $fullShortcutPath = [IO.Path]::GetFullPath($ShortcutPath)
     $fullEntryScript = [IO.Path]::GetFullPath($EntryScript)
+    $fullLauncherScript = [IO.Path]::GetFullPath($LauncherScript)
     $fullPwshPath = [IO.Path]::GetFullPath($PwshPath)
+    $fullWscriptPath = Resolve-MonitorWscriptPath
+    $arguments = "//B //NoLogo `"$fullLauncherScript`" `"$fullPwshPath`" `"$fullEntryScript`""
     $shortcutDirectory = Split-Path -Parent $fullShortcutPath
     $workingDirectory = Split-Path -Parent $fullEntryScript
     $null = New-Item -ItemType Directory -Path $shortcutDirectory -Force
@@ -209,8 +239,8 @@ function New-MonitorStartupShortcut {
     try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($fullShortcutPath)
-        $shortcut.TargetPath = $fullPwshPath
-        $shortcut.Arguments = "-NoLogo -NoProfile -NonInteractive -Sta -WindowStyle Hidden -File `"$fullEntryScript`""
+        $shortcut.TargetPath = $fullWscriptPath
+        $shortcut.Arguments = $arguments
         $shortcut.WorkingDirectory = $workingDirectory
         $shortcut.Description = $Description
         $shortcut.Save()
@@ -226,9 +256,11 @@ function New-MonitorStartupShortcut {
 
     return [pscustomobject]@{
         ShortcutPath = $fullShortcutPath
+        WscriptPath = $fullWscriptPath
         PwshPath = $fullPwshPath
+        LauncherScript = $fullLauncherScript
         EntryScript = $fullEntryScript
-        Arguments = "-NoLogo -NoProfile -NonInteractive -Sta -WindowStyle Hidden -File `"$fullEntryScript`""
+        Arguments = $arguments
         WorkingDirectory = $workingDirectory
         Description = $Description
     }

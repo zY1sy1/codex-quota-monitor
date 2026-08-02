@@ -73,7 +73,7 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Codex Quota Monitor.lnk
 ```
 
-快捷方式使用安装时解析到的 `pwsh.exe`，以 STA 和隐藏控制台方式启动已安装的伴随程序。切换“开机启动”会同步更新快捷方式和本地设置；不会修改注册表，也不会影响其他 Windows 用户。
+快捷方式使用 Windows Script Host 的 `wscript.exe` GUI 启动器，再以 STA 和隐藏窗口方式启动已安装的伴随程序，因此不会打开 PowerShell 或 Windows Terminal 标签页。监视器进程独立于启动器运行；关闭其他终端窗口不会终止监视器，只有托盘菜单中的“退出”或停止脚本会结束它。切换“开机启动”会同步更新快捷方式和本地设置；不会修改注册表，也不会影响其他 Windows 用户。
 
 ## 桌面快捷方式图标
 

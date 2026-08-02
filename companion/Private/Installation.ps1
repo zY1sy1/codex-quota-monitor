@@ -167,6 +167,7 @@ function Assert-MonitorSourceLayout {
             'CodexQuotaMonitor.psd1'
             'CodexQuotaMonitor.psm1'
             'Start-CodexQuotaMonitor.ps1'
+            'Start-CodexQuotaMonitor.vbs'
             'Private'
             'UI'
         )) {
@@ -684,6 +685,7 @@ function Publish-MonitorApplication {
                 'CodexQuotaMonitor.psd1'
                 'CodexQuotaMonitor.psm1'
                 'Start-CodexQuotaMonitor.ps1'
+                'Start-CodexQuotaMonitor.vbs'
                 'Private'
                 'UI'
             )) {

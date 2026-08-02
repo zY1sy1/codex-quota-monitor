@@ -126,9 +126,36 @@ Describe 'Codex quota monitor installation lifecycle' {
         $secondFiles | Should -Be $firstFiles
         Test-Path -LiteralPath $context.Settings -PathType Leaf | Should -BeTrue
         Test-Path -LiteralPath $context.Shortcut -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $context.App 'Start-CodexQuotaMonitor.vbs') -PathType Leaf |
+            Should -BeTrue
         @(Get-ChildItem -LiteralPath $context.Startup -Filter '*.lnk' -File).Count | Should -Be 1
         Test-Path -LiteralPath (Join-Path $context.Root 'app.new') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $context.Root 'app.old') | Should -BeFalse
+    }
+
+    It 'rejects a source directory without the GUI launcher before changing the installation' {
+        $context = New-InstallationTestContext -Name 'Missing GUI Launcher'
+        $source = Join-Path $TestDrive 'incomplete companion'
+        Copy-Item -LiteralPath $CompanionRoot -Destination $source -Recurse
+        Remove-Item -LiteralPath (Join-Path $source 'Start-CodexQuotaMonitor.vbs') -Force
+
+        {
+            & $MonitorModule {
+                param($sourcePath, $targetRoot)
+                Assert-MonitorSourceLayout -SourcePath $sourcePath -TargetRoot $targetRoot
+            } $source $context.Root
+        } | Should -Throw '*source directory is incomplete*'
+
+        {
+            Install-CodexQuotaMonitor `
+                -SourcePath $source `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -InstancePrefix $context.Prefix `
+                -SkipStart
+        } | Should -Throw '*source directory is incomplete*'
+
+        Test-Path -LiteralPath $context.Root | Should -BeFalse
     }
 
     It 'repairs app files while preserving canonical settings and log bytes' {
