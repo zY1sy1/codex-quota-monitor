@@ -136,7 +136,8 @@ Describe 'relay script host JSONL client' {
         $result.Ok | Should -BeFalse
         $result.Error.Category | Should -BeExactly 'SidecarLifecycle'
         $result.Error.Message | Should -BeExactly 'Relay script host exited unexpectedly.'
-        ($result | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match '17|exit code|stack|exception'
+        ($result.Error | ConvertTo-Json -Depth 8 -Compress) |
+            Should -Not -Match '17|exit code|stack|exception'
     }
 
     It 'times out at provider timeout plus two seconds and stops the blocked client' {
