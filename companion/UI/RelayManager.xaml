@@ -1,0 +1,200 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Relay quota providers"
+        Width="920"
+        Height="680"
+        MinWidth="760"
+        MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="#FF202634"
+        Foreground="#FFF4F3F1"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        AutomationProperties.Name="Relay quota provider manager">
+    <Window.Resources>
+        <Style TargetType="TextBox">
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="Background" Value="#FF323A4C" />
+            <Setter Property="Foreground" Value="#FFF4F3F1" />
+            <Setter Property="BorderBrush" Value="#FF596276" />
+        </Style>
+        <Style TargetType="PasswordBox">
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="Background" Value="#FF323A4C" />
+            <Setter Property="Foreground" Value="#FFF4F3F1" />
+            <Setter Property="BorderBrush" Value="#FF596276" />
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="Padding" Value="5,2" />
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#FFAFB8CB" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="250" />
+            <ColumnDefinition Width="14" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <TextBlock Text="Providers" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" />
+            <ListBox x:Name="ProviderList"
+                     Grid.Row="1"
+                     DisplayMemberPath="DisplayName"
+                     Background="#FF2A3141"
+                     Foreground="#FFF4F3F1"
+                     BorderBrush="#FF596276"
+                     AutomationProperties.Name="Relay providers" />
+            <UniformGrid Grid.Row="2" Columns="2" Margin="0,8,0,0">
+                <Button x:Name="AddButton" Content="Add" AutomationProperties.Name="Add provider" />
+                <Button x:Name="EditButton" Content="Edit" AutomationProperties.Name="Edit provider" />
+                <Button x:Name="DuplicateButton" Content="Duplicate" AutomationProperties.Name="Duplicate provider" />
+                <Button x:Name="DeleteButton" Content="Delete" AutomationProperties.Name="Delete provider" />
+            </UniformGrid>
+        </Grid>
+
+        <Grid Grid.Column="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="150" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <Grid Margin="0,0,8,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <CheckBox x:Name="EnabledCheckBox"
+                              Grid.ColumnSpan="3"
+                              Content="Enabled"
+                              Margin="0,0,0,10"
+                              AutomationProperties.Name="Provider enabled" />
+
+                    <StackPanel Grid.Row="1" Grid.Column="0">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Name" />
+                        <TextBox x:Name="NameTextBox" AutomationProperties.Name="Provider name" />
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Grid.Column="2">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Template" />
+                        <ComboBox x:Name="TemplateComboBox" AutomationProperties.Name="Provider template">
+                            <ComboBoxItem Content="Wakaka" Tag="Wakaka" />
+                            <ComboBoxItem Content="General" Tag="General" />
+                            <ComboBoxItem Content="New API" Tag="NewApi" />
+                            <ComboBoxItem Content="Custom" Tag="Custom" />
+                        </ComboBox>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,10,0,0">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Base URL" />
+                        <TextBox x:Name="BaseUrlTextBox" AutomationProperties.Name="Base URL" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Margin="0,10,0,0">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Script" />
+                        <TextBox x:Name="ScriptTextBox"
+                                 Height="150"
+                                 AcceptsReturn="True"
+                                 AcceptsTab="True"
+                                 TextWrapping="NoWrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Auto"
+                                 FontFamily="Consolas"
+                                 AutomationProperties.Name="Relay script" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="4" Grid.ColumnSpan="3" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="API key" />
+                            <PasswordBox x:Name="ApiKeyPasswordBox" AutomationProperties.Name="API key" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Access token" />
+                            <PasswordBox x:Name="AccessTokenPasswordBox" AutomationProperties.Name="Access token" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="4">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="User ID" />
+                            <PasswordBox x:Name="UserIdPasswordBox" AutomationProperties.Name="User ID" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid Grid.Row="5" Grid.ColumnSpan="3" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Timeout (seconds)" />
+                            <TextBox x:Name="TimeoutTextBox" AutomationProperties.Name="Timeout seconds" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="Interval (minutes, 0 for manual)" />
+                            <TextBox x:Name="IntervalTextBox" AutomationProperties.Name="Interval minutes" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </ScrollViewer>
+
+            <Grid Grid.Row="1" Margin="0,10,0,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button x:Name="TestButton" Content="Test Script" AutomationProperties.Name="Test script" />
+                <TextBlock x:Name="TestStateText"
+                           Grid.Column="1"
+                           VerticalAlignment="Center"
+                           Foreground="#FFAFB8CB"
+                           TextTrimming="CharacterEllipsis" />
+            </Grid>
+
+            <ListBox x:Name="PreviewList"
+                     Grid.Row="2"
+                     Background="#FF2A3141"
+                     Foreground="#FFF4F3F1"
+                     BorderBrush="#FF596276"
+                     AutomationProperties.Name="Sanitized test preview" />
+
+            <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                <Button x:Name="SaveButton" Content="Save" IsDefault="True" AutomationProperties.Name="Save provider" />
+                <Button x:Name="CancelButton" Content="Cancel" IsCancel="True" AutomationProperties.Name="Cancel provider changes" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

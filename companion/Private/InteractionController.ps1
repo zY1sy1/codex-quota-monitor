@@ -1,3 +1,379 @@
+function Copy-RelayManagerDraft {
+    param(
+        [Parameter(Mandatory)][object]$Provider,
+        [switch]$NewIdentity,
+        [switch]$ClearTrust
+    )
+    $get = ${function:Get-MonitorInteractionField}
+    $id = if ($NewIdentity) { [guid]::NewGuid().ToString('D') } else {
+        [string](& $get $Provider 'Id')
+    }
+    [pscustomobject][ordered]@{
+        Id = $id
+        Name = [string](& $get $Provider 'Name')
+        Enabled = [bool](& $get $Provider 'Enabled')
+        BaseUrl = [string](& $get $Provider 'BaseUrl')
+        TemplateType = [string](& $get $Provider 'TemplateType')
+        Script = [string](& $get $Provider 'Script')
+        TimeoutSeconds = [int](& $get $Provider 'TimeoutSeconds')
+        IntervalMinutes = [int](& $get $Provider 'IntervalMinutes')
+        TrustedDestination = if ($ClearTrust) { $null } else {
+            & $get $Provider 'TrustedDestination'
+        }
+        Secrets = [pscustomobject][ordered]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
+    }
+}
+
+function New-EmptyRelayManagerDraft {
+    [pscustomobject][ordered]@{
+        Id = [guid]::NewGuid().ToString('D')
+        Name = 'New relay'
+        Enabled = $true
+        BaseUrl = 'https://'
+        TemplateType = 'General'
+        Script = '({request:{url:"{{baseUrl}}/user/balance",method:"GET",headers:{Authorization:"Bearer {{apiKey}}"}},extractor:r=>({isValid:r.success??true,invalidMessage:r.message??null,remaining:(r.data??r).balance,unit:(r.data??r).currency??null})})'
+        TimeoutSeconds = 10
+        IntervalMinutes = 10
+        TrustedDestination = $null
+        Secrets = [pscustomobject][ordered]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
+    }
+}
+
+function ConvertTo-RelayManagerPreview {
+    param([AllowNull()][object]$Response)
+    if ($null -eq $Response) {
+        return @([pscustomobject][ordered]@{
+            Category = 'SidecarLifecycle'; Message = 'Relay script host is unavailable.'; HttpStatus = $null
+        })
+    }
+    if ([bool](Get-MonitorInteractionField $Response 'Ok')) {
+        $safe = [Collections.Generic.List[object]]::new()
+        foreach ($row in @(Get-MonitorInteractionField $Response 'Results')) {
+            $safe.Add([pscustomobject][ordered]@{
+                IsValid = [bool](Get-MonitorInteractionField $row 'IsValid')
+                InvalidMessage = Get-MonitorInteractionField $row 'InvalidMessage'
+                Remaining = Get-MonitorInteractionField $row 'Remaining'
+                Unit = Get-MonitorInteractionField $row 'Unit'
+                PlanName = Get-MonitorInteractionField $row 'PlanName'
+                Total = Get-MonitorInteractionField $row 'Total'
+                Used = Get-MonitorInteractionField $row 'Used'
+                Extra = Get-MonitorInteractionField $row 'Extra'
+            })
+        }
+        return [object[]]$safe.ToArray()
+    }
+    $errorObject = Get-MonitorInteractionField $Response 'Error'
+    return @([pscustomobject][ordered]@{
+        Category = [string](Get-MonitorInteractionField $errorObject 'Category')
+        Message = [string](Get-MonitorInteractionField $errorObject 'Message')
+        HttpStatus = Get-MonitorInteractionField $errorObject 'HttpStatus'
+    })
+}
+
+function Test-RelayManagerDestinationFingerprint {
+    param([AllowNull()][string]$Fingerprint)
+    $uri = $null
+    if ([string]::IsNullOrWhiteSpace($Fingerprint) -or
+        -not [Uri]::TryCreate($Fingerprint, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -notin @('http', 'https') -or [string]::IsNullOrEmpty($uri.Host) -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or $uri.AbsolutePath -cne '/' -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        return $false
+    }
+    $canonicalHost = if ($uri.HostNameType -eq [UriHostNameType]::IPv6) { "[$($uri.Host)]" } else { $uri.IdnHost }
+    $port = if ($uri.IsDefaultPort) {
+        if ($uri.Scheme -eq 'https') { 443 } else { 80 }
+    }
+    else { $uri.Port }
+    $canonical = "$($uri.Scheme.ToLowerInvariant())://$($canonicalHost.ToLowerInvariant()):$port"
+    return $Fingerprint -ceq $canonical
+}
+
+function New-RelayManagerController {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$View,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Providers,
+        [Parameter(Mandatory)][scriptblock]$WriteProviders,
+        [Parameter(Mandatory)][scriptblock]$ProtectSecret,
+        [Parameter(Mandatory)][scriptblock]$UnprotectSecret,
+        [Parameter(Mandatory)][scriptblock]$QueryProvider,
+        [Parameter(Mandatory)][scriptblock]$ApplyProviders,
+        [Parameter(Mandatory)][scriptblock]$RemoveProviderArtifacts,
+        [Parameter(Mandatory)][scriptblock]$ConfirmDelete
+    )
+
+    $state = [pscustomobject][ordered]@{
+        Providers = [object[]]@($Providers)
+        PendingSecrets = $null
+        TestedDraftId = $null
+        Disposed = $false
+    }
+    $get = ${function:Get-MonitorInteractionField}
+    $copyDraft = ${function:Copy-RelayManagerDraft}
+    $newDraft = ${function:New-EmptyRelayManagerDraft}
+    $toPreview = ${function:ConvertTo-RelayManagerPreview}
+    $validFingerprint = ${function:Test-RelayManagerDestinationFingerprint}
+    $canonicalizeProvider = ${function:ConvertTo-CanonicalRelayProvider}
+    $canonicalizeDocument = ${function:ConvertTo-CanonicalRelayProviderDocument}
+
+    $findProvider = {
+        param([AllowNull()][string]$ProviderId)
+        return @($state.Providers | Where-Object {
+            [string](& $get $_ 'Id') -ceq [string]$ProviderId
+        } | Select-Object -First 1)
+    }.GetNewClosure()
+
+    $publishProviders = {
+        & $View.SetProviders ([object[]]@($state.Providers))
+    }.GetNewClosure()
+
+    $add = {
+        if ($state.Disposed) { return }
+        $state.PendingSecrets = $null
+        $state.TestedDraftId = $null
+        & $View.SetDraft (& $newDraft)
+        & $View.SetPreview @()
+        & $View.SetTestState $true $false $null
+    }.GetNewClosure()
+
+    $edit = {
+        param([string]$ProviderId)
+        if ($state.Disposed) { return }
+        $provider = @(& $findProvider $ProviderId)
+        if ($provider.Count -eq 0) { return }
+        $state.PendingSecrets = $null
+        $state.TestedDraftId = $null
+        & $View.SetDraft (& $copyDraft $provider[0])
+        & $View.SetPreview @()
+        & $View.SetTestState $true $false $null
+    }.GetNewClosure()
+
+    $duplicate = {
+        param([string]$ProviderId)
+        if ($state.Disposed) { return }
+        $provider = @(& $findProvider $ProviderId)
+        if ($provider.Count -eq 0) { return }
+        $state.PendingSecrets = $null
+        $state.TestedDraftId = $null
+        $draft = & $copyDraft $provider[0] -NewIdentity -ClearTrust
+        $draft.Name = "$($draft.Name) copy"
+        & $View.SetDraft $draft
+        & $View.SetPreview @()
+        & $View.SetTestState $true $false $null
+    }.GetNewClosure()
+
+    $delete = {
+        param([string]$ProviderId)
+        if ($state.Disposed) { return }
+        $provider = @(& $findProvider $ProviderId)
+        if ($provider.Count -eq 0 -or -not [bool](& $ConfirmDelete $provider[0])) { return }
+        $remaining = [object[]]@($state.Providers | Where-Object {
+            [string](& $get $_ 'Id') -cne [string]$ProviderId
+        })
+        $document = & $canonicalizeDocument ([ordered]@{
+            SchemaVersion = 1; Providers = $remaining
+        })
+        if ($null -eq $document) { throw 'Relay provider deletion produced an invalid store.' }
+        try {
+            & $WriteProviders $document
+            & $RemoveProviderArtifacts $ProviderId
+            $state.Providers = [object[]]@($document.Providers)
+            & $ApplyProviders $state.Providers @() @($ProviderId) $false
+            & $publishProviders
+        }
+        catch {
+            & $View.SetTestState $false $false 'Unable to delete the relay provider.'
+        }
+    }.GetNewClosure()
+
+    $save = {
+        if ($state.Disposed) { return $false }
+        $draft = & $View.ReadDraft
+        if ($null -eq $draft) { return $false }
+        $id = [string](& $get $draft 'Id')
+        $currentItems = @(& $findProvider $id)
+        $current = if ($currentItems.Count -eq 0) { $null } else { $currentItems[0] }
+        $enteredSecrets = & $get $draft 'Secrets'
+        $cipherSecrets = [ordered]@{}
+        foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) {
+            $plain = [string](& $get $enteredSecrets $name)
+            if ([string]::IsNullOrEmpty($plain) -and $null -ne $state.PendingSecrets) {
+                $plain = [string](& $get $state.PendingSecrets $name)
+            }
+            if (-not [string]::IsNullOrEmpty($plain)) {
+                $cipherSecrets[$name] = [string](& $ProtectSecret $plain)
+            }
+            elseif ($null -ne $current) {
+                $existingSecrets = & $get $current 'Secrets'
+                $cipherSecrets[$name] = [string](& $get $existingSecrets $name)
+            }
+            else {
+                $cipherSecrets[$name] = ''
+            }
+        }
+        $templateType = [string](& $get $draft 'TemplateType')
+        $candidate = [ordered]@{
+            Id = $id
+            Name = [string](& $get $draft 'Name')
+            Enabled = [bool](& $get $draft 'Enabled')
+            BaseUrl = [string](& $get $draft 'BaseUrl')
+            TemplateType = $templateType
+            Script = [string](& $get $draft 'Script')
+            TimeoutSeconds = [int](& $get $draft 'TimeoutSeconds')
+            IntervalMinutes = [int](& $get $draft 'IntervalMinutes')
+            TrustedDestination = if ($templateType -eq 'Custom') {
+                & $get $draft 'TrustedDestination'
+            }
+            else { $null }
+            Secrets = $cipherSecrets
+        }
+        $canonical = & $canonicalizeProvider $candidate
+        if ($null -eq $canonical) {
+            & $View.SetTestState $false $false 'Provider settings are invalid.'
+            return $false
+        }
+        $updated = [Collections.Generic.List[object]]::new()
+        $replaced = $false
+        foreach ($provider in @($state.Providers)) {
+            if ([string](& $get $provider 'Id') -ceq $id) {
+                $updated.Add($canonical); $replaced = $true
+            }
+            else { $updated.Add($provider) }
+        }
+        if (-not $replaced) { $updated.Add($canonical) }
+        $document = & $canonicalizeDocument ([ordered]@{
+            SchemaVersion = 1; Providers = [object[]]$updated.ToArray()
+        })
+        if ($null -eq $document) {
+            & $View.SetTestState $false $false 'Provider settings are invalid.'
+            return $false
+        }
+        try {
+            & $WriteProviders $document
+            $state.Providers = [object[]]@($document.Providers)
+            $testPassed = $state.TestedDraftId -ceq $id
+            & $ApplyProviders $state.Providers @($id) @() $testPassed
+            $state.PendingSecrets = $null
+            $state.TestedDraftId = $null
+            & $publishProviders
+            return $true
+        }
+        catch {
+            & $View.SetTestState $false $false 'Unable to save the relay provider.'
+            return $false
+        }
+    }.GetNewClosure()
+
+    $test = {
+        if ($state.Disposed) { return }
+        $draft = & $View.ReadDraft
+        if ($null -eq $draft) { return }
+        $id = [string](& $get $draft 'Id')
+        $currentItems = @(& $findProvider $id)
+        $current = if ($currentItems.Count -eq 0) { $null } else { $currentItems[0] }
+        $entered = & $get $draft 'Secrets'
+        $secrets = [ordered]@{}
+        try {
+            foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) {
+                $plain = [string](& $get $entered $name)
+                if ([string]::IsNullOrEmpty($plain) -and $null -ne $current) {
+                    $cipher = [string](& $get (& $get $current 'Secrets') $name)
+                    if (-not [string]::IsNullOrEmpty($cipher)) {
+                        $plain = [string](& $UnprotectSecret $cipher)
+                    }
+                }
+                $secrets[$name] = $plain
+            }
+        }
+        catch {
+            & $View.SetPreview @([pscustomobject][ordered]@{
+                Category = 'Authentication'; Message = 'Relay credentials must be entered again.'; HttpStatus = $null
+            })
+            & $View.SetTestState $true $false 'Test failed.'
+            return
+        }
+        & $View.SetTestState $false $true 'Testing...'
+        try {
+            $response = & $QueryProvider $draft $secrets
+            $errorObject = & $get $response 'Error'
+            if (-not [bool](& $get $response 'Ok') -and
+                [string](& $get $errorObject 'Category') -ceq 'DestinationTrustRequired') {
+                $fingerprint = [string](& $get $errorObject 'DestinationFingerprint')
+                $fingerprintIsValid = & $validFingerprint $fingerprint
+                $trustAccepted = if ($fingerprintIsValid) {
+                    [bool](& $View.ConfirmDestinationTrust $fingerprint)
+                }
+                else { $false }
+                if ($trustAccepted) {
+                    $state.PendingSecrets = [pscustomobject][ordered]@{
+                        ApiKey = [string]$secrets.ApiKey
+                        AccessToken = [string]$secrets.AccessToken
+                        UserId = [string]$secrets.UserId
+                    }
+                    $trustedDraft = & $copyDraft $draft
+                    $trustedDraft.TrustedDestination = $fingerprint
+                    $response = & $QueryProvider $trustedDraft $secrets
+                    & $View.SetDraft $trustedDraft
+                    $draft = $trustedDraft
+                }
+            }
+            $preview = & $toPreview $response
+            & $View.SetPreview $preview
+            if ([bool](& $get $response 'Ok')) {
+                $state.TestedDraftId = [string](& $get $draft 'Id')
+                & $View.SetTestState $true $false 'Test succeeded.'
+            }
+            else {
+                $state.TestedDraftId = $null
+                & $View.SetTestState $true $false 'Test failed.'
+            }
+        }
+        catch {
+            $state.TestedDraftId = $null
+            & $View.SetPreview @([pscustomobject][ordered]@{
+                Category = 'SidecarLifecycle'; Message = 'Relay script host is unavailable.'; HttpStatus = $null
+            })
+            & $View.SetTestState $true $false 'Test failed.'
+        }
+        finally {
+            foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) { $secrets[$name] = $null }
+            $secrets = $null
+        }
+    }.GetNewClosure()
+
+    $cancel = {
+        $state.PendingSecrets = $null
+        $state.TestedDraftId = $null
+        return $true
+    }.GetNewClosure()
+    $show = {
+        if ($state.Disposed) { return }
+        & $publishProviders
+        if ($state.Providers.Count -gt 0) { & $edit ([string](& $get $state.Providers[0] 'Id')) }
+        else { & $add }
+        $null = & $View.ShowDialog
+    }.GetNewClosure()
+    $dispose = {
+        if ($state.Disposed) { return }
+        $state.Disposed = $true
+        $state.PendingSecrets = $null
+        $state.TestedDraftId = $null
+        & $View.SetCallbacks -OnAdd $null -OnEdit $null -OnDuplicate $null -OnDelete $null `
+            -OnTest $null -OnSave $null -OnCancel $null
+        & $View.Dispose
+    }.GetNewClosure()
+
+    & $View.SetCallbacks -OnAdd $add -OnEdit $edit -OnDuplicate $duplicate -OnDelete $delete `
+        -OnTest $test -OnSave $save -OnCancel $cancel
+    & $publishProviders
+    return [pscustomobject][ordered]@{
+        State = $state
+        Show = $show
+        Dispose = $dispose
+    }
+}
+
 function Get-MonitorInteractionField {
     [CmdletBinding()]
     param(

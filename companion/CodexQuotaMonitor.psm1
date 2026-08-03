@@ -22,6 +22,7 @@ $privateFiles = @(
     'CompactBarView.ps1'
     'QuotaOrbView.ps1'
     'DisplayModeController.ps1'
+    'RelayManagerView.ps1'
     'TrayView.ps1'
     'InteractionController.ps1'
 )
@@ -128,8 +129,10 @@ function Invoke-CodexQuotaMonitorRuntime {
         Severity = ${function:Get-QuotaSeverity}
         Tooltip = ${function:Get-TrayTooltip}
         ReadRelayProviders = ${function:Read-RelayProviderStore}
+        WriteRelayProviders = ${function:Write-RelayProviderStore}
         ReadRelayCache = ${function:Read-RelayCache}
         WriteRelayCache = ${function:Write-RelayCache}
+        ProtectRelaySecret = ${function:Protect-RelaySecret}
         UnprotectRelaySecret = ${function:Unprotect-RelaySecret}
         StartRelayClient = ${function:Start-RelayScriptClient}
         StopRelayClient = ${function:Stop-RelayScriptClient}
@@ -153,6 +156,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         NewCompactBar = ${function:New-CompactBarView}
         NewOrb = ${function:New-QuotaOrbView}
         NewDisplay = ${function:New-MonitorDisplayModeController}
+        NewRelayManager = ${function:New-RelayManagerView}
+        NewRelayManagerController = ${function:New-RelayManagerController}
         NewTray = ${function:New-TrayView}
         NewInteraction = ${function:New-MonitorInteractionController}
         WriteHealth = ${function:Write-MonitorRuntimeHealthFile}
@@ -223,6 +228,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         CompactBarView = $null
         OrbView = $null
         DisplayController = $null
+        RelayManagerView = $null
+        RelayManagerController = $null
         TrayView = $null
         Interaction = $null
         RefreshEvent = [Threading.AutoResetEvent]::new($false)
@@ -984,6 +991,174 @@ function Invoke-CodexQuotaMonitorRuntime {
             $newTrayFunction = $functions.NewTray
             $runtime.TrayView = & $newTrayFunction -Visible:$false
 
+            $newRelayManagerFunction = $functions.NewRelayManager
+            $runtime.RelayManagerView = & $newRelayManagerFunction
+
+            $writeRelayProvidersFunction = $functions.WriteRelayProviders
+            $writeRelayProvidersAction = {
+                param($Document)
+                & $writeRelayProvidersFunction -Path $paths.RelayProviders -Document $Document
+            }.GetNewClosure()
+            $protectRelaySecretFunction = $functions.ProtectRelaySecret
+            $protectRelaySecretAction = {
+                param([AllowEmptyString()][string]$PlainText)
+                & $protectRelaySecretFunction -PlainText $PlainText
+            }.GetNewClosure()
+            $unprotectRelaySecretFunction = $functions.UnprotectRelaySecret
+            $unprotectRelaySecretAction = {
+                param([AllowEmptyString()][string]$CipherText)
+                & $unprotectRelaySecretFunction -CipherText $CipherText
+            }.GetNewClosure()
+            $queryRelayDraftAction = {
+                param($Provider, $Secrets)
+                $now = [DateTimeOffset]::UtcNow
+                $clientReady = $false
+                if ($null -ne $runtime.RelayClient) {
+                    try {
+                        $clientReady = -not [bool]$runtime.RelayClient.Disposed -and
+                            ($null -eq $runtime.RelayClient.Process -or
+                                -not [bool]$runtime.RelayClient.Process.HasExited)
+                    }
+                    catch { $clientReady = $false }
+                }
+                if (-not $clientReady) {
+                    try {
+                        & $stopRelayClient
+                        $startFunction = $runtime.Functions.StartRelayClient
+                        $runtime.RelayClient = & $startFunction `
+                            -ExecutablePath $runtime.Paths.RelayHost `
+                            -ArgumentList @() `
+                            -WorkingDirectory (Split-Path -Parent $runtime.Paths.RelayHost)
+                        $runtime.RelayHostState = 'Live'
+                    }
+                    catch {
+                        $runtime.RelayClient = $null
+                        $runtime.RelayHostState = 'Unavailable'
+                        return [pscustomobject][ordered]@{
+                            Ok = $false
+                            Error = [pscustomobject][ordered]@{
+                                Category = 'SidecarLifecycle'
+                                Message = 'Relay script host is unavailable.'
+                                HttpStatus = $null
+                            }
+                        }
+                    }
+                }
+                try {
+                    $queryFunction = $runtime.Functions.QueryRelay
+                    return & $queryFunction -Client $runtime.RelayClient `
+                        -Provider $Provider -Secrets $Secrets
+                }
+                catch {
+                    & $stopRelayClient
+                    $runtime.RelayHostState = 'Unavailable'
+                    $runtime.NextRelayHostStartAt = $now.AddSeconds(30)
+                    return [pscustomobject][ordered]@{
+                        Ok = $false
+                        Error = [pscustomobject][ordered]@{
+                            Category = 'SidecarLifecycle'
+                            Message = 'Relay script host is unavailable.'
+                            HttpStatus = $null
+                        }
+                    }
+                }
+            }.GetNewClosure()
+            $removeRelayProviderArtifactsAction = {
+                param([string]$ProviderId)
+                $runtime.RelayStates.Remove($ProviderId)
+                $null = $runtime.RelayManualRefreshPending.Remove($ProviderId)
+                $remainingCache = [object[]]@(
+                    $runtime.RelayCache.Providers | Where-Object ProviderId -ne $ProviderId
+                )
+                if ($remainingCache.Count -ne @($runtime.RelayCache.Providers).Count) {
+                    $runtime.RelayCache = [pscustomobject][ordered]@{
+                        SchemaVersion = 1
+                        Providers = $remainingCache
+                    }
+                    $writeCacheFunction = $runtime.Functions.WriteRelayCache
+                    & $writeCacheFunction -Path $runtime.Paths.RelayCache -Cache $runtime.RelayCache
+                }
+            }.GetNewClosure()
+            $applyRelayProvidersAction = {
+                param(
+                    [AllowEmptyCollection()][object[]]$Providers,
+                    [AllowEmptyCollection()][string[]]$ChangedProviderIds = @(),
+                    [AllowEmptyCollection()][string[]]$RemovedProviderIds = @(),
+                    [bool]$TestPassed = $false
+                )
+                $changed = [Collections.Generic.HashSet[string]]::new(
+                    [StringComparer]::OrdinalIgnoreCase
+                )
+                foreach ($providerId in @($ChangedProviderIds) + @($RemovedProviderIds)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$providerId)) {
+                        $null = $changed.Add([string]$providerId)
+                    }
+                }
+                $cachedProviders = [object[]]@($runtime.RelayCache.Providers)
+                $remainingCache = [object[]]@(
+                    $cachedProviders | Where-Object {
+                        -not $changed.Contains([string]$_.ProviderId)
+                    }
+                )
+                if ($remainingCache.Count -ne $cachedProviders.Count) {
+                    $runtime.RelayCache = [pscustomobject][ordered]@{
+                        SchemaVersion = 1
+                        Providers = $remainingCache
+                    }
+                    $writeCacheFunction = $runtime.Functions.WriteRelayCache
+                    & $writeCacheFunction -Path $runtime.Paths.RelayCache -Cache $runtime.RelayCache
+                }
+                $oldStates = $runtime.RelayStates
+                $runtime.RelayProviders = [object[]]@($Providers)
+                $newStates = [ordered]@{}
+                $newStateFunction = $runtime.Functions.NewRelayState
+                foreach ($provider in @($runtime.RelayProviders)) {
+                    $providerId = [string]$provider.Id
+                    if (-not $changed.Contains($providerId) -and $null -ne $oldStates[$providerId]) {
+                        $newStates[$providerId] = $oldStates[$providerId]
+                    }
+                    else {
+                        $newStates[$providerId] = & $newStateFunction `
+                            -ProviderId $providerId -Enabled ([bool]$provider.Enabled)
+                    }
+                }
+                $runtime.RelayStates = $newStates
+                $runtime.RelayManualRefreshPending.Clear()
+                $newSchedulerFunction = $runtime.Functions.NewRelayScheduler
+                $runtime.RelayScheduler = & $newSchedulerFunction `
+                    -Providers $runtime.RelayProviders -Now ([DateTimeOffset]::UtcNow) `
+                    -MaximumConcurrency 2
+                if (@($runtime.RelayProviders | Where-Object Enabled).Count -eq 0) {
+                    & $stopRelayClient
+                    $runtime.RelayHostState = 'Disabled'
+                }
+                else {
+                    $null = & $startRelayHost ([DateTimeOffset]::UtcNow)
+                }
+                & $refreshCombinedPresentation ([DateTimeOffset]::UtcNow)
+            }.GetNewClosure()
+            $confirmRelayDeleteAction = {
+                param($Provider)
+                $name = [string]$Provider.Name
+                return [Windows.MessageBox]::Show(
+                    "Delete relay provider '$name'?",
+                    'Codex Quota Monitor',
+                    [Windows.MessageBoxButton]::YesNo,
+                    [Windows.MessageBoxImage]::Warning
+                ) -eq [Windows.MessageBoxResult]::Yes
+            }
+            $newRelayManagerControllerFunction = $functions.NewRelayManagerController
+            $runtime.RelayManagerController = & $newRelayManagerControllerFunction `
+                -View $runtime.RelayManagerView `
+                -Providers $runtime.RelayProviders `
+                -WriteProviders $writeRelayProvidersAction `
+                -ProtectSecret $protectRelaySecretAction `
+                -UnprotectSecret $unprotectRelaySecretAction `
+                -QueryProvider $queryRelayDraftAction `
+                -ApplyProviders $applyRelayProvidersAction `
+                -RemoveProviderArtifacts $removeRelayProviderArtifactsAction `
+                -ConfirmDelete $confirmRelayDeleteAction
+
             $saveSettingsFunction = $functions.WriteSettings
             $saveSettingsAction = {
                 param($Settings)
@@ -1007,6 +1182,11 @@ function Invoke-CodexQuotaMonitorRuntime {
                 param([string]$Target)
                 Start-Process -FilePath $Target | Out-Null
             }
+            $manageRelaysAction = {
+                if ($null -ne $runtime.RelayManagerController) {
+                    & $runtime.RelayManagerController.Show
+                }
+            }.GetNewClosure()
 
             $newDisplayFunction = $functions.NewDisplay
             $runtime.DisplayController = & $newDisplayFunction `
@@ -1028,7 +1208,8 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -RequestRefresh $requestRefreshAction `
                 -ExitEvent $runtime.Instance.ExitEvent `
                 -OpenTarget $openTargetAction `
-                -LogDirectory $paths.Logs
+                -LogDirectory $paths.Logs `
+                -OnManageRelays $manageRelaysAction
 
             $initializeDesktopFunction = $functions.InitializeDesktop
             & $initializeDesktopFunction `
@@ -1121,6 +1302,13 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
         if ($null -ne $runtime.Interaction) {
             try { & $runtime.Interaction.Dispose } catch { }
+        }
+        if ($null -ne $runtime.RelayManagerController) {
+            try { & $runtime.RelayManagerController.Dispose } catch { }
+            $runtime.RelayManagerView = $null
+        }
+        elseif ($null -ne $runtime.RelayManagerView) {
+            try { & $runtime.RelayManagerView.Dispose } catch { }
         }
         if ($null -ne $runtime.DisplayController) {
             try { & $runtime.DisplayController.Dispose } catch { }
