@@ -36,9 +36,22 @@ When the user expects ChatGPT subscription quota and the account uses supported 
 
 Report the health state and sanitized `LastErrorCategory`; keep the explanation bounded to the returned public health fields: `SchemaVersion`, `Status`, `PlanType`, `QuotaWindowCount`, `LastSuccessAt`, `LastErrorCategory`, `LastErrorMessage`, `ProcessId`, and `UpdatedAt`. If a required health check fails, run status once, report the safe category, and recommend or perform Repair only when fixing is in scope. Do not create an unbounded retry loop.
 
+## Relay setup and live verification
+
+Configure relay providers through the installed UI: `托盘 -> 管理中转站 -> 添加 -> 选择模板或粘贴 CC Switch 查询脚本 -> 输入 Base URL 和凭据 -> Test Script -> Save and enable`.
+
+Supported templates are Wakaka, General, New API, and Custom. Base URL is always explicit. API Key, Access Token, and User ID are entered only in password fields and are persisted with current-user DPAPI encryption. Built-in templates require HTTPS and same-origin requests; Custom requires explicit destination trust. Do not recreate this flow with a command or copy credentials from CC Switch.
+
+The default relay refresh interval is 10 minutes and global concurrency is two. Report relay `Live`, `Stale`, `AuthRequired`, `InvalidScript`, `Unavailable`, and `Disabled` states separately from official quota. A stale last-good value is not an explicit zero; only a successful extractor result may display zero. USD, CNY, request counts, tokens, and percentages are never aggregated.
+
+For a user-authorized Wakaka check, set the Base URL to `https://api.wkkapi.com`, then ask the user to enter the real credential in the UI password field and select Test Script followed by Save and enable. Run this only after the user enters credentials in the UI. Report only normalized plan/value/unit, success category, and timestamp. Never copy credentials from CC Switch.
+
+The public health projection may include `RelayProviderCount`, `RelayLiveCount`, `RelayStaleCount`, `RelayInvalidCount`, `RelayHostState`, `DisplayMode`, and `Theme` in addition to the official fields above.
+
 ## Privacy and account boundaries
 
 - Never print credentials, tokens, environment secrets, `auth.json`, provider headers, raw App Server messages, raw JSON-RPC traffic, or full logs.
+- Never print API keys, access tokens, user IDs, decrypted provider JSON, raw HTTP responses, request headers, or sidecar stdin/stdout.
 - Do not echo raw exceptions or `InnerException`. Use the sanitized health/status projection and `LastErrorCategory`.
 - ChatGPT sign-in is required for subscription quota. API-key-only and Bedrock authentication do not expose ChatGPT quota; an empty quota display in those modes is not fabricated into a value.
 - Closing the floating window (`Close`) hides it to the system tray. Choosing `Exit` from the tray stops monitoring.
