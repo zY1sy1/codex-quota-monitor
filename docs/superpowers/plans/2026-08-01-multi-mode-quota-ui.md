@@ -390,11 +390,11 @@ Expected: CRUD, trust, test preview, and redaction tests pass.
 - Create: `tests/Visual/README.md`
 - Modify: `docs/superpowers/plans/2026-08-01-multi-mode-quota-ui.md`
 
-- [ ] **Step 1: Add a deterministic capture harness**
+- [x] **Step 1: Add a deterministic capture harness**
 
 The harness launches fake official and relay data, renders `Full Overview/Full Tabs/CompactBar/Orb × Light/Dark` at 100% and 150% DPI, captures PNGs under ignored `outputs/visual`, and exits through the tray callback. It uses synthetic rows only.
 
-- [ ] **Step 2: Run automated UI and full Pester suites**
+- [x] **Step 2: Run automated UI and full Pester suites**
 
 ```powershell
 pwsh -NoLogo -NoProfile -NonInteractive -Sta -File .\build\Test.ps1 -Suite All -CI
@@ -403,11 +403,20 @@ pwsh -NoLogo -NoProfile -NonInteractive -Sta -File .\tests\Visual\Capture-QuotaM
 
 Expected: all Pester tests pass and sixteen labeled PNGs are created.
 
-- [ ] **Step 3: Inspect the matrix against locked visual rules**
+- [x] **Step 3: Inspect the matrix against locked visual rules**
 
 For every PNG confirm: no opaque white header, no hard white root border, no decorative white progress segmentation, dark mode styles title and body together, light mode remains transparent, text is readable, close button is present, and metric content is not clipped. Record pass/fail per image in the plan.
 
-- [ ] **Step 4: Commit the capture harness and verification record**
+- [x] **Step 4: Commit the capture harness and verification record**
+
+Verification record (August 3, 2026):
+
+| Theme | Scale | Full Overview | Full Tabs | CompactBar | Orb |
+|---|---:|---|---|---|---|
+| Light | 100% | PASS | PASS | PASS | PASS |
+| Light | 150% | PASS | PASS | PASS | PASS |
+| Dark | 100% | PASS | PASS | PASS | PASS |
+| Dark | 150% | PASS | PASS | PASS | PASS |
 
 ```powershell
 git add tests/Visual/Capture-QuotaMonitorMatrix.ps1 tests/Visual/README.md docs/superpowers/plans/2026-08-01-multi-mode-quota-ui.md
