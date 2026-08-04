@@ -88,6 +88,9 @@ Describe 'quota orb composition' {
             }
             $OrbView.Controls.RootBorder.CornerRadius.TopLeft | Should -Be 56
             $OrbView.Controls.RootBorder.BorderBrush.ToString() | Should -Not -BeExactly '#FFFFFFFF'
+            $OrbView.Controls.RingTrack.Width | Should -Be 76 `
+                -Because 'a 76 px box with a 6 px stroke produces the selected 35 px centerline radius'
+            $OrbView.Controls.RingTrack.Height | Should -Be 76
         }
 
         It 'renders percentage text and the matching 74 percent arc' {
