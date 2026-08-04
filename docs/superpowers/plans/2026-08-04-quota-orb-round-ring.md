@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep the quota orb's 6 px rounded progress arc perfectly circular at every percentage and supported display scale.
+**Goal:** Make the quota orb's 6 px gray track and rounded progress arc share the same 35 px centerline radius at every percentage and supported display scale.
 
-**Architecture:** Preserve the existing radius-35 `ArcSegment` geometry and fix the rendering boundary by disabling WPF `Path` stretching. Lock the behavior with a composition-level regression test, then verify the full visual matrix and complete Pester suite.
+**Architecture:** Preserve the existing radius-35 `ArcSegment` geometry and expand the WPF `Ellipse` track from 70×70 to 76×76. Its 6 px stroke will then have a 35 px centerline radius, matching the value arc; lock the dimensions with a composition-level regression test, then verify the full visual matrix and complete Pester suite.
 
 **Tech Stack:** PowerShell 7.4+, loose WPF XAML, Pester 5.7.1, WPF `RenderTargetBitmap` visual capture.
 
@@ -13,7 +13,7 @@
 ## File structure
 
 - `tests/Integration/QuotaOrbComposition.Tests.ps1` — owns composition-level assertions for the loaded orb XAML and its rendering contract.
-- `companion/UI/QuotaOrb.xaml` — defines the quota orb's 112×112 surface, 70×70 track, and progress-path rendering properties.
+- `companion/UI/QuotaOrb.xaml` — defines the quota orb's 112×112 surface, circular track, and progress-path rendering properties.
 - `outputs/visual/*.png` — ignored generated evidence for light/dark themes at 100% and 150% scale; these files are inspected but not committed.
 
 ### Task 1: Lock and fix the circular rendering contract
@@ -24,11 +24,12 @@
 
 - [ ] **Step 1: Write the failing regression assertion**
 
-In the existing `It 'loads the fixed circular visual contract'` test, add the following assertion after the root-border assertions:
+In the existing `It 'loads the fixed circular visual contract'` test, add the following assertions after the root-border assertions:
 
 ```powershell
-$OrbView.Controls.RingValue.Stretch | Should -Be ([Windows.Media.Stretch]::None) `
-    -Because 'partial arc geometry must not be stretched into an ellipse'
+$OrbView.Controls.RingTrack.Width | Should -Be 76 `
+    -Because 'a 76 px box with a 6 px stroke produces the selected 35 px centerline radius'
+$OrbView.Controls.RingTrack.Height | Should -Be 76
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -39,24 +40,19 @@ Run:
 pwsh -NoLogo -NoProfile -NonInteractive -Sta -Command "& .\build\Restore-TestDependencies.ps1; Invoke-Pester .\tests\Integration\QuotaOrbComposition.Tests.ps1"
 ```
 
-Expected: the suite fails only at the new assertion because `RingValue.Stretch` is `Fill` rather than `None`.
+Expected: the suite fails only at the new width assertion because `RingTrack.Width` is `70` rather than `76`.
 
 - [ ] **Step 3: Apply the minimal XAML fix**
 
-Add `Stretch="None"` to `RingValue` without changing its dimensions, stroke, colors, or caps:
+Change only the `RingTrack` dimensions from 70×70 to 76×76 without changing its stroke, color, or the cyan value arc:
 
 ```xml
-<Path x:Name="RingValue"
-      Width="70"
-      Height="70"
-      HorizontalAlignment="Center"
-      VerticalAlignment="Center"
-      Stretch="None"
-      Stroke="#FF58C2C7"
-      StrokeThickness="6"
-      StrokeStartLineCap="Round"
-      StrokeEndLineCap="Round"
-      IsHitTestVisible="False" />
+<Ellipse x:Name="RingTrack"
+         Width="76"
+         Height="76"
+         Stroke="#664D566A"
+         StrokeThickness="6"
+         IsHitTestVisible="False" />
 ```
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
@@ -78,7 +74,7 @@ git diff -- tests/Integration/QuotaOrbComposition.Tests.ps1 companion/UI/QuotaOr
 git diff --check
 ```
 
-Expected: one regression assertion, one XAML property, and no whitespace errors.
+Expected: two regression assertions, two XAML dimension changes, and no whitespace errors.
 
 - [ ] **Step 6: Commit the regression fix**
 
@@ -86,7 +82,7 @@ Run:
 
 ```powershell
 git add -- tests/Integration/QuotaOrbComposition.Tests.ps1 companion/UI/QuotaOrb.xaml
-git commit -m "fix: keep quota orb progress arc circular"
+git commit -m "fix: align quota orb track with progress arc"
 ```
 
 Expected: one commit containing only the test and XAML change.
@@ -148,4 +144,4 @@ git status --short
 git log -3 --oneline --decorate
 ```
 
-Expected: no whitespace errors; only `.superpowers/` may remain untracked from the approved visual-companion session; the latest implementation commit is `fix: keep quota orb progress arc circular`.
+Expected: no whitespace errors; only `.superpowers/` may remain untracked from the approved visual-companion session; the latest implementation commit is `fix: align quota orb track with progress arc`.
