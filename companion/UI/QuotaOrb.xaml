@@ -43,8 +43,8 @@
                     AutomationProperties.Name="拖动额度球" />
 
             <Ellipse x:Name="RingTrack"
-                     Width="76"
-                     Height="76"
+                     Width="70"
+                     Height="70"
                      Stroke="#664D566A"
                      StrokeThickness="6"
                      IsHitTestVisible="False" />
