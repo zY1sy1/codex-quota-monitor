@@ -3,7 +3,7 @@ function New-EmptyRelayProviderDocument {
     param()
 
     [ordered]@{
-        SchemaVersion = [int]1
+        SchemaVersion = [int]2
         Providers = [object[]]@()
     }
 }
@@ -32,7 +32,9 @@ function Get-RelayProviderPropertyNames {
     if ($InputObject -is [Collections.IDictionary]) {
         return [string[]]@(([Collections.IDictionary]$InputObject).Keys)
     }
-    return [string[]]@($InputObject.PSObject.Properties.Name)
+    return [string[]]@(
+        $InputObject.PSObject.Properties | ForEach-Object { [string]$_.Name }
+    )
 }
 
 function Test-RelayProviderExactFields {
@@ -102,7 +104,7 @@ function Test-RelayProviderInteger {
         [int]$Maximum
     )
 
-    if ($null -eq $Value -or $Value.GetType().IsEnum) {
+    if ($null -eq $Value -or $Value.GetType().IsEnum -or $Value -is [bool]) {
         return $false
     }
     if ([Type]::GetTypeCode($Value.GetType()) -notin @(
@@ -158,25 +160,135 @@ function ConvertTo-CanonicalRelayCipherText {
     }
 }
 
-function ConvertTo-CanonicalRelayProvider {
+function Test-RelayProviderSafeText {
+    param(
+        [AllowNull()][object]$Value,
+        [int]$MaximumBytes = 16384
+    )
+    if ($Value -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($Value) -gt $MaximumBytes) {
+        return $false
+    }
+    return $Value -notmatch '[\x00-\x1f\x7f]'
+}
+
+function ConvertTo-CanonicalRelayStringMap {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)]
-        [AllowNull()]
-        [object]$Provider
+        [AllowNull()][object]$Value,
+        [int]$MaximumEntries = 128,
+        [int]$MaximumStringBytes = 16384
     )
 
+    if ($null -eq $Value) {
+        return [ordered]@{}
+    }
+    if (-not (Test-RelayProviderObject -Value $Value)) {
+        return $null
+    }
+    $result = [ordered]@{}
+    foreach ($name in @(Get-RelayProviderPropertyNames -InputObject $Value)) {
+        if ($name.Length -eq 0 -or $name.Length -gt 256 -or $name -match '[\x00-\x1f\x7f]') {
+            return $null
+        }
+        $item = Get-RelayProviderField -InputObject $Value -Name $name
+        if (-not (Test-RelayProviderSafeText -Value $item -MaximumBytes $MaximumStringBytes)) {
+            return $null
+        }
+        $result[$name] = [string]$item
+    }
+    if ($result.Count -gt $MaximumEntries) {
+        return $null
+    }
+    Write-Output -NoEnumerate -InputObject $result
+}
+
+function ConvertTo-RelayOriginFingerprint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$BaseUrl)
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -notin @('http', 'https') -or [string]::IsNullOrEmpty($uri.Host) -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        return $null
+    }
+    $canonicalHost = if ($uri.HostNameType -eq [UriHostNameType]::IPv6) {
+        "[$($uri.Host)]"
+    }
+    else {
+        $uri.IdnHost
+    }
+    $port = if ($uri.IsDefaultPort) {
+        if ($uri.Scheme -eq 'https') { 443 } else { 80 }
+    }
+    else {
+        $uri.Port
+    }
+    return "$($uri.Scheme.ToLowerInvariant())://$($canonicalHost.ToLowerInvariant()):$port"
+}
+
+function ConvertTo-CanonicalRelayRequestDefinition {
+    [CmdletBinding()]
+    param([AllowNull()][object]$RequestDefinition)
+
+    if (-not (Test-RelayProviderExactFields -InputObject $RequestDefinition -Expected @(
+        'Method', 'Path', 'Query', 'Headers', 'Body'
+    ))) {
+        return $null
+    }
+    $methodValue = Get-RelayProviderField -InputObject $RequestDefinition -Name 'Method'
+    $pathValue = Get-RelayProviderField -InputObject $RequestDefinition -Name 'Path'
+    $bodyValue = Get-RelayProviderField -InputObject $RequestDefinition -Name 'Body'
+    if ($methodValue -isnot [string] -or $pathValue -isnot [string]) {
+        return $null
+    }
+    $method = $methodValue.Trim().ToUpperInvariant()
+    $path = $pathValue.Trim()
+    if ($method -notin @('GET', 'POST', 'PUT') -or
+        [string]::IsNullOrWhiteSpace($path) -or $path.Length -gt 4096 -or
+        $path -match '^(?i)(https?:|//)' -or $path -match '[?#\x00-\x1f\x7f\\]') {
+        return $null
+    }
+    if ($null -ne $bodyValue -and -not (Test-RelayProviderSafeText -Value $bodyValue -MaximumBytes 65536)) {
+        return $null
+    }
+    $query = ConvertTo-CanonicalRelayStringMap -Value (
+        Get-RelayProviderField -InputObject $RequestDefinition -Name 'Query'
+    )
+    $headers = ConvertTo-CanonicalRelayStringMap -Value (
+        Get-RelayProviderField -InputObject $RequestDefinition -Name 'Headers'
+    )
+    if ($null -eq $query -or $null -eq $headers) {
+        return $null
+    }
+    [ordered]@{
+        Method = $method
+        Path = $path
+        Query = $query
+        Headers = $headers
+        Body = if ($null -eq $bodyValue) { $null } else { [string]$bodyValue }
+    }
+}
+
+function Test-RelayExtractorFunctionExpression {
+    param([AllowNull()][string]$Script)
+    if ([string]::IsNullOrWhiteSpace($Script)) {
+        return $false
+    }
+    $trimmed = $Script.Trim()
+    return $trimmed -match '^(?s)(?:async\s+)?function\b' -or
+        $trimmed -match '^(?s)(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>'
+}
+
+function ConvertTo-CanonicalRelayProvider {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Provider)
+
     $providerFields = @(
-        'Id',
-        'Name',
-        'Enabled',
-        'BaseUrl',
-        'TemplateType',
-        'Script',
-        'TimeoutSeconds',
-        'IntervalMinutes',
-        'TrustedDestination',
-        'Secrets'
+        'Id', 'Name', 'Enabled', 'ProviderKind', 'BaseUrl', 'RequestDefinition',
+        'ExtractorScript', 'TimeoutSeconds', 'IntervalMinutes', 'TrustedDestination', 'Secrets'
     )
     if (-not (Test-RelayProviderExactFields -InputObject $Provider -Expected $providerFields)) {
         return $null
@@ -213,19 +325,36 @@ function ConvertTo-CanonicalRelayProvider {
         -not [Uri]::TryCreate($baseUrl, [UriKind]::Absolute, [ref]$parsedUrl) -or
         $parsedUrl.Scheme -notin @('http', 'https') -or
         [string]::IsNullOrEmpty($parsedUrl.Host) -or
-        -not [string]::IsNullOrEmpty($parsedUrl.UserInfo)) {
+        -not [string]::IsNullOrEmpty($parsedUrl.UserInfo) -or
+        -not [string]::IsNullOrEmpty($parsedUrl.Fragment) -or
+        -not [string]::IsNullOrEmpty($parsedUrl.Query)) {
         return $null
     }
 
-    $templateType = Get-RelayProviderField -InputObject $Provider -Name 'TemplateType'
-    if ($templateType -isnot [string] -or
-        $templateType -cnotin @('Wakaka', 'General', 'NewApi', 'Custom')) {
+    $providerKind = Get-RelayProviderField -InputObject $Provider -Name 'ProviderKind'
+    if ($providerKind -isnot [string] -or $providerKind -cnotin @('Generic', 'Custom')) {
         return $null
     }
 
-    $script = Get-RelayProviderField -InputObject $Provider -Name 'Script'
-    if ($script -isnot [string] -or [string]::IsNullOrWhiteSpace($script) -or
-        [Text.Encoding]::UTF8.GetByteCount($script) -gt 262144) {
+    $extractorScript = Get-RelayProviderField -InputObject $Provider -Name 'ExtractorScript'
+    if ($extractorScript -isnot [string] -or [string]::IsNullOrWhiteSpace($extractorScript) -or
+        [Text.Encoding]::UTF8.GetByteCount($extractorScript) -gt 262144) {
+        return $null
+    }
+
+    $requestDefinition = $null
+    if ($providerKind -ceq 'Generic') {
+        if (-not (Test-RelayExtractorFunctionExpression -Script $extractorScript)) {
+            return $null
+        }
+        $requestDefinition = ConvertTo-CanonicalRelayRequestDefinition (
+            Get-RelayProviderField -InputObject $Provider -Name 'RequestDefinition'
+        )
+        if ($null -eq $requestDefinition) {
+            return $null
+        }
+    }
+    elseif ($null -ne (Get-RelayProviderField -InputObject $Provider -Name 'RequestDefinition')) {
         return $null
     }
 
@@ -238,11 +367,12 @@ function ConvertTo-CanonicalRelayProvider {
 
     $trustedDestination = Get-RelayProviderField -InputObject $Provider -Name 'TrustedDestination'
     if ($null -ne $trustedDestination) {
-        if ($trustedDestination -isnot [string]) {
+        if ($trustedDestination -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($trustedDestination)) {
             return $null
         }
-        $trustedDestination = $trustedDestination.Trim()
-        if ($trustedDestination.Length -eq 0 -or $trustedDestination.Length -gt 4096) {
+        $trustedDestination = ConvertTo-RelayOriginFingerprint -BaseUrl $trustedDestination.Trim()
+        if ($null -eq $trustedDestination) {
             return $null
         }
     }
@@ -263,50 +393,193 @@ function ConvertTo-CanonicalRelayProvider {
         $canonicalSecrets[$secretName] = $cipherText
     }
 
-    $canonical = [ordered]@{
+    [ordered]@{
         Id = $parsedId.ToString('D')
         Name = $name
         Enabled = [bool]$enabled
+        ProviderKind = $providerKind
         BaseUrl = $baseUrl
-        TemplateType = $templateType
-        Script = $script
+        RequestDefinition = $requestDefinition
+        ExtractorScript = $extractorScript
         TimeoutSeconds = [int]$timeout
         IntervalMinutes = [int]$interval
         TrustedDestination = $trustedDestination
         Secrets = $canonicalSecrets
     }
-    Write-Output -NoEnumerate -InputObject $canonical
+}
+
+function ConvertFrom-RelayJavascriptString {
+    param([Parameter(Mandatory)][string]$Value)
+    try {
+        return ('"' + $Value + '"' | ConvertFrom-Json -ErrorAction Stop)
+    }
+    catch {
+        if ($Value -match '[\\\"]') {
+            return $null
+        }
+        return $Value
+    }
+}
+
+function Get-RelayLegacyStringField {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $escapedName = [regex]::Escape($Name)
+    $doubleQuote = [char]34
+    $singleQuote = [char]39
+    $doublePattern = '(?s)(?:\b' + $escapedName + '\b|' + $doubleQuote + $escapedName + $doubleQuote + '|' +
+        $singleQuote + $escapedName + $singleQuote + ')\s*:\s*' + $doubleQuote +
+        '(?<value>(?:\\.|[^' + $doubleQuote + ']*)*)' + $doubleQuote
+    $match = [regex]::Match($Source, $doublePattern)
+    if (-not $match.Success) {
+        $singlePattern = '(?s)(?:\b' + $escapedName + '\b|' + $doubleQuote + $escapedName + $doubleQuote + '|' +
+            $singleQuote + $escapedName + $singleQuote + ')\s*:\s*' + $singleQuote +
+            '(?<value>(?:\\.|[^' + $singleQuote + ']*)*)' + $singleQuote
+        $match = [regex]::Match($Source, $singlePattern)
+    }
+    if (-not $match.Success) { return $null }
+    ConvertFrom-RelayJavascriptString -Value $match.Groups['value'].Value
+}
+
+function ConvertFrom-RelayLegacyScript {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Script,
+        [Parameter(Mandatory)][string]$BaseUrl,
+        [Parameter(Mandatory)][string]$TemplateType
+    )
+
+    if ($TemplateType -eq 'Custom') { return $null }
+    $requestMatch = [regex]::Match($Script, '(?s)\brequest\s*:\s*\{(?<request>.*?)\}\s*,\s*extractor\s*:')
+    if (-not $requestMatch.Success) { return $null }
+    $requestText = $requestMatch.Groups['request'].Value
+    $url = Get-RelayLegacyStringField -Source $requestText -Name 'url'
+    $method = Get-RelayLegacyStringField -Source $requestText -Name 'method'
+    if ($null -eq $url -or $null -eq $method -or $url -notmatch '^\{\{baseUrl\}\}(?<path>/.*)?$') {
+        return $null
+    }
+    $path = if ($null -eq $Matches.path -or [string]::IsNullOrEmpty($Matches.path)) { '/' } else { $Matches.path }
+
+    $headers = [ordered]@{}
+    $headersMatch = [regex]::Match(
+        $requestText,
+        '(?s)\bheaders\s*:\s*\{(?<headers>.*?)}\s*(?:,\s*body\s*:|$)'
+    )
+    if ($headersMatch.Success) {
+        $doubleQuote = [char]34
+        $singleQuote = [char]39
+        $headerPattern = '(?s)(?:' + $doubleQuote + '(?<name>(?:\\.|[^' + $doubleQuote + ']*)*)' + $doubleQuote +
+            '|(?<name>[A-Za-z0-9!#$%&*+.^_|\x60~-]+))\s*:\s*' + $doubleQuote +
+            '(?<value>(?:\\.|[^' + $doubleQuote + ']*)*)' + $doubleQuote
+        $singleHeaderPattern = '(?s)(?:' + $singleQuote + '(?<name>(?:\\.|[^' + $singleQuote + ']*)*)' + $singleQuote +
+            '|(?<name>[A-Za-z0-9!#$%&*+.^_|\x60~-]+))\s*:\s*' + $singleQuote +
+            '(?<value>(?:\\.|[^' + $singleQuote + ']*)*)' + $singleQuote
+        $headersFound = [regex]::Matches($headersMatch.Groups['headers'].Value, $headerPattern)
+        if ($headersFound.Count -eq 0) {
+            $headersFound = [regex]::Matches($headersMatch.Groups['headers'].Value, $singleHeaderPattern)
+        }
+        foreach ($header in $headersFound) {
+            $headerName = ConvertFrom-RelayJavascriptString -Value $header.Groups['name'].Value
+            $headerValue = ConvertFrom-RelayJavascriptString -Value $header.Groups['value'].Value
+            if ($null -eq $headerName -or $null -eq $headerValue) { return $null }
+            $headers[$headerName] = $headerValue
+        }
+    }
+
+    $body = $null
+    $doubleQuote = [char]34
+    $singleQuote = [char]39
+    $bodyPattern = '(?s)\bbody\s*:\s*(?<body>' + $doubleQuote + '(?:\\.|[^' + $doubleQuote + '])*' + $doubleQuote +
+        '|' + $singleQuote + '(?:\\.|[^' + $singleQuote + '])*' + $singleQuote + '|null|undefined)'
+    $bodyMatch = [regex]::Match($requestText, $bodyPattern)
+    if ($bodyMatch.Success -and $bodyMatch.Groups['body'].Value -notin @('null', 'undefined')) {
+        $bodyText = $bodyMatch.Groups['body'].Value
+        $body = ConvertFrom-RelayJavascriptString -Value $bodyText.Substring(1, $bodyText.Length - 2)
+        if ($null -eq $body) { return $null }
+    }
+
+    $extractorIndex = $Script.IndexOf('extractor:', [StringComparison]::Ordinal)
+    if ($extractorIndex -lt 0) { return $null }
+    $extractor = $Script.Substring($extractorIndex + 'extractor:'.Length).Trim()
+    if ($extractor.EndsWith('})')) {
+        $extractor = $extractor.Substring(0, $extractor.Length - 2).Trim()
+    }
+    elseif ($extractor.EndsWith('}')) {
+        $extractor = $extractor.Substring(0, $extractor.Length - 1).Trim()
+    }
+    if (-not (Test-RelayExtractorFunctionExpression $extractor)) { return $null }
+
+    [ordered]@{
+        RequestDefinition = [ordered]@{
+            Method = $method
+            Path = $path
+            Query = [ordered]@{}
+            Headers = $headers
+            Body = $body
+        }
+        ExtractorScript = $extractor
+    }
+}
+
+function ConvertTo-CanonicalRelayLegacyProvider {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Provider)
+
+    $expected = @('Id','Name','Enabled','BaseUrl','TemplateType','Script','TimeoutSeconds','IntervalMinutes','TrustedDestination','Secrets')
+    if (-not (Test-RelayProviderExactFields -InputObject $Provider -Expected $expected)) { return $null }
+    $baseUrl = [string](Get-RelayProviderField $Provider 'BaseUrl')
+    $template = [string](Get-RelayProviderField $Provider 'TemplateType')
+    $script = [string](Get-RelayProviderField $Provider 'Script')
+    $converted = ConvertFrom-RelayLegacyScript -Script $script -BaseUrl $baseUrl -TemplateType $template
+    $providerKind = 'Custom'
+    $requestDefinition = $null
+    $extractor = $script
+    $trust = $null
+    if ($null -ne $converted) {
+        $providerKind = 'Generic'
+        $requestDefinition = $converted.RequestDefinition
+        $extractor = $converted.ExtractorScript
+        $trust = Get-RelayProviderField $Provider 'TrustedDestination'
+        if ([string]::IsNullOrWhiteSpace([string]$trust)) {
+            $trust = ConvertTo-RelayOriginFingerprint -BaseUrl $baseUrl.Trim()
+        }
+    }
+    [ordered]@{
+        Id = Get-RelayProviderField $Provider 'Id'
+        Name = Get-RelayProviderField $Provider 'Name'
+        Enabled = Get-RelayProviderField $Provider 'Enabled'
+        ProviderKind = $providerKind
+        BaseUrl = $baseUrl
+        RequestDefinition = $requestDefinition
+        ExtractorScript = $extractor
+        TimeoutSeconds = Get-RelayProviderField $Provider 'TimeoutSeconds'
+        IntervalMinutes = Get-RelayProviderField $Provider 'IntervalMinutes'
+        TrustedDestination = $trust
+        Secrets = Get-RelayProviderField $Provider 'Secrets'
+    }
 }
 
 function ConvertTo-CanonicalRelayProviderDocument {
     [CmdletBinding()]
-    param(
-        [Parameter(Position = 0)]
-        [AllowNull()]
-        [object]$Document
-    )
+    param([AllowNull()][object]$Document)
 
-    if (-not (Test-RelayProviderExactFields -InputObject $Document -Expected @('SchemaVersion', 'Providers'))) {
+    if (-not (Test-RelayProviderExactFields -InputObject $Document -Expected @('SchemaVersion','Providers'))) {
         return $null
     }
-    $schemaVersion = Get-RelayProviderField -InputObject $Document -Name 'SchemaVersion'
-    if (-not (Test-RelayProviderInteger -Value $schemaVersion -Minimum 1 -Maximum 1)) {
+    $schemaVersion = Get-RelayProviderField $Document 'SchemaVersion'
+    if (-not (Test-RelayProviderInteger -Value $schemaVersion -Minimum 2 -Maximum 2)) {
         return $null
     }
-    $providers = Get-RelayProviderField -InputObject $Document -Name 'Providers'
+    $providers = Get-RelayProviderField $Document 'Providers'
     if ($null -eq $providers -or $providers -is [string] -or
-        $providers -is [Collections.IDictionary] -or
-        $providers -isnot [Collections.IEnumerable]) {
+        $providers -is [Collections.IDictionary] -or $providers -isnot [Collections.IEnumerable]) {
         return $null
     }
     $providerItems = @($providers)
-    if ($providerItems.Count -gt 100) {
-        return $null
-    }
-
-    $seenIds = [Collections.Generic.HashSet[string]]::new(
-        [StringComparer]::OrdinalIgnoreCase
-    )
+    if ($providerItems.Count -gt 100) { return $null }
+    $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $canonicalProviders = [Collections.Generic.List[object]]::new()
     foreach ($provider in $providerItems) {
         $canonical = ConvertTo-CanonicalRelayProvider -Provider $provider
@@ -315,32 +588,55 @@ function ConvertTo-CanonicalRelayProviderDocument {
         }
         $canonicalProviders.Add($canonical)
     }
-
-    $canonicalDocument = [ordered]@{
-        SchemaVersion = [int]1
+    [ordered]@{
+        SchemaVersion = [int]2
         Providers = [object[]]$canonicalProviders.ToArray()
     }
-    Write-Output -NoEnumerate -InputObject $canonicalDocument
+}
+
+function ConvertTo-CanonicalRelayProviderDocumentFromLegacy {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Document)
+
+    if (-not (Test-RelayProviderExactFields -InputObject $Document -Expected @('SchemaVersion','Providers'))) {
+        return $null
+    }
+    $schemaVersion = Get-RelayProviderField $Document 'SchemaVersion'
+    if (-not (Test-RelayProviderInteger -Value $schemaVersion -Minimum 1 -Maximum 1)) { return $null }
+    $providers = Get-RelayProviderField $Document 'Providers'
+    if ($null -eq $providers -or $providers -is [string] -or
+        $providers -is [Collections.IDictionary] -or $providers -isnot [Collections.IEnumerable]) {
+        return $null
+    }
+    $items = @($providers)
+    if ($items.Count -gt 100) { return $null }
+    $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $canonicalProviders = [Collections.Generic.List[object]]::new()
+    foreach ($provider in $items) {
+        $migrated = ConvertTo-CanonicalRelayLegacyProvider -Provider $provider
+        if ($null -eq $migrated) { continue }
+        $canonical = ConvertTo-CanonicalRelayProvider -Provider $migrated
+        if ($null -ne $canonical -and $seenIds.Add([string]$canonical.Id)) {
+            $canonicalProviders.Add($canonical)
+        }
+    }
+    [ordered]@{
+        SchemaVersion = [int]2
+        Providers = [object[]]$canonicalProviders.ToArray()
+    }
 }
 
 function ConvertTo-RelayProviderJson {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory, Position = 0)]
-        [object]$Document
-    )
-
-    return $Document | ConvertTo-Json -Depth 8 -Compress -ErrorAction Stop
+    param([Parameter(Mandatory)][object]$Document)
+    return $Document | ConvertTo-Json -Depth 12 -Compress -ErrorAction Stop
 }
 
 function Write-CanonicalRelayProviderFile {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position = 0)]
-        [string]$Path,
-
-        [Parameter(Mandatory, Position = 1)]
-        [object]$Document
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Document
     )
 
     $directory = [IO.Path]::GetDirectoryName($Path)
@@ -351,100 +647,75 @@ function Write-CanonicalRelayProviderFile {
         $json = ConvertTo-RelayProviderJson -Document $Document
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
         $stream = [IO.FileStream]::new(
-            $temporaryPath,
-            [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None,
-            4096,
-            [IO.FileOptions]::WriteThrough
+            $temporaryPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+            [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough
         )
         try {
             $stream.Write($bytes, 0, $bytes.Length)
             $stream.Flush($true)
         }
-        finally {
-            $stream.Dispose()
-        }
-
+        finally { $stream.Dispose() }
         if ([IO.File]::Exists($Path)) {
             $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
             Set-Acl -LiteralPath $temporaryPath -AclObject $acl -ErrorAction Stop
             [IO.File]::Move($temporaryPath, $Path, $true)
         }
-        else {
-            [IO.File]::Move($temporaryPath, $Path)
-        }
+        else { [IO.File]::Move($temporaryPath, $Path) }
     }
     finally {
-        if ([IO.File]::Exists($temporaryPath)) {
-            [IO.File]::Delete($temporaryPath)
-        }
+        if ([IO.File]::Exists($temporaryPath)) { [IO.File]::Delete($temporaryPath) }
     }
 }
 
 function Read-RelayProviderStore {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position = 0)]
-        [string]$Path,
-
-        [Parameter(Position = 1)]
-        [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Position = 1)][DateTimeOffset]$Now = [DateTimeOffset]::UtcNow
     )
 
     $fullPath = [IO.Path]::GetFullPath($Path)
     $mutex = Enter-MonitorSettingsMutex -Path $fullPath
     try {
-        if (-not [IO.File]::Exists($fullPath)) {
-            return New-EmptyRelayProviderDocument
-        }
+        if (-not [IO.File]::Exists($fullPath)) { return New-EmptyRelayProviderDocument }
         $json = [IO.File]::ReadAllText($fullPath)
         $canonical = $null
         try {
             $document = $json | ConvertFrom-Json -ErrorAction Stop
-            $canonical = ConvertTo-CanonicalRelayProviderDocument -Document $document
+            $schemaVersion = Get-RelayProviderField $document 'SchemaVersion'
+            if (Test-RelayProviderInteger -Value $schemaVersion -Minimum 2 -Maximum 2) {
+                $canonical = ConvertTo-CanonicalRelayProviderDocument -Document $document
+            }
+            elseif (Test-RelayProviderInteger -Value $schemaVersion -Minimum 1 -Maximum 1) {
+                $canonical = ConvertTo-CanonicalRelayProviderDocumentFromLegacy -Document $document
+            }
         }
-        catch {
-            $canonical = $null
-        }
+        catch { $canonical = $null }
         if ($null -eq $canonical) {
             $null = Move-CorruptMonitorSettings -Path $fullPath -Now $Now
             return New-EmptyRelayProviderDocument
         }
-
         if ($json -cne (ConvertTo-RelayProviderJson -Document $canonical)) {
             Write-CanonicalRelayProviderFile -Path $fullPath -Document $canonical
         }
         return $canonical
     }
-    finally {
-        Exit-MonitorSettingsMutex -Mutex $mutex
-    }
+    finally { Exit-MonitorSettingsMutex -Mutex $mutex }
 }
 
 function Write-RelayProviderStore {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position = 0)]
-        [string]$Path,
-
-        [Parameter(Mandatory, Position = 1)]
-        [object]$Document
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Document
     )
 
     $canonical = ConvertTo-CanonicalRelayProviderDocument -Document $Document
     if ($null -eq $canonical) {
-        throw [ArgumentException]::new(
-            'Relay provider document does not match the supported schema.'
-        )
+        throw [ArgumentException]::new('Relay provider document does not match the supported schema.')
     }
-
     $fullPath = [IO.Path]::GetFullPath($Path)
     $mutex = Enter-MonitorSettingsMutex -Path $fullPath
-    try {
-        Write-CanonicalRelayProviderFile -Path $fullPath -Document $canonical
-    }
-    finally {
-        Exit-MonitorSettingsMutex -Mutex $mutex
-    }
+    try { Write-CanonicalRelayProviderFile -Path $fullPath -Document $canonical }
+    finally { Exit-MonitorSettingsMutex -Mutex $mutex }
 }

@@ -8,9 +8,7 @@ use std::{
 };
 
 use relay_quota_host::{
-    destination::validate_destination,
-    http_client::execute_request,
-    protocol::{SanitizedError, TemplateType},
+    destination::validate_destination, http_client::execute_request, protocol::SanitizedError,
     script::ScriptRequest,
 };
 
@@ -123,10 +121,9 @@ fn run(
 ) -> Result<relay_quota_host::http_client::HttpResponse, relay_quota_host::protocol::SanitizedError>
 {
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &server.origin,
         &request.url,
-        None,
+        Some(server.origin.as_str()),
     ));
     execute_request(&destination, request, timeout_ms)
 }
@@ -168,10 +165,9 @@ fn rejects_invalid_methods_and_headers_without_contacting_the_server() {
     listener.set_nonblocking(true).unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &origin,
         &format!("{origin}/usage"),
-        None,
+        Some(origin.as_str()),
     ));
 
     let invalid_method = ScriptRequest {
@@ -208,10 +204,9 @@ fn rejects_a_request_url_that_differs_from_the_validated_url_without_contact() {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let validated_url = format!("{origin}/validated");
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &origin,
         &validated_url,
-        None,
+        Some(origin.as_str()),
     ));
     let mismatched = request(format!("{origin}/different"));
 
@@ -228,10 +223,9 @@ fn rejects_zero_and_extreme_timeouts_without_contact() {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let scripted_request = request(format!("{origin}/usage"));
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &origin,
         &scripted_request.url,
-        None,
+        Some(origin.as_str()),
     ));
 
     for timeout_ms in [0, u64::MAX] {
@@ -273,10 +267,9 @@ fn classifies_a_timeout_while_streaming_the_response_body() {
     let origin = format!("http://{address}");
     let scripted_request = request(format!("{origin}/slow-body"));
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &origin,
         &scripted_request.url,
-        None,
+        Some(origin.as_str()),
     ));
 
     let started = Instant::now();
@@ -307,10 +300,9 @@ fn rejects_oversized_content_length_before_waiting_for_the_body() {
     let origin = format!("http://{address}");
     let scripted_request = request(format!("{origin}/large"));
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &origin,
         &scripted_request.url,
-        None,
+        Some(origin.as_str()),
     ));
 
     let started = Instant::now();
@@ -427,10 +419,9 @@ fn classifies_a_local_plaintext_endpoint_as_tls_when_contacted_over_https() {
     let origin = format!("https://{address}");
     let scripted_request = request(format!("{origin}/not-tls"));
     let destination = expect_ok(validate_destination(
-        TemplateType::General,
         &origin,
         &scripted_request.url,
-        None,
+        Some(origin.as_str()),
     ));
 
     let error = execute_request(&destination, &scripted_request, 2_000).unwrap_err();

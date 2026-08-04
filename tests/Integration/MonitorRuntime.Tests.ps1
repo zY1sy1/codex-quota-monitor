@@ -38,11 +38,15 @@ Describe 'Codex quota monitor production composition' {
             Name = 'Existing relay'
             Enabled = $false
             BaseUrl = 'https://relay.example'
-            TemplateType = 'General'
-            Script = 'fixture'
+            ProviderKind = 'Generic'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'GET'; Path = '/usage'; Query = [pscustomobject][ordered]@{}
+                Headers = [pscustomobject][ordered]@{}; Body = $null
+            }
+            ExtractorScript = 'function(response){return {remaining:response.balance};}'
             TimeoutSeconds = 10
             IntervalMinutes = 15
-            TrustedDestination = $null
+            TrustedDestination = 'https://relay.example:443'
             Secrets = [pscustomobject]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
         }
 
@@ -77,7 +81,7 @@ Describe 'Codex quota monitor production composition' {
         $overrides = [ordered]@{
             ReadRelayProviders = {
                 param($Path)
-                [pscustomobject]@{ SchemaVersion = 1; Providers = @($existingRelayProvider) }
+                [pscustomobject]@{ SchemaVersion = 2; Providers = @($existingRelayProvider) }
             }.GetNewClosure()
             ReadRelayCache = {
                 param($Path)

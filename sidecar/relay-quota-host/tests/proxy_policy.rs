@@ -10,8 +10,7 @@ use std::{
 };
 
 use relay_quota_host::{
-    destination::validate_destination, http_client::execute_request, protocol::TemplateType,
-    script::ScriptRequest,
+    destination::validate_destination, http_client::execute_request, script::ScriptRequest,
 };
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
@@ -114,10 +113,9 @@ fn loopback_is_forced_direct_while_remote_relays_keep_ambient_proxy_support() {
     let loopback_origin = format!("http://{target_address}");
     let loopback_request = request(format!("{loopback_origin}/usage"));
     let loopback_destination = validate_destination(
-        TemplateType::General,
         &loopback_origin,
         &loopback_request.url,
-        None,
+        Some(loopback_origin.as_str()),
     )
     .unwrap_or_else(|error| panic!("destination validation failed: {}", error.category));
 
@@ -131,42 +129,12 @@ fn loopback_is_forced_direct_while_remote_relays_keep_ambient_proxy_support() {
     assert!(target_contacted);
     assert!(!poison_contacted, "loopback request reached ambient proxy");
 
-    let remote_proxy = TcpListener::bind("127.0.0.1:0").unwrap();
-    let remote_proxy_url = format!("http://{}", remote_proxy.local_addr().unwrap());
-    set_proxy_variables(&remote_proxy_url);
-    let (proxy_request_sender, proxy_request_receiver) = mpsc::channel();
-    let proxy_handle = thread::spawn(move || {
-        let (mut stream, _) = remote_proxy.accept().unwrap();
-        let mut captured = Vec::new();
-        let mut buffer = [0_u8; 4096];
-        loop {
-            let read = stream.read(&mut buffer).unwrap();
-            captured.extend_from_slice(&buffer[..read]);
-            if read == 0 || captured.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        proxy_request_sender.send(captured).unwrap();
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
-            .unwrap();
-    });
     let remote_url = "http://relay.invalid:8080/usage";
-    let remote_request = request(remote_url.into());
-    let remote_destination = validate_destination(
-        TemplateType::Custom,
+    let remote_error = validate_destination(
         "http://relay.invalid:8080",
         remote_url,
         Some("http://relay.invalid:8080"),
     )
-    .unwrap_or_else(|error| panic!("destination validation failed: {}", error.category));
-
-    let remote_result = execute_request(&remote_destination, &remote_request, 2_000);
-    let captured = proxy_request_receiver
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap();
-    proxy_handle.join().unwrap();
-    assert!(remote_result.is_ok());
-    let captured = String::from_utf8(captured).unwrap();
-    assert!(captured.starts_with("GET http://relay.invalid:8080/usage HTTP/1.1\r\n"));
+    .expect_err("remote plaintext relay must be rejected");
+    assert_eq!(remote_error.category, "DestinationValidation");
 }

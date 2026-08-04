@@ -74,22 +74,32 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 从托盘打开以下流程：
 
 ```text
-托盘 → 管理中转站 → 添加 → 选择模板或粘贴 CC Switch 查询脚本
-→ 输入 Base URL 和凭据 → 测试脚本 → 保存并启用
+托盘 → 管理中转站 → 添加 → 选择 Generic 或 Custom
+→ 输入 Base URL、请求定义和凭据 → 测试 provider → 保存并启用
 ```
 
-内置模板包括：
+通用中转站 provider 有两种模式：
 
-- `Wakaka`：查询钱包或订阅套餐，通常使用 API Key；
-- `General`：查询通用余额接口；
-- `New API`：使用 Access Token，并可填写 User ID；
-- `Custom`：粘贴兼容 CC Switch 的查询脚本。
+- `Generic`：用结构化请求定义配置任意合法的第三方 API，支持 `GET`、`POST`、`PUT`、相对 `Path`、Query、Headers、Body，以及独立的 extractor 函数；
+- `Custom`：粘贴完整的兼容 CC Switch 请求/提取脚本，作为高级模式。
+
+内置预设只是可编辑的起点，不再决定网络目标或安全策略：
+
+- `Wakaka / v1/usage`：钱包或套餐查询，通常使用 API Key；
+- `通用余额 / user/balance`（旧 General）：通用余额接口；
+- `New API / api/user/self`：使用 Access Token，并可填写 User ID。
+
+新写入的 provider 文件使用 `SchemaVersion = 2`。Generic provider 的主要字段是 `ProviderKind`、`BaseUrl`、`RequestDefinition` 和 `ExtractorScript`；Query、Headers 必须是字符串键值对象，Body 是可选文本。请求定义只允许以下受控占位符：`{{baseUrl}}`、`{{apiKey}}`、`{{accessToken}}` 和 `{{userId}}`。
+
+已有的 Schema 1 文件会在读取时按 provider 独立迁移；迁移失败的单个 provider 会降级为 Custom 并保留原脚本，不会阻断其他 provider 或官方额度。
 
 Base URL、API Key、Access Token 和 User ID 只在管理窗口的密码输入框中填写。保存时使用当前 Windows 用户 DPAPI 加密，`relay-providers.json` 只保存密文和经过规范化的配置，不保存 API key、Access Token、User ID 或其他明文凭据。
 
-内置模板要求 HTTPS，并限制请求到 Base URL 的同源目的地；`Custom` 可以使用明确的自定义地址，但第一次启用或地址发生实质变化时必须确认目的地信任。信任提示只显示规范化后的 scheme、host 和 port，不显示路径、查询参数或凭据。
+所有 provider 都必须使用明确的目标地址信任。请求 Path 必须保持 Base URL 的 origin；信任值规范化为 `scheme://host:port`，不包含路径、查询参数或凭据。HTTPS 可用于远程目标，明文 HTTP 只允许本机回环地址；重定向不会自动跨到未信任 origin。首次测试新目标或修改 origin 后，按 UI 提示确认目标即可。
 
-“测试脚本”只执行一次手动验证并显示脱敏错误或归一化结果；“保存并启用”才会写入配置并加入自动调度。默认刷新间隔为 10 分钟，全局并发上限为 2；间隔设为 0 可以关闭该中转站的自动查询，但仍可手动测试。
+“测试 provider”（旧界面称“测试脚本”）只执行一次手动验证并显示脱敏错误或归一化结果；“保存并启用”才会写入配置并加入自动调度。默认刷新间隔为 10 分钟，全局并发上限为 2；间隔设为 0 可以关闭该中转站的自动查询，但仍可手动测试。单个 extractor 可以返回一个余额对象或多个套餐对象；不同单位只展示，不跨单位求和或比较。
+
+完整的 schema 2 迁移规则和可复制的 GET/POST 配置示例见 [`docs/relay-provider-migration.md`](docs/relay-provider-migration.md) 和 [`docs/examples/generic-relay-provider.json`](docs/examples/generic-relay-provider.json)。
 
 每个中转站独立显示 `Live`、`Stale`、`AuthRequired`、`InvalidScript`、`Unavailable` 或 `Disabled`。网络错误、限流和超时会保留最后一次成功的归一化结果，并标记为“过期”；没有成功结果时不会伪造数字零。只有 extractor 明确返回的成功显式零值才显示为零。USD、CNY、请求数、Token 数和百分比不混合求和或比较。
 
@@ -107,7 +117,7 @@ Base URL、API Key、Access Token 和 User ID 只在管理窗口的密码输入�
 
 安装目录包含 `Bin\relay-quota-host.exe`、旁边的 SHA-256 清单、`Presets\relay-usage.json` 和 `ThirdPartyNotices.txt`。运行期间只把最后成功的归一化结果写入 `data\relay-cache.json`，用于重启后的过期显示。
 
-不会把 API key、Access Token、User ID、解密后的 provider JSON、原始 HTTP 响应、请求头、替换凭据后的脚本、sidecar JSONL 或完整日志写入日志、截图、健康状态或提交；也不会从 CC Switch 自动读取凭据。真实 Wakaka 验证必须由用户在 UI 密码框中输入凭据。
+不会把 API key、Access Token、User ID、解密后的 provider JSON、原始 HTTP 响应、请求头、替换凭据后的脚本、sidecar JSONL 或完整日志写入日志、截图、健康状态或提交；也不会从 CC Switch 自动读取凭据。真实第三方 provider 验证必须由用户在 UI 密码框中输入凭据。
 
 ## 开机启动
 

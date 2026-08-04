@@ -2,7 +2,7 @@ use std::{cell::Cell, fmt, net::IpAddr};
 
 use url::{Host, SyntaxViolation, Url};
 
-use crate::protocol::{SanitizedError, TemplateType};
+use crate::protocol::SanitizedError;
 
 #[derive(Clone)]
 pub struct ValidatedDestination {
@@ -55,30 +55,24 @@ struct EffectiveOrigin {
 }
 
 pub fn validate_destination(
-    template_type: TemplateType,
     base_url: &str,
     request_url: &str,
     trusted_destination: Option<&str>,
 ) -> Result<ValidatedDestination, SanitizedError> {
-    let (_, base_origin) = parse_http_origin(base_url)?;
+    let (base, base_origin) = parse_http_origin(base_url)?;
     let (url, request_origin) = parse_http_origin(request_url)?;
 
-    match template_type {
-        TemplateType::Custom => {
-            if trusted_destination != Some(request_origin.fingerprint.as_str()) {
-                return Err(destination_trust_required(
-                    &request_origin.host,
-                    &request_origin.fingerprint,
-                ));
-            }
-        }
-        TemplateType::Wakaka | TemplateType::General | TemplateType::NewApi => {
-            if (request_origin.scheme != "https" && !request_origin.loopback)
-                || request_origin != base_origin
-            {
-                return Err(destination_validation_error());
-            }
-        }
+    if base.query().is_some()
+        || request_origin != base_origin
+        || (request_origin.scheme != "https" && !request_origin.loopback)
+    {
+        return Err(destination_validation_error());
+    }
+    if trusted_destination != Some(request_origin.fingerprint.as_str()) {
+        return Err(destination_trust_required(
+            &request_origin.host,
+            &request_origin.fingerprint,
+        ));
     }
 
     Ok(ValidatedDestination {

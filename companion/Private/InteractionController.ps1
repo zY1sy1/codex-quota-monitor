@@ -8,13 +8,36 @@ function Copy-RelayManagerDraft {
     $id = if ($NewIdentity) { [guid]::NewGuid().ToString('D') } else {
         [string](& $get $Provider 'Id')
     }
+    $providerKind = [string](& $get $Provider 'ProviderKind')
+    $requestDefinition = & $get $Provider 'RequestDefinition'
+    $copiedRequest = $null
+    if ($providerKind -ceq 'Generic' -and $null -ne $requestDefinition) {
+        $query = [ordered]@{}
+        foreach ($name in @($requestDefinition.Query.PSObject.Properties.Name)) {
+            if ([string]::IsNullOrEmpty([string]$name)) { continue }
+            $query[$name] = [string]$requestDefinition.Query.$name
+        }
+        $headers = [ordered]@{}
+        foreach ($name in @($requestDefinition.Headers.PSObject.Properties.Name)) {
+            if ([string]::IsNullOrEmpty([string]$name)) { continue }
+            $headers[$name] = [string]$requestDefinition.Headers.$name
+        }
+        $copiedRequest = [pscustomobject][ordered]@{
+            Method = [string](& $get $requestDefinition 'Method')
+            Path = [string](& $get $requestDefinition 'Path')
+            Query = [pscustomobject]$query
+            Headers = [pscustomobject]$headers
+            Body = & $get $requestDefinition 'Body'
+        }
+    }
     [pscustomobject][ordered]@{
         Id = $id
         Name = [string](& $get $Provider 'Name')
         Enabled = [bool](& $get $Provider 'Enabled')
+        ProviderKind = $providerKind
         BaseUrl = [string](& $get $Provider 'BaseUrl')
-        TemplateType = [string](& $get $Provider 'TemplateType')
-        Script = [string](& $get $Provider 'Script')
+        RequestDefinition = $copiedRequest
+        ExtractorScript = [string](& $get $Provider 'ExtractorScript')
         TimeoutSeconds = [int](& $get $Provider 'TimeoutSeconds')
         IntervalMinutes = [int](& $get $Provider 'IntervalMinutes')
         TrustedDestination = if ($ClearTrust) { $null } else {
@@ -30,8 +53,15 @@ function New-EmptyRelayManagerDraft {
         Name = 'New relay'
         Enabled = $true
         BaseUrl = 'https://'
-        TemplateType = 'General'
-        Script = '({request:{url:"{{baseUrl}}/user/balance",method:"GET",headers:{Authorization:"Bearer {{apiKey}}"}},extractor:r=>({isValid:r.success??true,invalidMessage:r.message??null,remaining:(r.data??r).balance,unit:(r.data??r).currency??null})})'
+        ProviderKind = 'Generic'
+        RequestDefinition = [pscustomobject][ordered]@{
+            Method = 'GET'
+            Path = '/user/balance'
+            Query = [pscustomobject][ordered]@{}
+            Headers = [pscustomobject][ordered]@{ Authorization = 'Bearer {{apiKey}}' }
+            Body = $null
+        }
+        ExtractorScript = 'function(response){return {isValid:response.success??true,invalidMessage:response.message??null,remaining:(response.data??response).balance,unit:(response.data??response).currency??null};}'
         TimeoutSeconds = 10
         IntervalMinutes = 10
         TrustedDestination = $null
@@ -172,7 +202,7 @@ function New-RelayManagerController {
             [string](& $get $_ 'Id') -cne [string]$ProviderId
         })
         $document = & $canonicalizeDocument ([ordered]@{
-            SchemaVersion = 1; Providers = $remaining
+            SchemaVersion = 2; Providers = $remaining
         })
         if ($null -eq $document) { throw 'Relay provider deletion produced an invalid store.' }
         try {
@@ -212,20 +242,18 @@ function New-RelayManagerController {
                 $cipherSecrets[$name] = ''
             }
         }
-        $templateType = [string](& $get $draft 'TemplateType')
+        $providerKind = [string](& $get $draft 'ProviderKind')
         $candidate = [ordered]@{
             Id = $id
             Name = [string](& $get $draft 'Name')
             Enabled = [bool](& $get $draft 'Enabled')
             BaseUrl = [string](& $get $draft 'BaseUrl')
-            TemplateType = $templateType
-            Script = [string](& $get $draft 'Script')
+            ProviderKind = $providerKind
+            RequestDefinition = & $get $draft 'RequestDefinition'
+            ExtractorScript = [string](& $get $draft 'ExtractorScript')
             TimeoutSeconds = [int](& $get $draft 'TimeoutSeconds')
             IntervalMinutes = [int](& $get $draft 'IntervalMinutes')
-            TrustedDestination = if ($templateType -eq 'Custom') {
-                & $get $draft 'TrustedDestination'
-            }
-            else { $null }
+            TrustedDestination = & $get $draft 'TrustedDestination'
             Secrets = $cipherSecrets
         }
         $canonical = & $canonicalizeProvider $candidate
@@ -243,7 +271,7 @@ function New-RelayManagerController {
         }
         if (-not $replaced) { $updated.Add($canonical) }
         $document = & $canonicalizeDocument ([ordered]@{
-            SchemaVersion = 1; Providers = [object[]]$updated.ToArray()
+            SchemaVersion = 2; Providers = [object[]]$updated.ToArray()
         })
         if ($null -eq $document) {
             & $View.SetTestState $false $false 'Provider settings are invalid.'

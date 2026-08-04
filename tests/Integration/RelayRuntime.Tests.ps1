@@ -15,11 +15,15 @@ BeforeAll {
             Name = "Relay $Id"
             Enabled = $Enabled
             BaseUrl = 'https://fixture.invalid'
-            TemplateType = 'General'
-            Script = 'fixture'
+            ProviderKind = 'Generic'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'GET'; Path = '/usage'; Query = [pscustomobject][ordered]@{}
+                Headers = [pscustomobject][ordered]@{}; Body = $null
+            }
+            ExtractorScript = 'function(response){return {remaining:response.balance};}'
             TimeoutSeconds = 2
             IntervalMinutes = $IntervalMinutes
-            TrustedDestination = $null
+            TrustedDestination = 'https://fixture.invalid:443'
             Secrets = [pscustomobject]@{
                 ApiKey = "encrypted-$Id"
                 AccessToken = ''
@@ -62,7 +66,7 @@ BeforeAll {
             })
         }
         [pscustomobject][ordered]@{
-            SchemaVersion = 1
+            SchemaVersion = 2
             Providers = [object[]]$providers
         }
     }

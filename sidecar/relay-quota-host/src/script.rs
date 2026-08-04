@@ -25,11 +25,15 @@ use rquickjs::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{SanitizedError, SecretSet, UsageResult};
+use crate::protocol::{RequestDefinition, SanitizedError, SecretSet, UsageResult};
+use url::Url;
 
 const MAX_SCRIPT_BYTES: usize = 256 * 1024;
 const MAX_SUBSTITUTED_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_REQUEST_MAP_ENTRIES: usize = 128;
+const MAX_REQUEST_NAME_BYTES: usize = 256;
+const MAX_REQUEST_VALUE_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_WORKER_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EXTRACTOR_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_EXTRACTOR_WORKER_INPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -230,6 +234,166 @@ pub fn replace_tokens(script: &str, base_url: &str, secrets: &SecretSet) -> Stri
         true
     });
     replaced
+}
+
+pub fn evaluate_generic_request(
+    definition: &RequestDefinition,
+    base_url: &str,
+    secrets: &SecretSet,
+) -> Result<ScriptRequest, SanitizedError> {
+    let base = parse_generic_base_url(base_url)?;
+    let method = definition.method.trim().to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PUT") {
+        return Err(request_validation_error());
+    }
+
+    let path = expand_generic_value(&definition.path, base_url, secrets)?;
+    let request_url = build_generic_request_url(&base, &path)?;
+    let headers = expand_generic_map(&definition.headers, base_url, secrets, true)?;
+    let mut url = request_url;
+    {
+        let mut query_pairs = url.query_pairs_mut();
+        if definition.query.len() > MAX_REQUEST_MAP_ENTRIES {
+            return Err(request_too_large_error());
+        }
+        for (name, value) in &definition.query {
+            validate_generic_map_name(name)?;
+            let value = expand_generic_value(value, base_url, secrets)?;
+            query_pairs.append_pair(name, &value);
+        }
+    }
+
+    let body = definition
+        .body
+        .as_deref()
+        .map(|body| expand_generic_value(body, base_url, secrets))
+        .transpose()?;
+    let request = ScriptRequest {
+        url: url.into(),
+        method,
+        headers,
+        body,
+    };
+    let encoded = serde_json::to_vec(&WireRequest {
+        url: request.url.clone(),
+        method: request.method.clone(),
+        headers: request.headers.clone(),
+        body: request.body.clone(),
+    })
+    .map_err(|_| request_validation_error())?;
+    if encoded.len() > MAX_REQUEST_BYTES {
+        return Err(request_too_large_error());
+    }
+    Ok(request)
+}
+
+fn parse_generic_base_url(base_url: &str) -> Result<Url, SanitizedError> {
+    if base_url.is_empty() || base_url.chars().any(char::is_control) {
+        return Err(request_validation_error());
+    }
+    let base = Url::parse(base_url).map_err(|_| request_validation_error())?;
+    if !matches!(base.scheme(), "http" | "https")
+        || base.host().is_none()
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+    {
+        return Err(request_validation_error());
+    }
+    Ok(base)
+}
+
+fn build_generic_request_url(base: &Url, path: &str) -> Result<Url, SanitizedError> {
+    if path.is_empty()
+        || path.len() > 4096
+        || path.starts_with("//")
+        || path.contains('?')
+        || path.contains('#')
+        || path.chars().any(char::is_control)
+    {
+        return Err(request_validation_error());
+    }
+    if Url::parse(path).is_ok_and(|absolute| absolute.scheme() != "" || absolute.host().is_some()) {
+        return Err(request_validation_error());
+    }
+    let url = base.join(path).map_err(|_| request_validation_error())?;
+    if url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || !same_url_origin(base, &url)
+    {
+        return Err(request_validation_error());
+    }
+    Ok(url)
+}
+
+fn same_url_origin(left: &Url, right: &Url) -> bool {
+    left.scheme().eq_ignore_ascii_case(right.scheme())
+        && left.host() == right.host()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn expand_generic_map(
+    values: &BTreeMap<String, String>,
+    base_url: &str,
+    secrets: &SecretSet,
+    headers: bool,
+) -> Result<BTreeMap<String, String>, SanitizedError> {
+    if values.len() > MAX_REQUEST_MAP_ENTRIES {
+        return Err(request_too_large_error());
+    }
+    let mut expanded = BTreeMap::new();
+    for (name, value) in values {
+        validate_generic_map_name(name)?;
+        let value = expand_generic_value(value, base_url, secrets)?;
+        if headers && (value.contains('\r') || value.contains('\n')) {
+            return Err(request_validation_error());
+        }
+        expanded.insert(name.clone(), value);
+    }
+    Ok(expanded)
+}
+
+fn validate_generic_map_name(name: &str) -> Result<(), SanitizedError> {
+    if name.is_empty() || name.len() > MAX_REQUEST_NAME_BYTES {
+        return Err(request_validation_error());
+    }
+    if !name.bytes().all(is_http_token_byte) {
+        return Err(request_validation_error());
+    }
+    Ok(())
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+fn expand_generic_value(
+    value: &str,
+    base_url: &str,
+    secrets: &SecretSet,
+) -> Result<String, SanitizedError> {
+    let replacements = token_replacements(base_url, secrets);
+    let mut size = Some(0usize);
+    if !scan_replaced_tokens(value, &replacements, |piece| {
+        size = size.and_then(|size| size.checked_add(piece.len()));
+        size.is_some_and(|size| size <= MAX_REQUEST_VALUE_BYTES)
+    }) {
+        return Err(request_too_large_error());
+    }
+    let size = size.ok_or_else(request_too_large_error)?;
+    let mut expanded = String::new();
+    expanded
+        .try_reserve_exact(size)
+        .map_err(|_| script_memory_error())?;
+    let completed = scan_replaced_tokens(value, &replacements, |piece| {
+        expanded.push_str(piece);
+        true
+    });
+    debug_assert!(completed);
+    Ok(expanded)
 }
 
 pub fn evaluate_request(
@@ -903,7 +1067,8 @@ fn evaluate_extractor_with_quickjs(
     }
 
     let replaced = replace_tokens_for_evaluation(script, base_url, secrets)?;
-    let source_len = replaced
+    let wrapped = wrap_extractor_source(&replaced);
+    let source_len = wrapped
         .len()
         .checked_add("(\n\n)".len())
         .ok_or_else(request_too_large_error)?;
@@ -912,7 +1077,7 @@ fn evaluate_extractor_with_quickjs(
         .try_reserve_exact(source_len)
         .map_err(|_| script_memory_error())?;
     source.push_str("(\n");
-    source.push_str(&replaced);
+    source.push_str(&wrapped);
     source.push_str("\n)");
 
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -937,6 +1102,19 @@ fn evaluate_extractor_with_quickjs(
 
     context
         .with(|ctx| evaluate_and_normalize_native_extractor(&ctx, source, response_json, &signals))
+}
+
+fn wrap_extractor_source(source: &str) -> String {
+    let trimmed = source.trim_start();
+    let extractor_field = trimmed.find("extractor:");
+    let first_arrow = trimmed.find("=>");
+    let is_legacy_object = (trimmed.starts_with("({") || trimmed.starts_with("{"))
+        && extractor_field.is_some_and(|field| first_arrow.is_none_or(|arrow| field < arrow));
+    if is_legacy_object {
+        source.into()
+    } else {
+        format!("{{extractor: ({source})}}")
+    }
 }
 
 fn evaluate_and_normalize_native_extractor<'js>(

@@ -1,5 +1,5 @@
 use relay_quota_host::protocol::{
-    HostResponse, Operation, QueryCommand, SanitizedError, TemplateType, UsageResult,
+    HostResponse, Operation, ProviderKind, QueryCommand, SanitizedError, UsageResult,
 };
 use serde_json::json;
 
@@ -30,13 +30,20 @@ fn success_response_has_stable_camel_case_shape() {
 }
 
 #[test]
-fn deserializes_master_query_command_with_camel_case_secrets() {
+fn deserializes_generic_query_command_with_structured_request_and_camel_case_secrets() {
     let command: QueryCommand = serde_json::from_value(json!({
         "id": "query-1",
         "operation": "query",
-        "script": "return [];",
-        "templateType": "Wakaka",
+        "providerKind": "generic",
         "baseUrl": "https://api.wkkapi.com",
+        "requestDefinition": {
+            "method": "POST",
+            "path": "/usage",
+            "query": { "scope": "current" },
+            "headers": { "Authorization": "Bearer {{apiKey}}" },
+            "body": "{\"token\":\"{{accessToken}}\"}"
+        },
+        "extractorScript": "function(response){return {remaining:response.balance};}",
         "secrets": {
             "apiKey": "key",
             "accessToken": "token",
@@ -49,7 +56,12 @@ fn deserializes_master_query_command_with_camel_case_secrets() {
 
     assert_eq!(command.id, "query-1");
     assert!(command.operation == Operation::Query);
-    assert!(command.template_type == TemplateType::Wakaka);
+    assert!(command.provider_kind == ProviderKind::Generic);
+    assert_eq!(command.request_definition.as_ref().unwrap().method, "POST");
+    assert_eq!(
+        command.request_definition.as_ref().unwrap().query["scope"],
+        "current"
+    );
     assert_eq!(command.secrets.api_key, "key");
 }
 
@@ -58,9 +70,16 @@ fn rejects_unknown_query_command_fields() {
     let result = serde_json::from_value::<QueryCommand>(json!({
         "id": "query-1",
         "operation": "query",
-        "script": "return [];",
-        "templateType": "Wakaka",
+        "providerKind": "generic",
         "baseUrl": "https://api.wkkapi.com",
+        "requestDefinition": {
+            "method": "GET",
+            "path": "/usage",
+            "query": {},
+            "headers": {},
+            "body": null
+        },
+        "extractorScript": "function(response){return response;}",
         "secrets": { "apiKey": "", "accessToken": "", "userId": "" },
         "timeoutMs": 5000,
         "unexpected": true
@@ -74,9 +93,17 @@ fn rejects_unknown_secret_set_fields() {
     let result = serde_json::from_value::<QueryCommand>(json!({
         "id": "query-1",
         "operation": "query",
-        "script": "return [];",
-        "templateType": "Wakaka",
+        "providerKind": "generic",
         "baseUrl": "https://api.wkkapi.com",
+        "requestDefinition": {
+            "method": "GET",
+            "path": "/usage",
+            "query": {},
+            "headers": {},
+            "body": null,
+            "unexpected": true
+        },
+        "extractorScript": "function(response){return response;}",
         "secrets": {
             "apiKey": "",
             "accessToken": "",

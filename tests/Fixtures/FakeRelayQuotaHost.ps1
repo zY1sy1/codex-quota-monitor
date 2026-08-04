@@ -23,7 +23,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         continue
     }
 
-    switch ([string]$command.script) {
+    switch ([string]$command.extractorScript) {
         'delayed-success' {
             [Threading.Thread]::Sleep(5000)
         }

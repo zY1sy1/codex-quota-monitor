@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize)]
@@ -5,20 +7,31 @@ use serde::{Deserialize, Serialize};
 pub struct QueryCommand {
     pub id: String,
     pub operation: Operation,
-    pub script: String,
-    pub template_type: TemplateType,
+    pub provider_kind: ProviderKind,
     pub base_url: String,
+    pub request_definition: Option<RequestDefinition>,
+    pub extractor_script: String,
     pub secrets: SecretSet,
     pub timeout_ms: u64,
     pub trusted_destination: Option<String>,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-pub enum TemplateType {
-    Wakaka,
-    General,
-    NewApi,
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Debug)]
+pub enum ProviderKind {
+    #[serde(rename = "generic", alias = "Generic")]
+    Generic,
+    #[serde(rename = "custom", alias = "Custom")]
     Custom,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestDefinition {
+    pub method: String,
+    pub path: String,
+    pub query: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, String>,
+    pub body: Option<String>,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]

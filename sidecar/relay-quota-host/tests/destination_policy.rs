@@ -1,5 +1,5 @@
 use relay_quota_host::destination::validate_destination;
-use relay_quota_host::protocol::{SanitizedError, TemplateType};
+use relay_quota_host::protocol::SanitizedError;
 
 fn expect_ok<T>(result: Result<T, SanitizedError>) -> T {
     match result {
@@ -18,70 +18,64 @@ fn category(
 }
 
 #[test]
-fn built_in_requires_https_and_same_effective_origin() {
-    let destination = expect_ok(validate_destination(
-        TemplateType::Wakaka,
-        "https://API.WKKAPI.COM",
-        "https://api.wkkapi.com/v1/usage",
+fn generic_requires_exact_trusted_origin_and_allows_https_after_trust() {
+    let error = validate_destination(
+        "https://relay.example/usage",
+        "https://relay.example/usage",
         None,
-    ));
-    assert_eq!(destination.host(), "api.wkkapi.com");
-    assert_eq!(destination.fingerprint(), "https://api.wkkapi.com:443");
+    )
+    .expect_err("first generic destination must require trust");
+    assert_eq!(error.category, "DestinationTrustRequired");
+    assert_eq!(error.destination_host.as_deref(), Some("relay.example"));
+    assert_eq!(
+        error.destination_fingerprint.as_deref(),
+        Some("https://relay.example:443")
+    );
 
-    assert_eq!(
-        category(validate_destination(
-            TemplateType::Wakaka,
-            "https://api.wkkapi.com",
-            "http://api.wkkapi.com/v1/usage",
-            None,
-        )),
-        "DestinationValidation"
-    );
-    assert_eq!(
-        category(validate_destination(
-            TemplateType::General,
-            "https://a.example",
-            "https://b.example/user/balance",
-            None,
-        )),
-        "DestinationValidation"
-    );
-    assert_eq!(
-        category(validate_destination(
-            TemplateType::NewApi,
-            "https://a.example",
-            "https://a.example:444/api/user/self",
-            None,
-        )),
-        "DestinationValidation"
-    );
+    let destination = expect_ok(validate_destination(
+        "https://relay.example/usage",
+        "https://relay.example/usage",
+        Some("https://relay.example:443"),
+    ));
+    assert_eq!(destination.host(), "relay.example");
+    assert_eq!(destination.fingerprint(), "https://relay.example:443");
 }
 
 #[test]
-fn built_in_allows_only_exact_loopback_hosts_over_http() {
-    for base_url in [
-        "http://localhost:18080",
-        "http://127.0.0.1:18080",
-        "http://127.255.1.2:18080",
-        "http://[::1]:18080",
+fn generic_rejects_a_path_that_changes_the_origin() {
+    let error = validate_destination(
+        "https://relay.example",
+        "https://other.example/private",
+        Some("https://relay.example:443"),
+    )
+    .expect_err("cross origin");
+    assert_eq!(error.category, "DestinationValidation");
+}
+
+#[test]
+fn http_is_allowed_only_for_loopback_and_still_requires_trust() {
+    for (base_url, trusted) in [
+        ("http://localhost:18080", "http://localhost:18080"),
+        ("http://127.0.0.1:18080", "http://127.0.0.1:18080"),
+        ("http://127.255.1.2:18080", "http://127.255.1.2:18080"),
+        ("http://[::1]:18080", "http://[::1]:18080"),
     ] {
-        let request_url = format!("{base_url}/user/balance");
-        assert!(
-            validate_destination(TemplateType::General, base_url, &request_url, None).is_ok(),
-            "expected loopback origin {base_url} to be accepted"
+        let request_url = format!("{base_url}/usage");
+        assert_eq!(
+            category(validate_destination(base_url, &request_url, None)),
+            "DestinationTrustRequired"
         );
+        assert!(validate_destination(base_url, &request_url, Some(trusted)).is_ok());
     }
 
-    for host in ["localhost.example", "128.0.0.1", "[::2]"] {
-        let base_url = format!("http://{host}:18080");
-        let request_url = format!("{base_url}/user/balance");
+    for base_url in [
+        "http://localhost.example:18080",
+        "http://128.0.0.1:18080",
+        "http://[::2]:18080",
+    ] {
+        let request_url = format!("{base_url}/usage");
         assert_eq!(
-            category(validate_destination(
-                TemplateType::General,
-                &base_url,
-                &request_url,
-                None,
-            )),
+            category(validate_destination(base_url, &request_url, Some(base_url))),
             "DestinationValidation"
         );
     }
@@ -90,16 +84,14 @@ fn built_in_allows_only_exact_loopback_hosts_over_http() {
 #[test]
 fn fingerprints_include_effective_ports_and_bracket_ipv6() {
     let https = expect_ok(validate_destination(
-        TemplateType::Custom,
-        "https://unused.example",
+        "https://Example.COM",
         "https://Example.COM/usage",
         Some("https://example.com:443"),
     ));
     assert_eq!(https.fingerprint(), "https://example.com:443");
 
     let ipv6 = expect_ok(validate_destination(
-        TemplateType::Custom,
-        "https://unused.example",
+        "http://[::1]",
         "http://[::1]/usage",
         Some("http://[::1]:80"),
     ));
@@ -108,15 +100,7 @@ fn fingerprints_include_effective_ports_and_bracket_ipv6() {
 }
 
 #[test]
-fn custom_requires_the_exact_canonical_trusted_fingerprint() {
-    let accepted = expect_ok(validate_destination(
-        TemplateType::Custom,
-        "https://a.example",
-        "http://relay.example:8080/usage",
-        Some("http://relay.example:8080"),
-    ));
-    assert_eq!(accepted.host(), "relay.example");
-
+fn trust_must_be_the_exact_canonical_request_fingerprint() {
     for trusted in [
         None,
         Some("http://other.example:8080"),
@@ -124,35 +108,39 @@ fn custom_requires_the_exact_canonical_trusted_fingerprint() {
         Some("http://relay.example"),
     ] {
         let error = validate_destination(
-            TemplateType::Custom,
-            "https://a.example",
+            "http://relay.example:8080",
             "http://relay.example:8080/usage",
             trusted,
         )
         .unwrap_err();
-        assert_eq!(error.category, "DestinationTrustRequired");
-        assert_eq!(error.destination_host.as_deref(), Some("relay.example"));
-        assert_eq!(
-            error.destination_fingerprint.as_deref(),
-            Some("http://relay.example:8080")
-        );
-        assert!(!error.message.contains("/usage"));
+        assert_eq!(error.category, "DestinationValidation");
     }
+
+    let error = validate_destination(
+        "https://relay.example",
+        "https://relay.example/usage",
+        Some("https://other.example:443"),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, "DestinationTrustRequired");
+    assert_eq!(error.destination_host.as_deref(), Some("relay.example"));
+    assert_eq!(
+        error.destination_fingerprint.as_deref(),
+        Some("https://relay.example:443")
+    );
 }
 
 #[test]
-fn credentials_fragments_and_non_http_schemes_are_rejected() {
+fn credentials_fragments_queries_and_non_http_schemes_are_rejected() {
     for request_url in [
         "https://user@example.com/usage",
         "https://@example.com/usage",
-        r"http:\\@example.com/usage",
         "https://example.com/usage#secret-fragment",
         "ftp://example.com/usage",
         "not a url",
     ] {
         let error = validate_destination(
-            TemplateType::Custom,
-            "https://base.example",
+            "https://example.com",
             request_url,
             Some("https://example.com:443"),
         )
@@ -163,27 +151,17 @@ fn credentials_fragments_and_non_http_schemes_are_rejected() {
         assert!(!error.message.contains(request_url));
     }
 
-    assert_eq!(
-        category(validate_destination(
-            TemplateType::General,
-            "https://user:password@example.com",
-            "https://example.com/user/balance",
-            None,
-        )),
-        "DestinationValidation"
-    );
-
     for base_url in [
         "https://user:password@base.example",
         "https://base.example/root#fragment",
+        "https://base.example/root?query=secret",
         "file:///not-an-http-base",
     ] {
         assert_eq!(
             category(validate_destination(
-                TemplateType::Custom,
                 base_url,
-                "https://example.com/usage",
-                Some("https://example.com:443"),
+                "https://base.example/usage",
+                Some("https://base.example:443"),
             )),
             "DestinationValidation"
         );
@@ -191,29 +169,9 @@ fn credentials_fragments_and_non_http_schemes_are_rejected() {
 }
 
 #[test]
-fn normal_urls_remain_valid_when_no_embedded_credentials_are_reported() {
-    let destination = expect_ok(validate_destination(
-        TemplateType::Custom,
-        "https://base.example",
-        "https://example.com/usage",
-        Some("https://example.com:443"),
-    ));
-    assert_eq!(destination.host(), "example.com");
-
-    let normalized = expect_ok(validate_destination(
-        TemplateType::Custom,
-        "https://base.example",
-        r"http:\\example.com/usage",
-        Some("http://example.com:80"),
-    ));
-    assert_eq!(normalized.fingerprint(), "http://example.com:80");
-}
-
-#[test]
 fn validated_destination_debug_never_contains_the_request_path_or_query() {
     let destination = expect_ok(validate_destination(
-        TemplateType::Custom,
-        "https://base.example",
+        "https://example.com",
         "https://example.com/private/usage?apiKey=sentinel-secret",
         Some("https://example.com:443"),
     ));

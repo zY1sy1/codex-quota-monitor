@@ -11,11 +11,11 @@ BeforeAll {
     $script:Clients = [Collections.Generic.List[object]]::new()
     $script:FakeSecret = 'fixture-credential'
 
-    function Get-PresetScript {
+    function Get-Preset {
         param([Parameter(Mandatory)][string]$Id)
         $presetPath = Join-Path $script:RepoRoot 'companion\Presets\relay-usage.json'
         $document = Get-Content -LiteralPath $presetPath -Raw | ConvertFrom-Json
-        return [string](@($document.Presets | Where-Object Id -eq $Id)[0].Script)
+        return @($document.Presets | Where-Object Id -eq $Id)[0]
     }
 
     function New-EndToEndProvider {
@@ -23,29 +23,53 @@ BeforeAll {
             [Parameter(Mandatory)][string]$Id,
             [Parameter(Mandatory)][string]$BaseUrl,
             [string]$Path = '/user/balance',
-            [string]$TemplateType = 'General',
+            [string]$ProviderKind = 'Generic',
+            [string]$Method = 'GET',
+            [AllowNull()][object]$Query = $null,
+            [AllowNull()][object]$Headers = $null,
+            [AllowNull()][string]$Body = $null,
+            [AllowNull()][string]$ExtractorScript = $null,
             [int]$TimeoutSeconds = 2
         )
-        $scriptText = switch ($Id) {
-            'wakaka' { Get-PresetScript -Id 'wakaka' }
-            'general' { Get-PresetScript -Id 'general' }
-            'new-api' { Get-PresetScript -Id 'new-api' }
-            default {
-                @"
-({request:{url:"{{baseUrl}}$Path",method:"GET",headers:{}},extractor:function(response){const data=response.data??response;return {isValid:response.success??true,invalidMessage:response.message??null,remaining:data.balance??data.quota,unit:data.currency??"USD",planName:data.planName??null};}})
+        if ($null -eq $Query) { $Query = [ordered]@{} }
+        if ($null -eq $Headers) { $Headers = [ordered]@{} }
+        $preset = switch ($Id) {
+            'wakaka' { Get-Preset -Id 'wakaka' }
+            'general' { Get-Preset -Id 'general' }
+            'new-api' { Get-Preset -Id 'new-api' }
+            default { $null }
+        }
+        if ($null -ne $preset) {
+            $ProviderKind = [string]$preset.ProviderKind
+            $request = $preset.RequestDefinition
+            $Method = [string]$request.Method
+            $Path = [string]$request.Path
+            $Query = $request.Query
+            $Headers = $request.Headers
+            $Body = $request.Body
+            $ExtractorScript = [string]$preset.ExtractorScript
+        }
+        elseif ([string]::IsNullOrWhiteSpace([string]$ExtractorScript)) {
+            $ExtractorScript = @"
+function(response){const data=response.data??response;return {isValid:response.success??true,invalidMessage:response.message??null,remaining:data.balance??data.quota,unit:data.currency??"USD",planName:data.planName??null};}
 "@
-            }
         }
         [pscustomobject][ordered]@{
             Id = $Id
             Name = $Id
             Enabled = $true
+            ProviderKind = $ProviderKind
             BaseUrl = $BaseUrl
-            TemplateType = $TemplateType
-            Script = $scriptText
+            RequestDefinition = if ($ProviderKind -eq 'Generic') {
+                [pscustomobject][ordered]@{
+                    Method = $Method; Path = $Path; Query = [pscustomobject]$Query
+                    Headers = [pscustomobject]$Headers; Body = $Body
+                }
+            } else { $null }
+            ExtractorScript = $ExtractorScript
             TimeoutSeconds = $TimeoutSeconds
             IntervalMinutes = 10
-            TrustedDestination = $null
+            TrustedDestination = $BaseUrl
         }
     }
 
@@ -53,11 +77,15 @@ BeforeAll {
         param(
             [Parameter(Mandatory)][object]$Api,
             [Parameter(Mandatory)][object]$Provider,
-            [switch]$UseCredential
+            [switch]$UseCredential,
+            [AllowNull()][hashtable]$Secrets
         )
         $client = Start-RelayScriptClient -ExecutablePath $script:HostPath -ArgumentList @()
         $script:Clients.Add($client)
-        $secrets = if ($UseCredential) {
+        $secrets = if ($null -ne $Secrets) {
+            $Secrets
+        }
+        elseif ($UseCredential) {
             @{ ApiKey = $script:FakeSecret; AccessToken = ''; UserId = '' }
         }
         else {
@@ -107,6 +135,42 @@ Describe 'relay end-to-end fake API' {
         $results[3].Results[0].Remaining | Should -Be 3
         $results.Meta.DestinationHost | Should -Not -Match 'credential'
         $api.Stats.TotalRequests | Should -Be 4
+    }
+
+    It 'queries a Generic GET provider on an arbitrary loopback path' {
+        $api = Start-FakeRelayApi -Scenario 'Happy'
+        $script:Apis.Add($api)
+        $provider = New-EndToEndProvider -Id 'generic-get' -BaseUrl $api.BaseUrl -Path '/generic/get' `
+            -Headers @{ 'X-Api-Key' = '{{apiKey}}' } `
+            -ExtractorScript 'function(response){return {isValid:true,remaining:response.balance,unit:"USD"};}'
+
+        $result = Invoke-EndToEndQuery -Api $api -Provider $provider -Secrets @{ ApiKey = 'get-secret'; AccessToken = ''; UserId = '' }
+
+        $result.Ok | Should -BeTrue
+        $result.Results[0].Remaining | Should -Be 42
+        $api.LastRequest.Path | Should -BeExactly '/generic/get'
+        $api.LastRequest.Method | Should -BeExactly 'GET'
+        $api.LastRequest.HasApiKey | Should -BeTrue
+    }
+
+    It 'queries a Generic POST provider with body and header authentication' {
+        $api = Start-FakeRelayApi -Scenario 'Happy'
+        $script:Apis.Add($api)
+        $provider = New-EndToEndProvider -Id 'generic-post' -BaseUrl $api.BaseUrl -Method 'POST' -Path '/generic/post' `
+            -Headers @{ 'X-Api-Key' = '{{apiKey}}' } -Body '{"user":"{{userId}}"}' `
+            -ExtractorScript 'function(response){return {isValid:true,remaining:response.balance,planName:response.planName};}'
+
+        $result = Invoke-EndToEndQuery -Api $api -Provider $provider -Secrets @{
+            ApiKey = 'post-secret'; AccessToken = ''; UserId = 'user-7'
+        }
+
+        $result.Ok | Should -BeTrue
+        $result.Results[0].PlanName | Should -BeExactly 'Generic POST'
+        $api.LastRequest.Method | Should -BeExactly 'POST'
+        $api.LastRequest.Path | Should -BeExactly '/generic/post'
+        $api.LastRequest.HasApiKey | Should -BeTrue
+        $api.LastRequest.BodyHasUserId | Should -BeTrue
+        ($api.LastRequest | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match 'post-secret|user-7'
     }
 
     It 'preserves an explicit zero through the real sidecar' {
@@ -197,7 +261,7 @@ Describe 'relay end-to-end fake API' {
         $provider | Add-Member -MemberType NoteProperty -Name Secrets -Value ([pscustomobject]@{
                 ApiKey = 'stored'; AccessToken = ''; UserId = ''
             })
-        $providerDocument = [pscustomobject]@{ SchemaVersion = 1; Providers = @($provider) }
+        $providerDocument = [pscustomobject]@{ SchemaVersion = 2; Providers = @($provider) }
         $overrides = [ordered]@{
             ReadRelayProviders = { param($Path) $providerDocument }.GetNewClosure()
             ReadRelayCache = { param($Path) [pscustomobject]@{ SchemaVersion = 1; Providers = @() } }.GetNewClosure()

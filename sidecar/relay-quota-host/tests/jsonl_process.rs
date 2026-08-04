@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
+use url::Url;
 
 fn read_http_request(stream: &mut std::net::TcpStream) {
     let mut request = Vec::new();
@@ -81,16 +82,39 @@ fn spawn_repeating_json_server(
     (format!("http://{address}"), server)
 }
 
+fn canonical_trust(base_url: &str) -> String {
+    let url = Url::parse(base_url).expect("parse test base URL");
+    let host = url.host_str().expect("test URL host");
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_ascii_lowercase()
+    };
+    format!(
+        "{}://{}:{}",
+        url.scheme().to_ascii_lowercase(),
+        host,
+        url.port_or_known_default().expect("known test port")
+    )
+}
+
 fn query(id: &str, base_url: &str) -> Value {
     json!({
         "id": id,
         "operation": "query",
-        "script": "({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{},body:undefined},extractor:r=>({isValid:true,remaining:r.balance,unit:'USD'})})",
-        "templateType": "General",
+        "providerKind": "generic",
         "baseUrl": base_url,
+        "requestDefinition": {
+            "method": "GET",
+            "path": "/usage",
+            "query": {},
+            "headers": {},
+            "body": null
+        },
+        "extractorScript": "function(response){return {isValid:true,remaining:response.balance,unit:'USD'};}",
         "secrets": {"apiKey":"", "accessToken":"", "userId":""},
         "timeoutMs": 2000,
-        "trustedDestination": null
+        "trustedDestination": canonical_trust(base_url)
     })
 }
 
@@ -263,11 +287,11 @@ fn empty_oversized_and_control_character_ids_are_rejected_without_echo() {
 #[test]
 fn sequential_commands_do_not_share_quickjs_globals() {
     let (base_url, server) = spawn_repeating_json_server(r#"{"balance":3}"#, 2);
-    let script = "(()=>{globalThis.commandCount=(globalThis.commandCount??0)+1;return ({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{}},extractor:r=>({isValid:true,remaining:globalThis.commandCount,unit:'count'})})})()";
+    let script = "function(response){globalThis.commandCount=(globalThis.commandCount??0)+1;return {isValid:true,remaining:globalThis.commandCount,unit:'count'};}";
     let mut first = query("fresh-1", &base_url);
-    first["script"] = Value::String(script.into());
+    first["extractorScript"] = Value::String(script.into());
     let mut second = query("fresh-2", &base_url);
-    second["script"] = Value::String(script.into());
+    second["extractorScript"] = Value::String(script.into());
     let mut input = serde_json::to_vec(&first).expect("encode first command");
     input.push(b'\n');
     input.extend(serde_json::to_vec(&second).expect("encode second command"));
@@ -341,7 +365,11 @@ fn script_request_response_and_extractor_failures_use_only_stable_categories() {
     ];
     for (script, category) in cases {
         let mut command = query("failure", "http://127.0.0.1:9");
-        command["script"] = Value::String(script.into());
+        if category == "ScriptSyntax" || category == "RequestValidation" {
+            command["providerKind"] = Value::String("custom".into());
+            command["requestDefinition"] = Value::Null;
+        }
+        command["extractorScript"] = Value::String(script.into());
         let mut input = serde_json::to_vec(&command).expect("encode failure query");
         input.push(b'\n');
         let (status, stdout, stderr) = run_host(&input);
@@ -359,7 +387,8 @@ fn script_request_response_and_extractor_failures_use_only_stable_categories() {
 
     let (base_url, server) = spawn_json_server(r#"{"balance":5}"#);
     let mut command = query("invalid-result", &base_url);
-    command["script"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{}},extractor:r=>({isValid:true,remaining:'wrong'})})".into());
+    command["extractorScript"] =
+        Value::String("function(response){return {isValid:true,remaining:'wrong'};}".into());
     let mut input = serde_json::to_vec(&command).expect("encode query");
     input.push(b'\n');
     let (status, stdout, stderr) = run_host(&input);
@@ -371,7 +400,10 @@ fn script_request_response_and_extractor_failures_use_only_stable_categories() {
 #[test]
 fn infinite_request_and_extractor_scripts_time_out_without_stalling_the_service() {
     let mut command = query("request-timeout", "http://127.0.0.1:9");
-    command["script"] = Value::String("(()=>{while(true){} return {request:{}}})()".into());
+    command["providerKind"] = Value::String("custom".into());
+    command["requestDefinition"] = Value::Null;
+    command["extractorScript"] =
+        Value::String("(()=>{while(true){} return {request:{}}})()".into());
     let mut input = serde_json::to_vec(&command).expect("encode timeout query");
     input.push(b'\n');
     let started = std::time::Instant::now();
@@ -382,7 +414,7 @@ fn infinite_request_and_extractor_scripts_time_out_without_stalling_the_service(
 
     let (base_url, server) = spawn_json_server(r#"{"balance":5}"#);
     let mut command = query("extractor-timeout", &base_url);
-    command["script"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{}},extractor:r=>{while(true){}}})".into());
+    command["extractorScript"] = Value::String("function(response){while(true){}}".into());
     let mut input = serde_json::to_vec(&command).expect("encode timeout query");
     input.push(b'\n');
     let started = std::time::Instant::now();
@@ -398,7 +430,9 @@ fn secret_sentinels_never_cross_failure_stdout_or_stderr() {
     const SECRET: &str = "SENTINEL_RELAY_SECRET_932";
 
     let mut syntax = query(&format!("{SECRET}\n"), "http://127.0.0.1:9");
-    syntax["script"] = Value::String(format!("({{broken /* {SECRET} */"));
+    syntax["providerKind"] = Value::String("custom".into());
+    syntax["requestDefinition"] = Value::Null;
+    syntax["extractorScript"] = Value::String(format!("function(response){{ /* {SECRET} */"));
     syntax["secrets"] = json!({"apiKey":SECRET,"accessToken":SECRET,"userId":SECRET});
     let mut input = serde_json::to_vec(&syntax).expect("encode syntax query");
     input.push(b'\n');
@@ -408,7 +442,9 @@ fn secret_sentinels_never_cross_failure_stdout_or_stderr() {
     assert_failure(&stdout, &stderr, "Protocol");
 
     let mut syntax = query("syntax-secret", "http://127.0.0.1:9");
-    syntax["script"] = Value::String(format!("({{broken /* {SECRET} */"));
+    syntax["providerKind"] = Value::String("custom".into());
+    syntax["requestDefinition"] = Value::Null;
+    syntax["extractorScript"] = Value::String(format!("function(response){{ /* {SECRET} */"));
     syntax["secrets"] = json!({"apiKey":SECRET,"accessToken":SECRET,"userId":SECRET});
     let mut input = serde_json::to_vec(&syntax).expect("encode syntax query");
     input.push(b'\n');
@@ -418,7 +454,9 @@ fn secret_sentinels_never_cross_failure_stdout_or_stderr() {
     assert_failure(&stdout, &stderr, "ScriptSyntax");
 
     let mut invalid_header = query("header-secret", "http://127.0.0.1:9");
-    invalid_header["script"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{Bad:[\"{{apiKey}}\"]}},extractor:r=>r})".into());
+    invalid_header["providerKind"] = Value::String("custom".into());
+    invalid_header["requestDefinition"] = Value::Null;
+    invalid_header["extractorScript"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{Bad:[\"{{apiKey}}\"]}},extractor:r=>r})".into());
     invalid_header["secrets"] = json!({"apiKey":SECRET,"accessToken":SECRET,"userId":SECRET});
     let mut input = serde_json::to_vec(&invalid_header).expect("encode header query");
     input.push(b'\n');
@@ -429,8 +467,10 @@ fn secret_sentinels_never_cross_failure_stdout_or_stderr() {
 
     let (base_url, server) = spawn_server("500 Internal Server Error", "", SECRET);
     let mut http = query("http-secret", &base_url);
+    http["providerKind"] = Value::String("custom".into());
+    http["requestDefinition"] = Value::Null;
     http["secrets"] = json!({"apiKey":SECRET,"accessToken":SECRET,"userId":SECRET});
-    http["script"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'POST',headers:{Authorization:'Bearer {{apiKey}}'},body:'{{accessToken}}'},extractor:r=>r})".into());
+    http["extractorScript"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'POST',headers:{Authorization:'Bearer {{apiKey}}'},body:'{{accessToken}}'},extractor:r=>r})".into());
     let mut input = serde_json::to_vec(&http).expect("encode HTTP query");
     input.push(b'\n');
     let (status, stdout, stderr) = run_host(&input);
@@ -453,7 +493,9 @@ fn secret_sentinels_never_cross_failure_stdout_or_stderr() {
     let (base_url, server) = spawn_json_server(r#"{"private":"SENTINEL_RELAY_SECRET_932"}"#);
     let mut invalid_result = query("result-secret", &base_url);
     invalid_result["secrets"] = json!({"apiKey":SECRET,"accessToken":SECRET,"userId":SECRET});
-    invalid_result["script"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{}},extractor:r=>({isValid:true,remaining:r.private})})".into());
+    invalid_result["extractorScript"] = Value::String(
+        "function(response){return {isValid:true,remaining:response.private};}".into(),
+    );
     let mut input = serde_json::to_vec(&invalid_result).expect("encode invalid result query");
     input.push(b'\n');
     let (status, stdout, stderr) = run_host(&input);
@@ -530,15 +572,16 @@ fn direct_handle_line_enforces_the_byte_limit_before_json_parsing() {
 fn custom_trust_metadata_cannot_reveal_case_folded_credentials() {
     const SECRET: &str = "LeAkMe741";
     let mut command = query("custom-secret-host", "https://safe.example");
-    command["templateType"] = Value::String("Custom".into());
-    command["script"] = Value::String("({request:{url:'http://{{apiKey}}.example/usage',method:'GET',headers:{}},extractor:r=>r})".into());
+    command["providerKind"] = Value::String("custom".into());
+    command["requestDefinition"] = Value::Null;
+    command["extractorScript"] = Value::String("({request:{url:'http://{{apiKey}}.example/usage',method:'GET',headers:{}},extractor:r=>r})".into());
     command["secrets"] = json!({"apiKey":SECRET,"accessToken":"LeakMe","userId":""});
     let mut input = serde_json::to_vec(&command).expect("encode custom query");
     input.push(b'\n');
 
     let (status, stdout, stderr) = run_host(&input);
     assert!(status.success());
-    let response = assert_failure(&stdout, &stderr, "DestinationTrustRequired");
+    let response = assert_failure(&stdout, &stderr, "DestinationValidation");
     assert_secret_absent_ascii_case(&stdout, &stderr, SECRET);
     assert_secret_absent_ascii_case(&stdout, &stderr, "LeakMe");
     assert!(response["error"].get("destinationHost").is_none());
@@ -557,7 +600,7 @@ fn successful_extractor_results_cannot_return_query_credentials() {
         "accessToken": ACCESS_SECRET,
         "userId": USER_SECRET
     });
-    command["script"] = Value::String("({request:{url:'{{baseUrl}}/usage',method:'GET',headers:{}},extractor:r=>({isValid:false,invalidMessage:'{{apiKey}}',remaining:1,unit:'{{accessToken}}',planName:'{{userId}}',extra:'{{apiKey}}/{{accessToken}}/{{userId}}'})})".into());
+    command["extractorScript"] = Value::String("function(response){return {isValid:false,invalidMessage:'{{apiKey}}',remaining:1,unit:'{{accessToken}}',planName:'{{userId}}',extra:'{{apiKey}}/{{accessToken}}/{{userId}}'};}".into());
     let mut input = serde_json::to_vec(&command).expect("encode credential result query");
     input.push(b'\n');
 
@@ -590,7 +633,7 @@ fn successful_destination_hosts_cannot_contain_query_credentials() {
 fn structurally_valid_ids_containing_credentials_are_protocol_failures() {
     const SECRET: &str = "IdSecret882";
     let mut command = query("prefix-idsecret882-suffix", "http://127.0.0.1:9");
-    command["script"] = Value::String("({broken".into());
+    command["extractorScript"] = Value::String("function(response){".into());
     command["secrets"] = json!({"apiKey":SECRET,"accessToken":"","userId":""});
     let mut input = serde_json::to_vec(&command).expect("encode secret id query");
     input.push(b'\n');
@@ -605,8 +648,11 @@ fn structurally_valid_ids_containing_credentials_are_protocol_failures() {
 #[test]
 fn safe_custom_trust_metadata_is_preserved_when_it_matches_no_credential() {
     let mut command = query("safe-custom-host", "https://safe.example");
-    command["templateType"] = Value::String("Custom".into());
-    command["script"] = Value::String("({request:{url:'http://relay-safe.example:8080/usage',method:'GET',headers:{}},extractor:r=>r})".into());
+    command["providerKind"] = Value::String("custom".into());
+    command["requestDefinition"] = Value::Null;
+    command["baseUrl"] = Value::String("https://relay-safe.example".into());
+    command["trustedDestination"] = Value::Null;
+    command["extractorScript"] = Value::String("({request:{url:'https://relay-safe.example/usage',method:'GET',headers:{}},extractor:r=>r})".into());
     command["secrets"] =
         json!({"apiKey":"credential-741","accessToken":"overlap-credential-741","userId":""});
     let mut input = serde_json::to_vec(&command).expect("encode safe custom query");
@@ -618,6 +664,6 @@ fn safe_custom_trust_metadata_is_preserved_when_it_matches_no_credential() {
     assert_eq!(response["error"]["destinationHost"], "relay-safe.example");
     assert_eq!(
         response["error"]["destinationFingerprint"],
-        "http://relay-safe.example:8080"
+        "https://relay-safe.example:443"
     );
 }

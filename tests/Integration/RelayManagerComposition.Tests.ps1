@@ -15,18 +15,31 @@ BeforeAll {
     function New-TestRelayDraft {
         param(
             [string]$Id = '11111111-1111-1111-1111-111111111111',
-            [string]$TemplateType = 'General',
+            [string]$ProviderKind = 'Generic',
             [string]$BaseUrl = 'https://relay.example',
-            [string]$Script = '({request:{url:"{{baseUrl}}/usage",method:"GET"},extractor:r=>({isValid:true,remaining:r.balance})})',
+            [string]$Method = 'GET',
+            [string]$Path = '/usage',
+            [AllowNull()][object]$Query = $null,
+            [AllowNull()][object]$Headers = $null,
+            [AllowNull()][string]$Body = $null,
+            [string]$ExtractorScript = 'function(response){return {isValid:true,remaining:response.balance};}',
             [AllowNull()][object]$TrustedDestination = $null
         )
+        if ($null -eq $Query) { $Query = [ordered]@{} }
+        if ($null -eq $Headers) { $Headers = [ordered]@{} }
         [pscustomobject][ordered]@{
             Id = $Id
             Name = 'Example relay'
             Enabled = $true
+            ProviderKind = $ProviderKind
             BaseUrl = $BaseUrl
-            TemplateType = $TemplateType
-            Script = $Script
+            RequestDefinition = if ($ProviderKind -eq 'Generic') {
+                [pscustomobject][ordered]@{
+                    Method = $Method; Path = $Path; Query = [pscustomobject]$Query
+                    Headers = [pscustomobject]$Headers; Body = $Body
+                }
+            } else { $null }
+            ExtractorScript = $ExtractorScript
             TimeoutSeconds = 10
             IntervalMinutes = 15
             TrustedDestination = $TrustedDestination
@@ -101,8 +114,10 @@ Describe 'relay manager WPF adapter contract' {
 
         foreach ($name in @(
             'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton',
-            'EnabledCheckBox', 'NameTextBox', 'BaseUrlTextBox', 'TemplateComboBox',
-            'ScriptTextBox', 'ApiKeyPasswordBox', 'AccessTokenPasswordBox', 'UserIdPasswordBox',
+            'EnabledCheckBox', 'NameTextBox', 'ProviderKindComboBox', 'BaseUrlTextBox',
+            'AdvancedRequestExpander', 'MethodComboBox', 'PathTextBox', 'QueryTextBox',
+            'HeadersTextBox', 'BodyTextBox', 'ExtractorScriptTextBox', 'MigrationWarningText',
+            'ApiKeyPasswordBox', 'AccessTokenPasswordBox', 'UserIdPasswordBox',
             'TimeoutTextBox', 'IntervalTextBox', 'TestButton', 'SaveButton', 'CancelButton',
             'PreviewList'
         )) {
@@ -169,12 +184,12 @@ Describe 'relay manager WPF adapter contract' {
             ForEach-Object Text) -join "`n") | Should -Not -Match 'api-secret|token-secret|user-secret'
     }
 
-    It 'disables Test for a built-in draft that is not HTTPS and same-origin safe' {
+    It 'disables Test for malformed Generic base URLs and absolute paths' {
         $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
-        & $script:View.SetDraft (New-TestRelayDraft -BaseUrl 'http://relay.example')
+        & $script:View.SetDraft (New-TestRelayDraft -BaseUrl 'not-a-url')
         $script:View.Controls.TestButton.IsEnabled | Should -BeFalse
 
-        & $script:View.SetDraft (New-TestRelayDraft -Script '({request:{url:"https://other.example/usage"},extractor:r=>r})')
+        & $script:View.SetDraft (New-TestRelayDraft -Path 'https://other.example/usage')
         $script:View.Controls.TestButton.IsEnabled | Should -BeFalse
 
         & $script:View.SetDraft (New-TestRelayDraft)
@@ -289,8 +304,8 @@ Describe 'relay manager interaction controller' {
     }
 
     It 'declines custom trust without changing trust or explicitly retrying' {
-        $draft = New-TestRelayDraft -TemplateType Custom -TrustedDestination $null `
-            -Script '({request:{url:"https://new.example/private"},extractor:r=>r})'
+        $draft = New-TestRelayDraft -ProviderKind Custom -TrustedDestination $null `
+            -ExtractorScript '({request:{url:"https://new.example/private"},extractor:r=>r})'
         $script:View.TestState.Draft = $draft
         $script:View.TestState.TrustAnswer = $false
         $script:QueryResults.Enqueue([pscustomobject]@{
@@ -313,8 +328,8 @@ Describe 'relay manager interaction controller' {
     }
 
     It 'accepts the exact fingerprint and explicitly retries once with it' {
-        $draft = New-TestRelayDraft -TemplateType Custom -TrustedDestination 'https://old.example:443' `
-            -Script '({request:{url:"https://new.example/private"},extractor:r=>r})'
+        $draft = New-TestRelayDraft -ProviderKind Custom -TrustedDestination 'https://old.example:443' `
+            -ExtractorScript '({request:{url:"https://new.example/private"},extractor:r=>r})'
         $script:View.TestState.Draft = $draft
         $script:View.TestState.TrustAnswer = $true
         $script:QueryResults.Enqueue([pscustomobject]@{

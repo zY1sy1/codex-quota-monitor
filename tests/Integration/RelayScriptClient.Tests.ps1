@@ -17,11 +17,18 @@ BeforeAll {
             Name = 'Fixture'
             Enabled = $true
             BaseUrl = 'https://fixture.invalid'
-            TemplateType = 'General'
-            Script = $Script
+            ProviderKind = 'Generic'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'GET'
+                Path = '/usage'
+                Query = [ordered]@{}
+                Headers = [ordered]@{}
+                Body = $null
+            }
+            ExtractorScript = $Script
             TimeoutSeconds = $TimeoutSeconds
             IntervalMinutes = 10
-            TrustedDestination = $null
+            TrustedDestination = 'https://fixture.invalid:443'
         }
     }
 
@@ -65,6 +72,38 @@ Describe 'relay script host JSONL client' {
         $client.Process.StartInfo.StandardErrorEncoding.WebName | Should -BeExactly 'utf-8'
         (@($client.Process.StartInfo.ArgumentList) -join "`n") | Should -Not -Match $secret
         (@($client.Process.StartInfo.Environment.Values) -join "`n") | Should -Not -Match $secret
+    }
+
+    It 'serializes a Generic request definition without legacy template fields' {
+        $client = Start-TestRelayClient
+        $provider = [pscustomobject][ordered]@{
+            Id = 'generic-provider'
+            ProviderKind = 'Generic'
+            BaseUrl = 'https://fixture.invalid'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'POST'
+                Path = '/usage'
+                Query = @{ scope = 'current' }
+                Headers = @{ Authorization = 'Bearer {{apiKey}}' }
+                Body = '{"token":"{{accessToken}}"}'
+            }
+            ExtractorScript = 'function(response){return {remaining:response.balance};}'
+            TimeoutSeconds = 2
+            TrustedDestination = 'https://fixture.invalid:443'
+        }
+
+        $result = Invoke-RelayScriptQuery -Client $client -Provider $provider -Secrets @{
+            ApiKey = 'api-secret'
+            AccessToken = 'access-secret'
+            UserId = ''
+        }
+
+        $result.Ok | Should -BeTrue
+        $client.LastCommand.providerKind | Should -BeExactly 'Generic'
+        $client.LastCommand.requestDefinition.method | Should -BeExactly 'POST'
+        $client.LastCommand.PSObject.Properties.Name | Should -Not -Contain 'templateType'
+        $client.LastCommand.PSObject.Properties.Name | Should -Not -Contain 'script'
+        ($client.LastCommand | ConvertTo-Json -Depth 12 -Compress) | Should -Not -Match 'api-secret|access-secret'
     }
 
     It 'correlates two commands by distinct generated IDs on one long-lived process' {

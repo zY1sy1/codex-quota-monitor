@@ -16,6 +16,27 @@ function Get-RelayClientProperty {
     return $null
 }
 
+function Get-RelayClientPropertyNames {
+    param([AllowNull()][object]$InputObject)
+    if ($null -eq $InputObject) {
+        return @()
+    }
+    if ($InputObject -is [Collections.IDictionary]) {
+        return @($InputObject.Keys | ForEach-Object { [string]$_ })
+    }
+    return @($InputObject.PSObject.Properties.Name)
+}
+
+function ConvertTo-RelayClientMap {
+    param([AllowNull()][object]$InputObject)
+    $result = [ordered]@{}
+    foreach ($name in @(Get-RelayClientPropertyNames $InputObject)) {
+        if ([string]::IsNullOrEmpty([string]$name)) { continue }
+        $result[$name] = [string](Get-RelayClientProperty $InputObject $name)
+    }
+    return $result
+}
+
 function New-RelayClientFailure {
     param(
         [AllowEmptyString()][string]$Id,
@@ -257,6 +278,7 @@ function Start-RelayScriptClient {
             Gate = [Threading.SemaphoreSlim]::new(1, 1)
             Responses = [Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
             Stderr = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+            LastCommand = $null
             StderrRecordLimit = $StderrRecordLimit
             DiagnosticLineLimit = $DiagnosticLineLimit
             OutputReadTask = $outputReader.ReadLineAsync()
@@ -406,12 +428,33 @@ function Invoke-RelayScriptQuery {
                 -Message 'Relay script host exited unexpectedly.'
         }
 
+        $providerKind = [string](Get-RelayClientProperty $Provider 'ProviderKind')
+        if ($providerKind -notin @('Generic', 'Custom')) {
+            return New-RelayClientFailure -Id $id -Category 'RequestValidation' `
+                -Message 'Relay provider kind is invalid.'
+        }
+        $requestDefinition = $null
+        if ($providerKind -ceq 'Generic') {
+            $rawRequestDefinition = Get-RelayClientProperty $Provider 'RequestDefinition'
+            if ($null -eq $rawRequestDefinition) {
+                return New-RelayClientFailure -Id $id -Category 'RequestValidation' `
+                    -Message 'Relay request definition is invalid.'
+            }
+            $requestDefinition = [ordered]@{
+                method = [string](Get-RelayClientProperty $rawRequestDefinition 'Method')
+                path = [string](Get-RelayClientProperty $rawRequestDefinition 'Path')
+                query = ConvertTo-RelayClientMap (Get-RelayClientProperty $rawRequestDefinition 'Query')
+                headers = ConvertTo-RelayClientMap (Get-RelayClientProperty $rawRequestDefinition 'Headers')
+                body = Get-RelayClientProperty $rawRequestDefinition 'Body'
+            }
+        }
         $command = [ordered]@{
             id = $id
             operation = 'query'
-            script = [string](Get-RelayClientProperty $Provider 'Script')
-            templateType = [string](Get-RelayClientProperty $Provider 'TemplateType')
+            providerKind = $providerKind
             baseUrl = [string](Get-RelayClientProperty $Provider 'BaseUrl')
+            requestDefinition = $requestDefinition
+            extractorScript = [string](Get-RelayClientProperty $Provider 'ExtractorScript')
             secrets = [ordered]@{
                 apiKey = $apiKey
                 accessToken = $accessToken
@@ -420,6 +463,20 @@ function Invoke-RelayScriptQuery {
             timeoutMs = [long]($timeoutSeconds * 1000)
             trustedDestination = Get-RelayClientProperty $Provider 'TrustedDestination'
         }
+        $recordedCommand = [ordered]@{}
+        foreach ($entry in $command.GetEnumerator()) {
+            if ($entry.Key -ceq 'secrets') {
+                $recordedCommand[$entry.Key] = [ordered]@{
+                    apiKey = '<redacted>'
+                    accessToken = '<redacted>'
+                    userId = '<redacted>'
+                }
+            }
+            else {
+                $recordedCommand[$entry.Key] = $entry.Value
+            }
+        }
+        $Client.LastCommand = [pscustomobject]$recordedCommand
         $json = $command | ConvertTo-Json -Depth 12 -Compress -ErrorAction Stop
         $line = $json.TrimEnd([char]13, [char]10) + [string][char]10
         try {

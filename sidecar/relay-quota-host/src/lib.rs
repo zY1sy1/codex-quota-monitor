@@ -9,7 +9,7 @@ use std::{
     time::Instant,
 };
 
-use protocol::{HostResponse, QueryCommand, SanitizedError};
+use protocol::{HostResponse, ProviderKind, QueryCommand, SanitizedError};
 
 const MAX_COMMAND_LINE_BYTES: usize = 512 * 1024;
 const MAX_RESPONSE_ID_BYTES: usize = 128;
@@ -63,13 +63,35 @@ pub fn run_jsonl<R: Read, W: Write>(reader: R, mut writer: W) -> io::Result<()> 
 
 fn execute_query(command: &QueryCommand, response_id: &str) -> HostResponse {
     let started = Instant::now();
-    let request =
-        match script::evaluate_request(&command.script, &command.base_url, &command.secrets) {
-            Ok(request) => request,
-            Err(error) => return HostResponse::failure(response_id, error),
-        };
+    let request = match command.provider_kind {
+        ProviderKind::Generic => {
+            let Some(request_definition) = command.request_definition.as_ref() else {
+                return HostResponse::failure(response_id, request_validation_error());
+            };
+            match script::evaluate_generic_request(
+                request_definition,
+                &command.base_url,
+                &command.secrets,
+            ) {
+                Ok(request) => request,
+                Err(error) => return HostResponse::failure(response_id, error),
+            }
+        }
+        ProviderKind::Custom => {
+            if command.request_definition.is_some() {
+                return HostResponse::failure(response_id, request_validation_error());
+            }
+            match script::evaluate_request(
+                &command.extractor_script,
+                &command.base_url,
+                &command.secrets,
+            ) {
+                Ok(request) => request,
+                Err(error) => return HostResponse::failure(response_id, error),
+            }
+        }
+    };
     let destination = match destination::validate_destination(
-        command.template_type,
         &command.base_url,
         &request.url,
         command.trusted_destination.as_deref(),
@@ -83,7 +105,7 @@ fn execute_query(command: &QueryCommand, response_id: &str) -> HostResponse {
         Err(error) => return HostResponse::failure(response_id, error),
     };
     let results = match script::evaluate_extractor_with_context(
-        &command.script,
+        &command.extractor_script,
         &response.json,
         &command.base_url,
         &command.secrets,
@@ -237,6 +259,10 @@ fn result_validation_error() -> SanitizedError {
         "ResultValidation",
         "Relay usage extractor did not produce a valid result.",
     )
+}
+
+fn request_validation_error() -> SanitizedError {
+    sanitized_error("RequestValidation", "Relay request definition is invalid.")
 }
 
 fn sanitized_error(category: &str, message: &str) -> SanitizedError {

@@ -81,6 +81,9 @@ function Start-FakeRelayApi {
             return [pscustomobject]@{ TotalRequests = 0; MaxConcurrent = 0 }
         }
     }
+    $api | Add-Member -MemberType ScriptProperty -Name LastRequest -Value {
+        return $this.Stats.LastRequest
+    }
     return $api
 }
 
@@ -135,6 +138,13 @@ public sealed class CodexQuotaFakeRelayServer
     private int active;
     private int maxConcurrent;
     private int totalRequests;
+    private string lastMethod = "";
+    private string lastPath = "";
+    private string lastQuery = "";
+    private bool lastHasApiKey;
+    private bool lastHasAccessToken;
+    private bool lastHasUserId;
+    private bool lastBodyHasUserId;
 
     public CodexQuotaFakeRelayServer(int port, string scenario, int delayMilliseconds, string readyFile, string statsFile)
     {
@@ -177,6 +187,29 @@ public sealed class CodexQuotaFakeRelayServer
     private void Handle(HttpListenerContext context)
     {
         string path = context.Request.Url == null ? "/" : context.Request.Url.AbsolutePath;
+        string query = context.Request.Url == null ? "" : context.Request.Url.Query;
+        string apiKey = context.Request.Headers["X-Api-Key"] ?? "";
+        string authorization = context.Request.Headers["Authorization"] ?? "";
+        string accessToken = context.Request.Headers["X-Access-Token"] ?? "";
+        string userId = context.Request.Headers["New-Api-User"] ?? "";
+        string requestBody = "";
+        if (context.Request.ContentLength64 > 0)
+        {
+            using (var bodyReader = new StreamReader(context.Request.InputStream, Encoding.UTF8, false, 4096, true))
+            {
+                requestBody = bodyReader.ReadToEnd();
+            }
+        }
+        lock (statsGate)
+        {
+            lastMethod = context.Request.HttpMethod;
+            lastPath = path;
+            lastQuery = query;
+            lastHasApiKey = !string.IsNullOrEmpty(apiKey) || !string.IsNullOrEmpty(authorization);
+            lastHasAccessToken = !string.IsNullOrEmpty(accessToken);
+            lastHasUserId = !string.IsNullOrEmpty(userId);
+            lastBodyHasUserId = requestBody.IndexOf("\"user\"", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
         int current = Interlocked.Increment(ref active);
         while (true)
         {
@@ -207,6 +240,14 @@ public sealed class CodexQuotaFakeRelayServer
             else if (scenario == "Zero" && path == "/v1/usage")
             {
                 body = "{\"success\":true,\"data\":{\"balance\":0,\"currency\":\"USD\",\"planName\":\"Zero\"}}";
+            }
+            else if (path == "/generic/get")
+            {
+                body = "{\"success\":true,\"balance\":42,\"currency\":\"USD\"}";
+            }
+            else if (path == "/generic/post")
+            {
+                body = "{\"success\":true,\"balance\":9,\"planName\":\"Generic POST\"}";
             }
             else if (path == "/v1/usage")
             {
@@ -255,9 +296,21 @@ public sealed class CodexQuotaFakeRelayServer
         lock (statsGate)
         {
             string json = "{\"totalRequests\":" + Volatile.Read(ref totalRequests).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + ",\"maxConcurrent\":" + Volatile.Read(ref maxConcurrent).ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+                + ",\"maxConcurrent\":" + Volatile.Read(ref maxConcurrent).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"lastRequest\":{\"method\":\"" + EscapeJson(lastMethod)
+                + "\",\"path\":\"" + EscapeJson(lastPath)
+                + "\",\"query\":\"" + EscapeJson(lastQuery)
+                + "\",\"hasApiKey\":" + (lastHasApiKey ? "true" : "false")
+                + ",\"hasAccessToken\":" + (lastHasAccessToken ? "true" : "false")
+                + ",\"hasUserId\":" + (lastHasUserId ? "true" : "false")
+                + ",\"bodyHasUserId\":" + (lastBodyHasUserId ? "true" : "false") + "}}";
             try { File.WriteAllText(statsFile, json, new UTF8Encoding(false)); } catch { }
         }
+    }
+
+    private static string EscapeJson(string value)
+    {
+        return (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
     }
 }
 '@
