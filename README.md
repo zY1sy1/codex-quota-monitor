@@ -65,6 +65,60 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 
 双击托盘图标也可以显示或隐藏悬浮窗。“退出”才会终止监控进程。
 
+## 中转站额度
+
+中转站额度与 Codex 官方额度是两条独立的数据链路。官方 App Server 暂时失败时，中转站仍可显示自己的最后成功数据；中转站失败也不会清空、重启或改变官方额度状态。
+
+### 添加中转站
+
+从托盘打开以下流程：
+
+```text
+托盘 → 管理中转站 → 添加 → 选择 Generic 或 Custom
+→ 输入 Base URL、请求定义和凭据 → 测试 provider → 保存并启用
+```
+
+通用中转站 provider 有两种模式：
+
+- `Generic`：用结构化请求定义配置任意合法的第三方 API，支持 `GET`、`POST`、`PUT`、相对 `Path`、Query、Headers、Body，以及独立的 extractor 函数；
+- `Custom`：粘贴完整的兼容 CC Switch 请求/提取脚本，作为高级模式。
+
+内置预设只是可编辑的起点，不再决定网络目标或安全策略：
+
+- `Wakaka / v1/usage`：钱包或套餐查询，通常使用 API Key；
+- `通用余额 / user/balance`（旧 General）：通用余额接口；
+- `New API / api/user/self`：使用 Access Token，并可填写 User ID。
+
+新写入的 provider 文件使用 `SchemaVersion = 2`。Generic provider 的主要字段是 `ProviderKind`、`BaseUrl`、`RequestDefinition` 和 `ExtractorScript`；Query、Headers 必须是字符串键值对象，Body 是可选文本。请求定义只允许以下受控占位符：`{{baseUrl}}`、`{{apiKey}}`、`{{accessToken}}` 和 `{{userId}}`。
+
+已有的 Schema 1 文件会在读取时按 provider 独立迁移；迁移失败的单个 provider 会降级为 Custom 并保留原脚本，不会阻断其他 provider 或官方额度。
+
+Base URL、API Key、Access Token 和 User ID 只在管理窗口的密码输入框中填写。保存时使用当前 Windows 用户 DPAPI 加密，`relay-providers.json` 只保存密文和经过规范化的配置，不保存 API key、Access Token、User ID 或其他明文凭据。
+
+所有 provider 都必须使用明确的目标地址信任。请求 Path 必须保持 Base URL 的 origin；信任值规范化为 `scheme://host:port`，不包含路径、查询参数或凭据。HTTPS 可用于远程目标，明文 HTTP 只允许本机回环地址；重定向不会自动跨到未信任 origin。首次测试新目标或修改 origin 后，按 UI 提示确认目标即可。
+
+“测试 provider”（旧界面称“测试脚本”）只执行一次手动验证并显示脱敏错误或归一化结果；“保存并启用”才会写入配置并加入自动调度。默认刷新间隔为 10 分钟，全局并发上限为 2；间隔设为 0 可以关闭该中转站的自动查询，但仍可手动测试。单个 extractor 可以返回一个余额对象或多个套餐对象；不同单位只展示，不跨单位求和或比较。
+
+完整的 schema 2 迁移规则和可复制的 GET/POST 配置示例见 [`docs/relay-provider-migration.md`](docs/relay-provider-migration.md) 和 [`docs/examples/generic-relay-provider.json`](docs/examples/generic-relay-provider.json)。
+
+每个中转站独立显示 `Live`、`Stale`、`AuthRequired`、`InvalidScript`、`Unavailable` 或 `Disabled`。网络错误、限流和超时会保留最后一次成功的归一化结果，并标记为“过期”；没有成功结果时不会伪造数字零。只有 extractor 明确返回的成功显式零值才显示为零。USD、CNY、请求数、Token 数和百分比不混合求和或比较。
+
+### 显示模式与主题
+
+托盘菜单可以切换三种显示模式：
+
+- `Full`：完整窗口，可选总览折叠或标签切换布局；
+- `CompactBar`：横向迷你条，显示一个焦点指标、进度和重置信息；
+- `Orb`：额度球，百分比使用环形进度，绝对余额不会伪造百分比。
+
+每种模式都支持 `浅色透明` 和 `深色透明` 主题。模式、主题和完整窗口布局会持久化，切换只重绘当前快照，不额外触发 API 刷新。关闭窗口或 Alt+F4 是“关闭到系统托盘”，监控继续运行；只有托盘中的“退出”或停止脚本才会结束进程。
+
+### 中转站文件与安全边界
+
+安装目录包含 `Bin\relay-quota-host.exe`、旁边的 SHA-256 清单、`Presets\relay-usage.json` 和 `ThirdPartyNotices.txt`。运行期间只把最后成功的归一化结果写入 `data\relay-cache.json`，用于重启后的过期显示。
+
+不会把 API key、Access Token、User ID、解密后的 provider JSON、原始 HTTP 响应、请求头、替换凭据后的脚本、sidecar JSONL 或完整日志写入日志、截图、健康状态或提交；也不会从 CC Switch 自动读取凭据。真实第三方 provider 验证必须由用户在 UI 密码框中输入凭据。
+
 ## 开机启动
 
 开机启动默认启用，并可在托盘菜单中随时切换。设置启用时，程序在当前用户的启动目录创建：
@@ -182,6 +236,8 @@ pwsh -NoProfile -File .\scripts\Uninstall-CodexQuotaMonitor.ps1 -PreserveData
 
 普通健康检查验证程序已安装、正在运行、状态文件有效且足够新；它不要求一定能取得 ChatGPT 额度。需要验证真实额度读取时请使用 `-Live`。修复操作会先请求现有实例正常退出，再以可回滚方式替换运行文件并重新启动；它不会清空用户偏好。
 
+修复会在替换前后校验 `relay-quota-host.exe` 的 SHA-256；缺少 sidecar、哈希清单、预设或第三方声明，或者哈希不匹配时会拒绝启动并回滚到旧版本。修复成功后仍保留设置、加密的中转站配置、缓存和日志。
+
 卸载脚本负责清理 Windows 伴随程序。若还需要从 Codex 个人市场中移除插件，请在运行卸载脚本后另行执行插件管理操作。
 
 ## 日志与排障
@@ -203,6 +259,9 @@ pwsh -NoProfile -File .\scripts\Uninstall-CodexQuotaMonitor.ps1 -PreserveData
 - 不监听网络端口；监控程序只与本地 `codex app-server` 子进程的标准输入/输出通信；
 - 只写入插件目录、当前用户的 `%LOCALAPPDATA%` 目录和当前用户的 Startup 文件夹；
 - “打开官方额度页面”只有在用户选择菜单时才会调用默认浏览器。
+- 中转站 API key、Access Token 和 User ID 只通过管理窗口密码框输入，并使用 DPAPI 加密；不从 CC Switch 自动读取凭据；
+- 不保存或打印解密后的 provider JSON、原始 HTTP 响应、请求头、sidecar 标准输入/输出或完整日志；
+- 健康状态只报告 provider 数量、Live/Stale/Invalid 计数、sidecar 状态、显示模式和主题等公共字段。
 
 ## 官方额度页面
 

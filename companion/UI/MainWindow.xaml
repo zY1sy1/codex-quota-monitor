@@ -5,130 +5,160 @@
         ResizeMode="NoResize"
         AllowsTransparency="True"
         Background="Transparent"
-        Width="300"
+        Width="420"
         SizeToContent="Height"
-        MinHeight="150"
+        MinHeight="240"
+        MaxHeight="720"
         Topmost="True"
         ShowInTaskbar="False"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         AutomationProperties.Name="Codex 额度悬浮窗">
+    <Window.Resources>
+        <Style x:Key="FlatIconButton" TargetType="Button">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="1,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style x:Key="FlatTabButton" TargetType="Button" BasedOn="{StaticResource FlatIconButton}">
+            <Setter Property="Width" Value="Auto" />
+            <Setter Property="MinWidth" Value="92" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style TargetType="Expander">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+        <Style TargetType="ProgressBar">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid x:Name="PART_Track" Height="6" ClipToBounds="True">
+                            <Border Background="{TemplateBinding Background}" CornerRadius="3" />
+                            <Border x:Name="PART_Indicator"
+                                    Background="{TemplateBinding Foreground}"
+                                    HorizontalAlignment="Left"
+                                    CornerRadius="3" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Border x:Name="RootBorder"
-            Background="#EE101827"
-            BorderBrush="#334155"
+            Background="#E6323A4C"
+            BorderBrush="#4D707A90"
             BorderThickness="1"
-            CornerRadius="16"
-            Padding="12">
+            CornerRadius="8"
+            Padding="16">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.28" Color="#000000" />
+        </Border.Effect>
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="28" />
+                <RowDefinition Height="36" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Height="28">
+            <Grid Grid.Row="0" Height="36">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="18" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="30" />
                     <ColumnDefinition Width="30" />
                     <ColumnDefinition Width="30" />
+                    <ColumnDefinition Width="30" />
+                    <ColumnDefinition Width="30" />
+                    <ColumnDefinition Width="30" />
                 </Grid.ColumnDefinitions>
-
                 <Grid x:Name="HeaderDragArea"
                       Grid.Column="0"
                       Grid.ColumnSpan="2"
-                      Height="28"
                       Background="Transparent"
                       Cursor="SizeAll"
                       AutomationProperties.Name="拖动 Codex 额度窗口" />
-
                 <Border x:Name="ConnectionDot"
                         Grid.Column="0"
-                        Width="9"
-                        Height="9"
-                        Margin="1,0,0,0"
+                        Width="8"
+                        Height="8"
                         HorizontalAlignment="Left"
                         VerticalAlignment="Center"
-                        Background="#94A3B8"
-                        CornerRadius="5"
+                        Background="#FFAFB8CB"
+                        CornerRadius="4"
                         IsHitTestVisible="False"
                         ToolTip="正在连接 Codex"
                         AutomationProperties.Name="连接状态：正在连接" />
-
                 <TextBlock x:Name="TitleText"
                            Grid.Column="1"
-                           Margin="2,0,4,0"
+                           Margin="4,0,8,0"
                            VerticalAlignment="Center"
-                           Foreground="#F8FAFC"
-                           FontSize="14"
+                           Foreground="#FFF4F3F1"
+                           FontSize="17"
                            FontWeight="SemiBold"
                            IsHitTestVisible="False"
-                           Text="Codex 额度" />
-
-                <Button x:Name="PinButton"
-                        Grid.Column="2"
-                        Width="28"
-                        Height="28"
-                        Padding="0"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Background="Transparent"
-                        BorderBrush="Transparent"
-                        Foreground="#A7F3D0"
-                        Focusable="True"
-                        FontSize="13"
-                        Content="置"
-                        ToolTip="取消始终置顶"
-                        AutomationProperties.Name="取消始终置顶" />
-
-                <Button x:Name="HideButton"
-                        Grid.Column="3"
-                        Width="28"
-                        Height="28"
-                        Padding="0"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Background="Transparent"
-                        BorderBrush="Transparent"
-                        Foreground="#CBD5E1"
-                        Focusable="True"
-                        FontSize="16"
-                        Content="—"
-                        ToolTip="隐藏悬浮窗"
-                        AutomationProperties.Name="隐藏悬浮窗" />
-
-                <Button x:Name="CloseButton"
-                        Grid.Column="4"
-                        Width="28"
-                        Height="28"
-                        Padding="0"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Background="Transparent"
-                        BorderBrush="Transparent"
-                        Foreground="#CBD5E1"
-                        Focusable="True"
-                        FontSize="15"
-                        Content="×"
-                        ToolTip="关闭到系统托盘"
-                        AutomationProperties.Name="关闭到系统托盘" />
+                           Text="额度总览" />
+                <Button x:Name="PinButton" Grid.Column="2" Style="{StaticResource FlatIconButton}"
+                        Content="置" ToolTip="取消始终置顶" AutomationProperties.Name="取消始终置顶" />
+                <Button x:Name="ThemeButton" Grid.Column="3" Style="{StaticResource FlatIconButton}"
+                        Content="◐" ToolTip="切换明暗主题" AutomationProperties.Name="切换明暗主题" />
+                <Button x:Name="ModeButton" Grid.Column="4" Style="{StaticResource FlatIconButton}"
+                        Content="▣" ToolTip="切换显示模式" AutomationProperties.Name="切换显示模式" />
+                <Button x:Name="LayoutButton" Grid.Column="5" Style="{StaticResource FlatIconButton}"
+                        Content="⇄" ToolTip="切换完整窗口布局" AutomationProperties.Name="切换完整窗口布局" />
+                <Button x:Name="HideButton" Grid.Column="6" Style="{StaticResource FlatIconButton}"
+                        Content="_" ToolTip="隐藏悬浮窗" AutomationProperties.Name="隐藏悬浮窗" />
+                <Button x:Name="CloseButton" Grid.Column="7" Style="{StaticResource FlatIconButton}"
+                        Content="×" ToolTip="关闭到系统托盘" AutomationProperties.Name="关闭到系统托盘" />
             </Grid>
 
             <ScrollViewer Grid.Row="1"
-                          Margin="0,4,0,0"
-                          MaxHeight="400"
+                          Margin="0,8,0,0"
+                          MaxHeight="560"
                           HorizontalScrollBarVisibility="Disabled"
                           VerticalScrollBarVisibility="Auto"
-                          CanContentScroll="True"
                           Focusable="False">
-                <StackPanel x:Name="QuotaRows" Orientation="Vertical" />
+                <Grid>
+                    <StackPanel x:Name="OverviewPanel">
+                        <Expander x:Name="OfficialExpander" Header="Codex 官方额度" IsExpanded="True">
+                            <StackPanel x:Name="OfficialRows" />
+                        </Expander>
+                        <Expander x:Name="RelayExpander" Header="中转站额度" IsExpanded="True">
+                            <StackPanel x:Name="RelayRows" />
+                        </Expander>
+                    </StackPanel>
+                    <StackPanel x:Name="TabsPanel" Visibility="Collapsed">
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="OfficialTabButton" Grid.Column="0"
+                                    Style="{StaticResource FlatTabButton}" Content="官方额度" />
+                            <Button x:Name="RelayTabButton" Grid.Column="1"
+                                    Style="{StaticResource FlatTabButton}" Content="中转站额度" />
+                        </Grid>
+                        <StackPanel x:Name="OfficialTabRows" />
+                        <StackPanel x:Name="RelayTabRows" Visibility="Collapsed" />
+                    </StackPanel>
+                </Grid>
             </ScrollViewer>
 
             <TextBlock x:Name="FreshnessText"
                        Grid.Row="2"
-                       Margin="2,8,2,0"
-                       Foreground="#94A3B8"
+                       Margin="2,10,2,0"
+                       Foreground="#FFAFB8CB"
                        FontSize="11"
                        TextWrapping="Wrap"
                        Visibility="Collapsed"

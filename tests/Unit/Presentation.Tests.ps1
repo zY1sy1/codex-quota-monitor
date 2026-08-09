@@ -260,3 +260,24 @@ Describe 'ConvertTo-QuotaPresentationRow' {
         @(ConvertTo-QuotaPresentationRow -QuotaWindows @() -Now $PresentationNow).Count | Should -Be 0
     }
 }
+
+Describe 'ConvertTo-OfficialMonitorPresentationRow' {
+    It 'adapts the legacy official display shape without changing its producer' {
+        $legacy = [pscustomobject][ordered]@{
+            Key = 'official:five-hour'
+            Label = '5 小时额度'
+            RemainingText = '74.5%'
+            ProgressValue = [double]74.5
+            CountdownText = '05:00:00'
+            ResetTimeText = '重置时间：2026-08-01 13:00'
+        }
+
+        $row = ConvertTo-OfficialMonitorPresentationRow -Row $legacy
+
+        $row.SourceKind | Should -BeExactly 'Official'
+        $row.SourceId | Should -BeExactly 'codex'
+        $row.ValueText | Should -BeExactly '74.5%'
+        $row.Countdown | Should -BeExactly '05:00:00'
+        $row.ResetTime | Should -BeExactly '重置时间：2026-08-01 13:00'
+    }
+}

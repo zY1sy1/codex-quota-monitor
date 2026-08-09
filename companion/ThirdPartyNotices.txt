@@ -1,0 +1,29 @@
+Relay Quota Monitor includes the following third-party components.
+
+QuickJS
+  Source: https://bellard.org/quickjs/
+  Repository: https://github.com/bellard/quickjs
+  License: MIT (see the upstream repository for the complete license text)
+
+rquickjs
+  Source: https://github.com/DelSkayn/rquickjs
+  License: MIT OR Apache-2.0
+
+reqwest
+  Source: https://github.com/seanmonstar/reqwest
+  License: MIT OR Apache-2.0
+
+serde
+  Source: https://github.com/serde-rs/serde
+  License: MIT OR Apache-2.0
+
+rustls
+  Source: https://github.com/rustls/rustls
+  License: Apache-2.0 OR ISC OR MIT
+
+url
+  Source: https://github.com/servo/rust-url
+  License: MIT OR Apache-2.0
+
+The packaged sidecar does not download dependencies at install time. Rust is
+needed only to reproduce the build from the locked Cargo dependency graph.

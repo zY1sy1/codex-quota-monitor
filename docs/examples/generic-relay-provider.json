@@ -1,0 +1,59 @@
+{
+  "SchemaVersion": 2,
+  "Providers": [
+    {
+      "Id": "11111111-1111-4111-8111-111111111111",
+      "Name": "Example GET relay",
+      "Enabled": true,
+      "ProviderKind": "Generic",
+      "BaseUrl": "https://relay.example.test",
+      "RequestDefinition": {
+        "Method": "GET",
+        "Path": "/api/usage",
+        "Query": {
+          "scope": "current"
+        },
+        "Headers": {
+          "Authorization": "Bearer {{apiKey}}"
+        },
+        "Body": null
+      },
+      "ExtractorScript": "function(response){const data=response.data??response;return {isValid:true,remaining:data.balance,total:data.total??null,used:data.used??null,unit:data.currency??\"USD\",planName:data.planName??\"Current\"};}",
+      "TimeoutSeconds": 10,
+      "IntervalMinutes": 10,
+      "TrustedDestination": null,
+      "Secrets": {
+        "ApiKey": "",
+        "AccessToken": "",
+        "UserId": ""
+      }
+    },
+    {
+      "Id": "22222222-2222-4222-8222-222222222222",
+      "Name": "Example POST relay",
+      "Enabled": true,
+      "ProviderKind": "Generic",
+      "BaseUrl": "https://relay.example.test",
+      "RequestDefinition": {
+        "Method": "POST",
+        "Path": "/v1/account/usage",
+        "Query": {},
+        "Headers": {
+          "Authorization": "Bearer {{accessToken}}",
+          "Content-Type": "application/json",
+          "X-User-Id": "{{userId}}"
+        },
+        "Body": "{\"include\":\"plans\"}"
+      },
+      "ExtractorScript": "function(response){const data=response.data??response;return (data.plans??[data]).map(function(plan){return {isValid:true,remaining:plan.remaining,unit:plan.unit??\"USD\",planName:plan.name??null,total:plan.total??null,used:plan.used??null};});}",
+      "TimeoutSeconds": 10,
+      "IntervalMinutes": 10,
+      "TrustedDestination": null,
+      "Secrets": {
+        "ApiKey": "",
+        "AccessToken": "",
+        "UserId": ""
+      }
+    }
+  ]
+}

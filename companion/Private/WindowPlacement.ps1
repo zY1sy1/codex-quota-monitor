@@ -303,18 +303,48 @@ function Initialize-MonitorDesktopPresentation {
         [scriptblock]$GetWorkAreas,
 
         [Parameter(Mandatory, Position = 4)]
-        [scriptblock]$SetPlacement
+        [scriptblock]$SetPlacement,
+
+        [Parameter()][AllowNull()][object]$CompactBarView,
+        [Parameter()][AllowNull()][object]$OrbView,
+        [Parameter()][AllowNull()][object]$DisplayController
     )
 
-    & $WindowView.SetTopmost ([bool]$Settings.Window.Topmost) | Out-Null
+    $windowSettings = Get-WindowPlacementField -InputObject $Settings -Name 'Window'
+    $fullSettings = Get-WindowPlacementField -InputObject $windowSettings -Name 'Full'
+    if ($null -eq $fullSettings) {
+        $fullSettings = $windowSettings
+    }
+
+    if ($null -ne $DisplayController -and $null -ne $CompactBarView -and $null -ne $OrbView) {
+        $workAreas = @(& $GetWorkAreas)
+        foreach ($definition in @(
+            @('Full', $WindowView),
+            @('CompactBar', $CompactBarView),
+            @('Orb', $OrbView)
+        )) {
+            $node = Get-WindowPlacementField -InputObject $windowSettings -Name $definition[0]
+            & $SetPlacement -Window $definition[1].Window `
+                -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
+                -Top (Get-WindowPlacementField -InputObject $node -Name 'Top') `
+                -WorkAreas $workAreas | Out-Null
+        }
+        & $TrayView.SetVisible $true | Out-Null
+        & $DisplayController.ApplyVisibility | Out-Null
+        return
+    }
+
+    & $WindowView.SetTopmost ([bool](
+        Get-WindowPlacementField -InputObject $fullSettings -Name 'Topmost'
+    )) | Out-Null
     $workAreas = @(& $GetWorkAreas)
     & $SetPlacement `
         -Window $WindowView.Window `
-        -Left $Settings.Window.Left `
-        -Top $Settings.Window.Top `
+        -Left (Get-WindowPlacementField -InputObject $fullSettings -Name 'Left') `
+        -Top (Get-WindowPlacementField -InputObject $fullSettings -Name 'Top') `
         -WorkAreas $workAreas | Out-Null
     & $TrayView.SetVisible $true | Out-Null
-    if ([bool]$Settings.Window.Visible) {
+    if ([bool](Get-WindowPlacementField -InputObject $fullSettings -Name 'Visible')) {
         & $WindowView.Show | Out-Null
     }
     else {
@@ -434,5 +464,48 @@ function Resolve-WindowPlacement {
     return [pscustomobject][ordered]@{
         Left = [double]$resolvedLeft
         Top = [double]$resolvedTop
+    }
+}
+
+function Resolve-MonitorModePlacement {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Settings,
+        [Parameter(Mandatory)][ValidateSet('Full', 'CompactBar', 'Orb')][string]$Mode,
+        [AllowEmptyCollection()][object[]]$WorkAreas = @()
+    )
+
+    $node = Get-WindowPlacementField -InputObject (
+        Get-WindowPlacementField -InputObject $Settings -Name 'Window'
+    ) -Name $Mode
+    $width = switch ($Mode) {
+        'Full' {
+            $savedWidth = ConvertTo-WindowPlacementFiniteDouble (
+                Get-WindowPlacementField -InputObject $node -Name 'Width'
+            )
+            if ($null -eq $savedWidth -or $savedWidth -le 0) { 420.0 } else { $savedWidth }
+        }
+        'CompactBar' { 280.0 }
+        'Orb' { 112.0 }
+    }
+    $height = switch ($Mode) {
+        'Full' {
+            $savedHeight = ConvertTo-WindowPlacementFiniteDouble (
+                Get-WindowPlacementField -InputObject $node -Name 'Height'
+            )
+            if ($null -eq $savedHeight -or $savedHeight -le 0) { 560.0 } else { $savedHeight }
+        }
+        'CompactBar' { 64.0 }
+        'Orb' { 112.0 }
+    }
+    $placement = Resolve-WindowPlacement `
+        -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
+        -Top (Get-WindowPlacementField -InputObject $node -Name 'Top') `
+        -WindowWidth $width -WindowHeight $height -WorkAreas $WorkAreas
+    [pscustomobject][ordered]@{
+        Left = [double]$placement.Left
+        Top = [double]$placement.Top
+        Width = [double]$width
+        Height = [double]$height
     }
 }

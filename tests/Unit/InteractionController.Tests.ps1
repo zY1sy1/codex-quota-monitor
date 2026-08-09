@@ -5,6 +5,92 @@ BeforeAll {
     }
 }
 
+Describe 'monitor interaction controller with a display controller' {
+    BeforeEach {
+        $script:DisplayCalls = [Collections.Generic.List[string]]::new()
+        $script:TrayCallbacks = $null
+        $script:ExitEvent = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::AutoReset)
+        $script:Display = [pscustomobject][ordered]@{
+            State = [pscustomobject][ordered]@{
+                Visible = $true; Mode = 'Full'; Theme = 'Dark'; FullLayout = 'Overview'; Topmost = $true
+            }
+            HideAll = { $script:DisplayCalls.Add('hide'); $script:Display.State.Visible = $false }
+            ShowCurrent = { $script:DisplayCalls.Add('show'); $script:Display.State.Visible = $true }
+            SetMode = { param($value) $script:DisplayCalls.Add("mode:$value"); $script:Display.State.Mode = $value }
+            SetTheme = { param($value) $script:DisplayCalls.Add("theme:$value"); $script:Display.State.Theme = $value }
+            SetFullLayout = { param($value) $script:DisplayCalls.Add("layout:$value"); $script:Display.State.FullLayout = $value }
+            SetTopmost = { param($value) $script:DisplayCalls.Add("topmost:$value"); $script:Display.State.Topmost = $value }
+            SetStateChangedCallback = { param($value) $script:DisplayStateChanged = $value }
+        }
+        $script:TrayState = [ordered]@{}
+        $script:Tray = [pscustomobject][ordered]@{
+            SetCallbacks = {
+                param(
+                    $OnToggleVisibility, $OnSetDisplayMode, $OnSetTheme, $OnSetFullLayout,
+                    $OnManageRelays, $OnToggleTopmost, $OnRefresh, $OnToggleStartup,
+                    $OnOpenUsage, $OnOpenLogs, $OnExit
+                )
+                $script:TrayCallbacks = [pscustomobject]$PSBoundParameters
+            }
+            SetDisplayModeChecked = { param($value) $script:TrayState.Mode = $value }
+            SetThemeChecked = { param($value) $script:TrayState.Theme = $value }
+            SetFullLayoutChecked = { param($value) $script:TrayState.Layout = $value }
+            SetTopmostChecked = { param($value) $script:TrayState.Topmost = $value }
+            SetStartupChecked = { param($value) $script:TrayState.Startup = $value }
+        }
+        $script:Settings = [ordered]@{ Window = [ordered]@{}; Startup = $true }
+        $script:Controller = New-MonitorInteractionController `
+            -Settings $script:Settings -WindowView ([pscustomobject]@{}) `
+            -DisplayController $script:Display -TrayView $script:Tray `
+            -SaveSettings { } -ApplyStartupPreference { } -RequestRefresh { } `
+            -ExitEvent $script:ExitEvent -OpenTarget { } -LogDirectory 'C:\logs' `
+            -OnManageRelays { $script:DisplayCalls.Add('relays') }
+    }
+
+    AfterEach {
+        if ($null -ne $script:Controller) { & $script:Controller.Dispose }
+        if ($null -ne $script:ExitEvent) { $script:ExitEvent.Dispose() }
+    }
+
+    It 'routes display tray actions without requesting refresh or exit' {
+        & $TrayCallbacks.OnToggleVisibility
+        & $TrayCallbacks.OnToggleVisibility
+        & $TrayCallbacks.OnSetDisplayMode Orb
+        & $TrayCallbacks.OnSetTheme Light
+        & $TrayCallbacks.OnSetFullLayout Tabs
+        & $TrayCallbacks.OnManageRelays
+        & $TrayCallbacks.OnToggleTopmost
+
+        @($DisplayCalls) | Should -Be @(
+            'hide', 'show', 'mode:Orb', 'theme:Light', 'layout:Tabs', 'relays', 'topmost:False'
+        )
+        $TrayState.Mode | Should -BeExactly 'Orb'
+        $TrayState.Theme | Should -BeExactly 'Light'
+        $TrayState.Layout | Should -BeExactly 'Tabs'
+        $TrayState.Topmost | Should -BeFalse
+        $ExitEvent.WaitOne(0) | Should -BeFalse
+    }
+
+    It 'signals exit only from the tray exit callback' {
+        & $TrayCallbacks.OnExit
+        $ExitEvent.WaitOne(0) | Should -BeTrue
+    }
+
+    It 'keeps tray checks synchronized with changes initiated by window buttons' {
+        $Display.State.Mode = 'CompactBar'
+        $Display.State.Theme = 'Light'
+        $Display.State.FullLayout = 'Tabs'
+        $Display.State.Topmost = $false
+
+        & $script:DisplayStateChanged $Display.State
+
+        $TrayState.Mode | Should -BeExactly 'CompactBar'
+        $TrayState.Theme | Should -BeExactly 'Light'
+        $TrayState.Layout | Should -BeExactly 'Tabs'
+        $TrayState.Topmost | Should -BeFalse
+    }
+}
+
 Describe 'monitor interaction controller' {
     BeforeEach {
         $script:Settings = [ordered]@{

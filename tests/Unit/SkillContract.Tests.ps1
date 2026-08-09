@@ -47,7 +47,15 @@ BeforeAll {
             'Do not require `-Live` for signed-out, API-key-only, Bedrock, or valid zero-window states;',
             '(?m)^Use `-PreserveData` .* only when the user explicitly asks to retain monitor data, settings, or logs\.',
             '(?m)^- Never print credentials, tokens, environment secrets, `auth\.json`, provider headers, raw App Server messages, raw JSON-RPC traffic, or full logs\.\r?$',
-            '(?m)^- Closing the floating window \(`Close`\) hides it to the system tray\. Choosing `Exit` from the tray stops monitoring\.\r?$'
+            '(?m)^- Closing the floating window \(`Close`\) hides it to the system tray\. Choosing `Exit` from the tray stops monitoring\.\r?$',
+            '(?i)decrypted provider JSON',
+            '(?i)raw HTTP responses',
+            '(?i)request headers',
+            '(?i)sidecar stdin/stdout',
+            '(?i)CC Switch',
+            '管理中转站',
+            '(?i)Wakaka.*General.*New API.*Custom',
+            '(?i)only after the user enters credentials in the UI'
         )
 
         foreach ($pattern in $requiredPatterns) {
@@ -158,6 +166,18 @@ Describe 'Codex quota monitor management skill contract' {
         Test-SkillPolicyContract -Content $unsafe | Should -BeFalse
         Test-SkillPolicyContract -Content $wrongHealth | Should -BeFalse
     }
+
+    It 'defines relay setup, trust, and sanitized live-verification rules' {
+        foreach ($pattern in @(
+            'Wakaka', 'General', 'New API', 'Custom', 'Base URL',
+            'Test Script', 'Save and enable', 'DPAPI',
+            'explicit destination trust', 'api\.wkkapi\.com'
+        )) {
+            $SkillContent | Should -Match $pattern
+        }
+        $SkillContent | Should -Match '(?i)never copy credentials from CC Switch'
+        $SkillContent | Should -Match '(?i)only after the user enters credentials in the UI'
+    }
 }
 
 Describe 'Chinese README contract' {
@@ -204,6 +224,24 @@ Describe 'Chinese README contract' {
             'https://chatgpt\.com/codex/settings/usage',
             '不保存 ChatGPT 访问令牌',
             '关闭到系统托盘'
+        )) {
+            $ReadmeContent | Should -Match $pattern
+        }
+    }
+
+    It 'documents relay templates, storage, states, display modes, and privacy boundaries' {
+        foreach ($pattern in @(
+            '管理中转站', 'Wakaka', 'General', 'New API', 'Custom',
+            'Base URL', 'API Key', 'Access Token', 'User ID', 'DPAPI',
+            '测试脚本', '保存并启用', '10 分钟', 'Full', 'CompactBar', 'Orb',
+            '浅色透明', '深色透明', '关闭到系统托盘', '显式零值',
+            'USD', 'CNY', 'Repair', 'PreserveData', '过期'
+        )) {
+            $ReadmeContent | Should -Match $pattern
+        }
+        foreach ($pattern in @(
+            '不保存.*API key', '不保存.*Access Token', '不保存.*原始 HTTP 响应',
+            '不保存.*请求头', '不保存.*sidecar', '不从 CC Switch 自动读取凭据'
         )) {
             $ReadmeContent | Should -Match $pattern
         }

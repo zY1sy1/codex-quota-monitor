@@ -25,20 +25,38 @@ Describe 'Codex quota monitor production composition' {
         )
     }
 
-    It 'invokes the injected desktop initializer exactly once from the production runtime' {
+    It 'composes all display views and invokes the desktop initializer exactly once' {
         $localAppData = Join-Path $TestDrive 'Desktop Initializer'
         $startup = Join-Path $TestDrive 'Desktop Initializer Startup'
         New-Item -ItemType Directory -Path $startup -Force | Out-Null
         $instancePrefix = 'Local\CodexQuotaMonitor.DesktopInitializer.' + [guid]::NewGuid().ToString('N')
         $pwsh = (Get-Process -Id $PID).Path
         $calls = [Collections.Generic.List[string]]::new()
+        $relayCacheWrites = [Collections.Generic.List[object]]::new()
+        $existingRelayProvider = [pscustomobject][ordered]@{
+            Id = '11111111-1111-1111-1111-111111111111'
+            Name = 'Existing relay'
+            Enabled = $false
+            BaseUrl = 'https://relay.example'
+            ProviderKind = 'Generic'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'GET'; Path = '/usage'; Query = [pscustomobject][ordered]@{}
+                Headers = [pscustomobject][ordered]@{}; Body = $null
+            }
+            ExtractorScript = 'function(response){return {remaining:response.balance};}'
+            TimeoutSeconds = 10
+            IntervalMinutes = 15
+            TrustedDestination = 'https://relay.example:443'
+            Secrets = [pscustomobject]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
+        }
 
         $windowView = [pscustomobject][ordered]@{
             Window = [pscustomobject]@{}
-            Render = { param($PresentationRows) }
             SetFreshness = { param([bool]$IsLive, [string]$Text) }
             Dispose = { }
         }
+        $compactBarView = [pscustomobject][ordered]@{ Window = [pscustomobject]@{}; Dispose = { } }
+        $orbView = [pscustomobject][ordered]@{ Window = [pscustomobject]@{}; Dispose = { } }
         $trayView = [pscustomobject][ordered]@{
             SetSeverity = { param([string]$Severity) }
             SetTooltip = { param([string]$Tooltip) }
@@ -48,25 +66,92 @@ Describe 'Codex quota monitor production composition' {
             ShowAndActivate = { }
             Dispose = { }
         }
+        $relayManagerView = [pscustomobject][ordered]@{
+            Dispose = { $calls.Add('dispose-relay-manager-view') | Out-Null }
+        }
+        $relayManagerController = [pscustomobject][ordered]@{
+            Show = { $calls.Add('show-relay-manager') | Out-Null }
+            Dispose = { $calls.Add('dispose-relay-manager-controller') | Out-Null }
+        }
+        $displayController = [pscustomobject][ordered]@{
+            State = [pscustomobject]@{ Visible = $true; Mode = 'Full'; Theme = 'Dark'; FullLayout = 'Overview'; Topmost = $true }
+            SetSnapshot = { param($Rows) $calls.Add("snapshot:$(@($Rows).Count)") | Out-Null }
+            Dispose = { $calls.Add('dispose-display') | Out-Null }
+        }
         $overrides = [ordered]@{
+            ReadRelayProviders = {
+                param($Path)
+                [pscustomobject]@{ SchemaVersion = 2; Providers = @($existingRelayProvider) }
+            }.GetNewClosure()
+            ReadRelayCache = {
+                param($Path)
+                [pscustomobject]@{
+                    SchemaVersion = 1
+                    Providers = @([pscustomobject]@{
+                        ProviderId = $existingRelayProvider.Id
+                        UpdatedAt = '2026-08-01T08:00:00.0000000+00:00'
+                        Results = @([pscustomobject]@{
+                            IsValid = $true; Remaining = 9; Unit = 'USD'; PlanName = 'Old'
+                        })
+                    })
+                }
+            }.GetNewClosure()
+            WriteRelayCache = {
+                param($Path, $Cache)
+                $relayCacheWrites.Add($Cache) | Out-Null
+            }.GetNewClosure()
             NewWindow = { Write-Output -NoEnumerate $windowView }.GetNewClosure()
+            NewCompactBar = { Write-Output -NoEnumerate $compactBarView }.GetNewClosure()
+            NewOrb = { Write-Output -NoEnumerate $orbView }.GetNewClosure()
             NewTray = { param([switch]$Visible) Write-Output -NoEnumerate $trayView }.GetNewClosure()
+            NewRelayManager = {
+                $calls.Add('new-relay-manager-view') | Out-Null
+                Write-Output -NoEnumerate $relayManagerView
+            }.GetNewClosure()
+            NewRelayManagerController = {
+                param(
+                    $View, $Providers, $WriteProviders, $ProtectSecret, $UnprotectSecret,
+                    $QueryProvider, $ApplyProviders, $RemoveProviderArtifacts, $ConfirmDelete
+                )
+                $View | Should -Be $relayManagerView
+                & $ApplyProviders @($existingRelayProvider) @($existingRelayProvider.Id) @() $false
+                $calls.Add('new-relay-manager-controller') | Out-Null
+                Write-Output -NoEnumerate $relayManagerController
+            }.GetNewClosure()
+            NewDisplay = {
+                param($Settings, $FullView, $CompactBarView, $OrbView, $SaveSettings, [switch]$DeferShow)
+                $FullView | Should -Be $windowView
+                $CompactBarView | Should -Be $compactBarView
+                $OrbView | Should -Be $orbView
+                $DeferShow | Should -BeTrue
+                $calls.Add('new-display') | Out-Null
+                Write-Output -NoEnumerate $displayController
+            }.GetNewClosure()
             NewInteraction = {
                 param(
                     $Settings,
                     $WindowView,
+                    $DisplayController,
                     $TrayView,
                     $SaveSettings,
                     $ApplyStartupPreference,
                     $RequestRefresh,
                     $ExitEvent,
                     $OpenTarget,
-                    $LogDirectory
+                    $LogDirectory,
+                    $OnManageRelays
                 )
+                $DisplayController | Should -Be $displayController
+                $OnManageRelays | Should -BeOfType ([scriptblock])
+                & $OnManageRelays
                 Write-Output -NoEnumerate $interaction
             }.GetNewClosure()
             InitializeDesktop = {
-                param($WindowView, $TrayView, $Settings, $GetWorkAreas, $SetPlacement)
+                param(
+                    $WindowView, $CompactBarView, $OrbView, $DisplayController,
+                    $TrayView, $Settings, $GetWorkAreas, $SetPlacement
+                )
+                $DisplayController | Should -Be $displayController
                 $calls.Add('initialize-desktop') | Out-Null
             }.GetNewClosure()
         }
@@ -96,7 +181,17 @@ Describe 'Codex quota monitor production composition' {
             Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
         }
 
-        @($calls) | Should -Be @('initialize-desktop')
+        @($calls | Where-Object { $_ -notlike 'snapshot:*' -and $_ -ne 'dispose-display' }) |
+            Should -Be @(
+                'new-relay-manager-view', 'new-relay-manager-controller',
+                'new-display', 'show-relay-manager', 'initialize-desktop',
+                'dispose-relay-manager-controller'
+            )
+        @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0
+        @($calls | Where-Object { $_ -eq 'dispose-display' }).Count | Should -Be 1
+        @($calls | Where-Object { $_ -eq 'dispose-relay-manager-view' }).Count | Should -Be 0
+        $relayCacheWrites.Count | Should -Be 1
+        @($relayCacheWrites[0].Providers).Count | Should -Be 0
         $result.Status | Should -BeExactly 'Live'
     }
 
@@ -134,9 +229,11 @@ Describe 'Codex quota monitor production composition' {
 
         @($health.PSObject.Properties.Name) | Should -Be @(
             'SchemaVersion', 'Status', 'PlanType', 'QuotaWindowCount', 'LastSuccessAt',
-            'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt'
+            'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt',
+            'RelayProviderCount', 'RelayLiveCount', 'RelayStaleCount', 'RelayInvalidCount',
+            'RelayHostState', 'DisplayMode', 'Theme'
         )
-        $health.SchemaVersion | Should -Be 1
+        $health.SchemaVersion | Should -Be 2
         $health.Status | Should -BeExactly 'Live'
         $health.PlanType | Should -BeExactly 'plus'
         $health.QuotaWindowCount | Should -Be 2
@@ -145,6 +242,13 @@ Describe 'Codex quota monitor production composition' {
         $health.LastErrorMessage | Should -BeNullOrEmpty
         $health.ProcessId | Should -Be $PID
         [datetimeoffset]$health.UpdatedAt | Should -BeGreaterThan ([datetimeoffset]'2020-01-01')
+        $health.RelayProviderCount | Should -Be 0
+        $health.RelayLiveCount | Should -Be 0
+        $health.RelayStaleCount | Should -Be 0
+        $health.RelayInvalidCount | Should -Be 0
+        $health.RelayHostState | Should -BeExactly 'Disabled'
+        $health.DisplayMode | Should -BeExactly 'Full'
+        $health.Theme | Should -BeExactly 'Dark'
 
         $result.Status | Should -BeExactly 'Live'
         $result.PlanType | Should -BeExactly 'plus'

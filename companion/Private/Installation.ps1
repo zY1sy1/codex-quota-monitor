@@ -151,6 +151,34 @@ exit 17
     }
 }
 
+function Test-PackagedRelayHostIntegrity {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RootPath)
+
+    $fullRoot = [IO.Path]::GetFullPath($RootPath)
+    $exe = Join-Path $fullRoot 'Bin\relay-quota-host.exe'
+    $manifest = Join-Path $fullRoot 'Bin\relay-quota-host.sha256'
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw [IO.InvalidDataException]::new('Packaged relay host integrity check failed.')
+    }
+
+    $manifestText = [IO.File]::ReadAllText($manifest)
+    if ($manifestText -notmatch '^[0-9A-Fa-f]{64}\r?\n?$') {
+        throw [IO.InvalidDataException]::new('Packaged relay host integrity check failed.')
+    }
+    $expectedHash = $manifestText.Trim()
+    if ($expectedHash -cne $expectedHash.ToUpperInvariant()) {
+        throw [IO.InvalidDataException]::new('Packaged relay host integrity check failed.')
+    }
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToUpperInvariant()
+    if ($actualHash -cne $expectedHash) {
+        throw [IO.InvalidDataException]::new('Packaged relay host integrity check failed.')
+    }
+
+    return $true
+}
+
 function Assert-MonitorSourceLayout {
     [CmdletBinding()]
     param(
@@ -170,6 +198,10 @@ function Assert-MonitorSourceLayout {
             'Start-CodexQuotaMonitor.vbs'
             'Private'
             'UI'
+            'Bin\relay-quota-host.exe'
+            'Bin\relay-quota-host.sha256'
+            'Presets\relay-usage.json'
+            'ThirdPartyNotices.txt'
         )) {
         if (-not (Test-Path -LiteralPath (Join-Path $fullSource $relativePath))) {
             throw [ArgumentException]::new('The monitor source directory is incomplete.', 'SourcePath')
@@ -187,6 +219,8 @@ function Assert-MonitorSourceLayout {
             'SourcePath'
         )
     }
+
+    $null = Test-PackagedRelayHostIntegrity -RootPath $fullSource
 
     return $fullSource
 }
@@ -261,6 +295,7 @@ function New-MonitorInvalidHealthSnapshot {
         Present = $Present
         Valid = $false
         InvalidReason = $Reason
+        SchemaVersion = $null
         Status = $null
         PlanType = $null
         QuotaWindowCount = [int]0
@@ -270,6 +305,13 @@ function New-MonitorInvalidHealthSnapshot {
         ProcessId = $null
         UpdatedAt = $null
         UpdatedAtValue = $null
+        RelayProviderCount = [int]0
+        RelayLiveCount = [int]0
+        RelayStaleCount = [int]0
+        RelayInvalidCount = [int]0
+        RelayHostState = $null
+        DisplayMode = $null
+        Theme = $null
     }
 }
 
@@ -400,7 +442,7 @@ function Read-MonitorHealthSnapshot {
         }
 
         $schemaVersion = ConvertTo-MonitorHealthInteger `
-            -Value $health.SchemaVersion -Minimum 1 -Maximum 1
+            -Value $health.SchemaVersion -Minimum 1 -Maximum 2
         $status = ConvertTo-MonitorHealthString `
             -Value $health.Status -MaximumLength 32 -Pattern '^[A-Za-z]+$'
         if ($status -cnotin $script:MonitorRuntimeStatuses) {
@@ -428,10 +470,52 @@ function Read-MonitorHealthSnapshot {
             -Value $health.ProcessId -Minimum 1 -Maximum ([int]::MaxValue)
         $updatedAt = ConvertTo-MonitorHealthDate -Value $health.UpdatedAt
 
+        $relayProviderCount = [int]0
+        $relayLiveCount = [int]0
+        $relayStaleCount = [int]0
+        $relayInvalidCount = [int]0
+        $relayHostState = 'Disabled'
+        $displayMode = 'Full'
+        $theme = 'Dark'
+        if ($schemaVersion -eq 2) {
+            foreach ($name in @(
+                    'RelayProviderCount', 'RelayLiveCount', 'RelayStaleCount',
+                    'RelayInvalidCount', 'RelayHostState', 'DisplayMode', 'Theme'
+                )) {
+                if (-not (Test-MonitorHealthField -Health $health -Name $name)) {
+                    throw [FormatException]::new('Health document is missing a relay field.')
+                }
+            }
+            $relayProviderCount = ConvertTo-MonitorHealthInteger `
+                -Value $health.RelayProviderCount -Minimum 0 -Maximum 1000
+            $relayLiveCount = ConvertTo-MonitorHealthInteger `
+                -Value $health.RelayLiveCount -Minimum 0 -Maximum 1000
+            $relayStaleCount = ConvertTo-MonitorHealthInteger `
+                -Value $health.RelayStaleCount -Minimum 0 -Maximum 1000
+            $relayInvalidCount = ConvertTo-MonitorHealthInteger `
+                -Value $health.RelayInvalidCount -Minimum 0 -Maximum 1000
+            $relayHostState = ConvertTo-MonitorHealthString `
+                -Value $health.RelayHostState -MaximumLength 32 -Pattern '^[A-Za-z]+$'
+            if ($relayHostState -notin @('Disabled', 'Starting', 'Live', 'Unavailable')) {
+                throw [FormatException]::new('Relay host state is unsupported.')
+            }
+            $displayMode = ConvertTo-MonitorHealthString `
+                -Value $health.DisplayMode -MaximumLength 32 -Pattern '^[A-Za-z]+$'
+            if ($displayMode -notin @('Full', 'CompactBar', 'Orb')) {
+                throw [FormatException]::new('Display mode is unsupported.')
+            }
+            $theme = ConvertTo-MonitorHealthString `
+                -Value $health.Theme -MaximumLength 16 -Pattern '^[A-Za-z]+$'
+            if ($theme -notin @('Light', 'Dark')) {
+                throw [FormatException]::new('Theme is unsupported.')
+            }
+        }
+
         return [pscustomobject][ordered]@{
             Present = $true
             Valid = $true
             InvalidReason = $null
+            SchemaVersion = [int]$schemaVersion
             Status = $status
             PlanType = $planType
             QuotaWindowCount = [int]$quotaWindowCount
@@ -441,6 +525,13 @@ function Read-MonitorHealthSnapshot {
             ProcessId = [int]$processId
             UpdatedAt = $updatedAt.ToString('o')
             UpdatedAtValue = $updatedAt
+            RelayProviderCount = [int]$relayProviderCount
+            RelayLiveCount = [int]$relayLiveCount
+            RelayStaleCount = [int]$relayStaleCount
+            RelayInvalidCount = [int]$relayInvalidCount
+            RelayHostState = $relayHostState
+            DisplayMode = $displayMode
+            Theme = $theme
         }
     }
     catch {
@@ -461,7 +552,11 @@ function Test-MonitorInstalledLayout {
         (Test-Path -LiteralPath $Paths.App -PathType Container) -and
         (Test-Path -LiteralPath (Join-Path $Paths.App 'CodexQuotaMonitor.psd1') -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $Paths.App 'CodexQuotaMonitor.psm1') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $Paths.App 'Start-CodexQuotaMonitor.ps1') -PathType Leaf)
+        (Test-Path -LiteralPath (Join-Path $Paths.App 'Start-CodexQuotaMonitor.ps1') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Paths.App 'Bin\relay-quota-host.exe') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Paths.App 'Bin\relay-quota-host.sha256') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Paths.App 'Presets\relay-usage.json') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Paths.App 'ThirdPartyNotices.txt') -PathType Leaf)
     )
 }
 
@@ -521,6 +616,7 @@ function Get-CodexQuotaMonitorStatus {
         Running = [bool]$running
         StartupEnabled = [bool]$startupEnabled
         Status = $status
+        SchemaVersion = if ($health.Valid) { [int]$health.SchemaVersion } else { $null }
         PlanType = if ($health.Valid) { $health.PlanType } else { $null }
         QuotaWindowCount = if ($health.Valid) { [int]$health.QuotaWindowCount } else { [int]0 }
         LastSuccessAt = if ($health.Valid) { $health.LastSuccessAt } else { $null }
@@ -528,6 +624,13 @@ function Get-CodexQuotaMonitorStatus {
         LastErrorMessage = $errorMessage
         ProcessId = if ($health.Valid) { $health.ProcessId } else { $null }
         UpdatedAt = if ($health.Valid) { $health.UpdatedAt } else { $null }
+        RelayProviderCount = if ($health.Valid) { [int]$health.RelayProviderCount } else { [int]0 }
+        RelayLiveCount = if ($health.Valid) { [int]$health.RelayLiveCount } else { [int]0 }
+        RelayStaleCount = if ($health.Valid) { [int]$health.RelayStaleCount } else { [int]0 }
+        RelayInvalidCount = if ($health.Valid) { [int]$health.RelayInvalidCount } else { [int]0 }
+        RelayHostState = if ($health.Valid) { $health.RelayHostState } else { $null }
+        DisplayMode = if ($health.Valid) { $health.DisplayMode } else { $null }
+        Theme = if ($health.Valid) { $health.Theme } else { $null }
         Root = $paths.Root
         AppPath = $paths.App
         SettingsPath = $paths.Settings
@@ -598,12 +701,20 @@ function Test-CodexQuotaMonitorHealth {
         HealthFresh = [bool]$fresh
         Status = $status.Status
         Reason = $reason
+        SchemaVersion = if ($health.Valid) { [int]$health.SchemaVersion } else { $null }
         PlanType = if ($health.Valid) { $health.PlanType } else { $null }
         QuotaWindowCount = if ($health.Valid) { [int]$health.QuotaWindowCount } else { [int]0 }
         LastErrorCategory = $status.LastErrorCategory
         LastErrorMessage = $status.LastErrorMessage
         ProcessId = if ($health.Valid) { $health.ProcessId } else { $null }
         UpdatedAt = if ($health.Valid) { $health.UpdatedAt } else { $null }
+        RelayProviderCount = if ($health.Valid) { [int]$health.RelayProviderCount } else { [int]0 }
+        RelayLiveCount = if ($health.Valid) { [int]$health.RelayLiveCount } else { [int]0 }
+        RelayStaleCount = if ($health.Valid) { [int]$health.RelayStaleCount } else { [int]0 }
+        RelayInvalidCount = if ($health.Valid) { [int]$health.RelayInvalidCount } else { [int]0 }
+        RelayHostState = if ($health.Valid) { $health.RelayHostState } else { $null }
+        DisplayMode = if ($health.Valid) { $health.DisplayMode } else { $null }
+        Theme = if ($health.Valid) { $health.Theme } else { $null }
     }
 }
 
@@ -693,11 +804,16 @@ function Publish-MonitorApplication {
                 'Start-CodexQuotaMonitor.vbs'
                 'Private'
                 'UI'
+                'Bin\relay-quota-host.exe'
+                'Bin\relay-quota-host.sha256'
+                'Presets\relay-usage.json'
+                'ThirdPartyNotices.txt'
             )) {
             if (-not (Test-Path -LiteralPath (Join-Path $stagePath $required))) {
-                throw [InvalidDataException]::new('The staged monitor application is incomplete.')
+                throw [IO.InvalidDataException]::new('The staged monitor application is incomplete.')
             }
         }
+        $null = Test-PackagedRelayHostIntegrity -RootPath $stagePath
 
         $hadPrevious = Test-Path -LiteralPath $Paths.App -PathType Container
         if ($hadPrevious) {
@@ -898,6 +1014,7 @@ function Start-MonitorInstalledRuntime {
     if (-not (Test-MonitorInstalledLayout -Paths $Paths)) {
         throw [InvalidOperationException]::new('Codex quota monitor is not installed.')
     }
+    $null = Test-PackagedRelayHostIntegrity -RootPath $Paths.App
     if (Test-Path -LiteralPath $Paths.Health) {
         Remove-MonitorManagedItem -Path $Paths.Health -Root $Paths.Root
     }

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Unit', 'Integration', 'All')]
+    [ValidateSet('Unit', 'Integration', 'EndToEnd', 'All')]
     [string]$Suite = 'All',
 
     [switch]$CI
@@ -14,6 +14,7 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $testPaths = switch ($Suite) {
     'Unit' { Join-Path $repoRoot 'tests\Unit' }
     'Integration' { Join-Path $repoRoot 'tests\Integration' }
+    'EndToEnd' { Join-Path $repoRoot 'tests\Integration\RelayEndToEnd.Tests.ps1' }
     'All' {
         Join-Path $repoRoot 'tests\Unit'
         Join-Path $repoRoot 'tests\Integration'

@@ -38,6 +38,28 @@ BeforeAll {
 }
 
 Describe 'Resolve-WindowPlacement' {
+    It 'selects saved placement and dimensions for every display mode' -ForEach @(
+        @{ Mode = 'Full'; Left = 10; Top = 20; Width = 420; Height = 560 }
+        @{ Mode = 'CompactBar'; Left = 30; Top = 40; Width = 280; Height = 64 }
+        @{ Mode = 'Orb'; Left = 50; Top = 60; Width = 112; Height = 112 }
+    ) {
+        $settings = [ordered]@{
+            Window = [ordered]@{
+                Full = [ordered]@{ Left = 10; Top = 20; Width = 420; Height = 560 }
+                CompactBar = [ordered]@{ Left = 30; Top = 40 }
+                Orb = [ordered]@{ Left = 50; Top = 60 }
+            }
+        }
+        $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
+
+        $result = Resolve-MonitorModePlacement -Settings $settings -Mode $Mode -WorkAreas $areas
+
+        $result.Left | Should -Be $Left
+        $result.Top | Should -Be $Top
+        $result.Width | Should -Be $Width
+        $result.Height | Should -Be $Height
+    }
+
     It 'leaves an already visible saved placement unchanged' {
         $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
 
@@ -230,10 +252,12 @@ Describe 'Resolve-WindowPlacement' {
         }
         $settings = [ordered]@{
             Window = [ordered]@{
-                Left = 5000.0
-                Top = 3000.0
-                Topmost = $true
-                Visible = $true
+                Full = [ordered]@{
+                    Left = 5000.0
+                    Top = 3000.0
+                    Topmost = $true
+                    Visible = $true
+                }
             }
         }
         $testWorkAreas = @(
