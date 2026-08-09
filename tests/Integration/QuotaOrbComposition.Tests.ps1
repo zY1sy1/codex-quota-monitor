@@ -88,6 +88,18 @@ Describe 'quota orb composition' {
             }
             $OrbView.Controls.RootBorder.CornerRadius.TopLeft | Should -Be 56
             $OrbView.Controls.RootBorder.BorderBrush.ToString() | Should -Not -BeExactly '#FFFFFFFF'
+            $OrbView.Controls.RingTrack.Width | Should -Be 76
+            $OrbView.Controls.RingTrack.Height | Should -Be 76
+            $OrbView.Controls.RingTrack.StrokeThickness |
+                Should -Be $OrbView.Controls.RingValue.StrokeThickness
+            (($OrbView.Controls.RingTrack.Width - $OrbView.Controls.RingTrack.StrokeThickness) / 2) |
+                Should -Be 35
+            $OrbView.Controls.RingValue.Width | Should -Be 70
+            $OrbView.Controls.RingValue.Height | Should -Be 70
+            $OrbView.Controls.RingValue.StrokeStartLineCap |
+                Should -Be ([Windows.Media.PenLineCap]::Round)
+            $OrbView.Controls.RingValue.StrokeEndLineCap |
+                Should -Be ([Windows.Media.PenLineCap]::Round)
         }
 
         It 'renders percentage text and the matching 74 percent arc' {
@@ -106,6 +118,40 @@ Describe 'quota orb composition' {
             $segment.Point.X | Should -Be $expected.EndX
             $segment.Point.Y | Should -Be $expected.EndY
             $segment.IsLargeArc | Should -BeTrue
+        }
+
+        It 'renders stable geometry for <Percent> percent' -TestCases @(
+            @{ Percent = 0; ExpectFullCircle = $false }
+            @{ Percent = 100; ExpectFullCircle = $true }
+        ) {
+            param($Percent, $ExpectFullCircle)
+
+            $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
+            $row = New-TestOrbRow -ValueText "$Percent%" -ProgressValue $Percent
+
+            & $OrbView.RenderFocus -Row $row
+
+            $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Visible)
+            $figure = $OrbView.Controls.RingValue.Data.Figures[0]
+            $segment = $figure.Segments[0]
+            $figure.StartPoint.X | Should -Be 35
+            $figure.StartPoint.Y | Should -Be 0
+            $segment.Size.Width | Should -Be 35
+            $segment.Size.Height | Should -Be 35
+            $segment.SweepDirection | Should -Be ([Windows.Media.SweepDirection]::Clockwise)
+
+            if ($ExpectFullCircle) {
+                $distanceFromStart = [Math]::Sqrt(
+                    [Math]::Pow($segment.Point.X - $figure.StartPoint.X, 2) +
+                    [Math]::Pow($segment.Point.Y - $figure.StartPoint.Y, 2)
+                )
+                $distanceFromStart | Should -BeGreaterThan 0
+                $distanceFromStart | Should -BeLessThan 0.01
+                $segment.IsLargeArc | Should -BeTrue
+            }
+            else {
+                $segment.IsLargeArc | Should -BeFalse
+            }
         }
 
         It 'renders a pinned absolute wallet without fabricating an arc' {
