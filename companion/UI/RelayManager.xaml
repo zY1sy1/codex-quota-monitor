@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Relay quota providers"
+        Title="中转站额度管理"
         Width="980"
         Height="760"
         MinWidth="800"
@@ -10,7 +10,7 @@
         Foreground="#FFF4F3F1"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
-        AutomationProperties.Name="Relay quota provider manager">
+        AutomationProperties.Name="中转站额度管理器">
     <Window.Resources>
         <Style TargetType="TextBox">
             <Setter Property="MinHeight" Value="28" />
@@ -62,19 +62,19 @@
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-            <TextBlock Text="Providers" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" />
+            <TextBlock Text="中转站列表" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" />
             <ListBox x:Name="ProviderList"
                      Grid.Row="1"
                      DisplayMemberPath="DisplayName"
                      Background="#FF2A3141"
                      Foreground="#FFF4F3F1"
                      BorderBrush="#FF596276"
-                     AutomationProperties.Name="Relay providers" />
+                     AutomationProperties.Name="中转站列表" />
             <UniformGrid Grid.Row="2" Columns="2" Margin="0,8,0,0">
-                <Button x:Name="AddButton" Content="Add" AutomationProperties.Name="Add provider" />
-                <Button x:Name="EditButton" Content="Edit" AutomationProperties.Name="Edit provider" />
-                <Button x:Name="DuplicateButton" Content="Duplicate" AutomationProperties.Name="Duplicate provider" />
-                <Button x:Name="DeleteButton" Content="Delete" AutomationProperties.Name="Delete provider" />
+                <Button x:Name="AddButton" Content="新增" AutomationProperties.Name="新增中转站" />
+                <Button x:Name="EditButton" Content="编辑" AutomationProperties.Name="编辑中转站" />
+                <Button x:Name="DuplicateButton" Content="复制" AutomationProperties.Name="复制中转站" />
+                <Button x:Name="DeleteButton" Content="删除" AutomationProperties.Name="删除中转站" />
             </UniformGrid>
         </Grid>
 
@@ -105,31 +105,31 @@
 
                     <CheckBox x:Name="EnabledCheckBox"
                               Grid.ColumnSpan="3"
-                              Content="Enabled"
+                              Content="启用"
                               Margin="0,0,0,10"
-                              AutomationProperties.Name="Provider enabled" />
+                              AutomationProperties.Name="启用中转站" />
 
                     <StackPanel Grid.Row="1" Grid.Column="0">
-                        <TextBlock Style="{StaticResource FieldLabel}" Text="Name" />
-                        <TextBox x:Name="NameTextBox" AutomationProperties.Name="Provider name" />
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="名称" />
+                        <TextBox x:Name="NameTextBox" AutomationProperties.Name="中转站名称" />
                     </StackPanel>
                     <StackPanel Grid.Row="1" Grid.Column="2">
-                        <TextBlock Style="{StaticResource FieldLabel}" Text="Provider kind" />
-                        <ComboBox x:Name="ProviderKindComboBox" AutomationProperties.Name="Provider kind">
-                            <ComboBoxItem Content="Generic" Tag="Generic" />
-                            <ComboBoxItem Content="Custom" Tag="Custom" />
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="类型" />
+                        <ComboBox x:Name="ProviderKindComboBox" AutomationProperties.Name="中转站类型">
+                            <ComboBoxItem Content="通用配置" Tag="Generic" />
+                            <ComboBoxItem Content="自定义脚本" Tag="Custom" />
                         </ComboBox>
                     </StackPanel>
 
                     <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,10,0,0">
-                        <TextBlock Style="{StaticResource FieldLabel}" Text="Base URL" />
-                        <TextBox x:Name="BaseUrlTextBox" AutomationProperties.Name="Base URL" />
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="基础地址" />
+                        <TextBox x:Name="BaseUrlTextBox" AutomationProperties.Name="基础地址" />
                     </StackPanel>
 
                     <Expander x:Name="AdvancedRequestExpander"
                               Grid.Row="3"
                               Grid.ColumnSpan="3"
-                              Header="Advanced request"
+                              Header="高级请求"
                               IsExpanded="False"
                               Margin="0,10,0,0">
                         <Grid Margin="0,8,0,0">
@@ -145,44 +145,44 @@
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Row="0" Grid.Column="0">
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Method" />
-                                <ComboBox x:Name="MethodComboBox" AutomationProperties.Name="Request method">
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="请求方法" />
+                                <ComboBox x:Name="MethodComboBox" AutomationProperties.Name="请求方法">
                                     <ComboBoxItem Content="GET" Tag="GET" />
                                     <ComboBoxItem Content="POST" Tag="POST" />
                                     <ComboBoxItem Content="PUT" Tag="PUT" />
                                 </ComboBox>
                             </StackPanel>
                             <StackPanel Grid.Row="0" Grid.Column="2">
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Path" />
-                                <TextBox x:Name="PathTextBox" AutomationProperties.Name="Request path" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="请求路径" />
+                                <TextBox x:Name="PathTextBox" AutomationProperties.Name="请求路径" />
                             </StackPanel>
                             <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0">
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Query JSON object" />
-                                <TextBox x:Name="QueryTextBox" Style="{StaticResource EditorTextBox}" Height="72" AutomationProperties.Name="Request query" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="查询参数 JSON" />
+                                <TextBox x:Name="QueryTextBox" Style="{StaticResource EditorTextBox}" Height="72" AutomationProperties.Name="查询参数 JSON" />
                             </StackPanel>
                             <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Margin="0,8,0,0">
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Headers JSON object" />
-                                <TextBox x:Name="HeadersTextBox" Style="{StaticResource EditorTextBox}" Height="88" AutomationProperties.Name="Request headers" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="请求头 JSON" />
+                                <TextBox x:Name="HeadersTextBox" Style="{StaticResource EditorTextBox}" Height="88" AutomationProperties.Name="请求头 JSON" />
                             </StackPanel>
                             <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Margin="0,8,0,0">
-                                <TextBlock Style="{StaticResource FieldLabel}" Text="Body (optional string)" />
-                                <TextBox x:Name="BodyTextBox" Style="{StaticResource EditorTextBox}" Height="72" AutomationProperties.Name="Request body" />
+                                <TextBlock Style="{StaticResource FieldLabel}" Text="请求体（可选字符串）" />
+                                <TextBox x:Name="BodyTextBox" Style="{StaticResource EditorTextBox}" Height="72" AutomationProperties.Name="请求体" />
                             </StackPanel>
                         </Grid>
                     </Expander>
 
                     <StackPanel Grid.Row="4" Grid.ColumnSpan="3" Margin="0,10,0,0">
-                        <TextBlock Style="{StaticResource FieldLabel}" Text="Extractor function" />
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="提取函数" />
                         <TextBox x:Name="ExtractorScriptTextBox"
                                  Style="{StaticResource EditorTextBox}"
                                  Height="150"
-                                 AutomationProperties.Name="Relay extractor script" />
+                                 AutomationProperties.Name="中转站提取函数" />
                         <TextBlock x:Name="MigrationWarningText"
                                    Margin="0,6,0,0"
                                    Foreground="#FFFFC857"
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed"
-                                   AutomationProperties.Name="Migration warning" />
+                                   AutomationProperties.Name="迁移提示" />
                     </StackPanel>
 
                     <Grid Grid.Row="5" Grid.ColumnSpan="3" Margin="0,10,0,0">
@@ -194,16 +194,16 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0">
-                            <TextBlock Style="{StaticResource FieldLabel}" Text="API key" />
-                            <PasswordBox x:Name="ApiKeyPasswordBox" AutomationProperties.Name="API key" />
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="API 密钥" />
+                            <PasswordBox x:Name="ApiKeyPasswordBox" AutomationProperties.Name="API 密钥" />
                         </StackPanel>
                         <StackPanel Grid.Column="2">
-                            <TextBlock Style="{StaticResource FieldLabel}" Text="Access token" />
-                            <PasswordBox x:Name="AccessTokenPasswordBox" AutomationProperties.Name="Access token" />
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="访问令牌" />
+                            <PasswordBox x:Name="AccessTokenPasswordBox" AutomationProperties.Name="访问令牌" />
                         </StackPanel>
                         <StackPanel Grid.Column="4">
-                            <TextBlock Style="{StaticResource FieldLabel}" Text="User ID" />
-                            <PasswordBox x:Name="UserIdPasswordBox" AutomationProperties.Name="User ID" />
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="用户 ID" />
+                            <PasswordBox x:Name="UserIdPasswordBox" AutomationProperties.Name="用户 ID" />
                         </StackPanel>
                     </Grid>
 
@@ -214,12 +214,12 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <StackPanel Grid.Column="0">
-                            <TextBlock Style="{StaticResource FieldLabel}" Text="Timeout (seconds)" />
-                            <TextBox x:Name="TimeoutTextBox" AutomationProperties.Name="Timeout seconds" />
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="超时（秒）" />
+                            <TextBox x:Name="TimeoutTextBox" AutomationProperties.Name="超时秒数" />
                         </StackPanel>
                         <StackPanel Grid.Column="2">
-                            <TextBlock Style="{StaticResource FieldLabel}" Text="Interval (minutes, 0 for manual)" />
-                            <TextBox x:Name="IntervalTextBox" AutomationProperties.Name="Interval minutes" />
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="查询间隔（分钟，0 为手动）" />
+                            <TextBox x:Name="IntervalTextBox" AutomationProperties.Name="查询间隔分钟数" />
                         </StackPanel>
                     </Grid>
                 </Grid>
@@ -230,7 +230,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Button x:Name="TestButton" Content="Test provider" AutomationProperties.Name="Test provider" />
+                <Button x:Name="TestButton" Content="测试中转站" AutomationProperties.Name="测试中转站" />
                 <TextBlock x:Name="TestStateText"
                            Grid.Column="1"
                            VerticalAlignment="Center"
@@ -243,11 +243,11 @@
                      Background="#FF2A3141"
                      Foreground="#FFF4F3F1"
                      BorderBrush="#FF596276"
-                     AutomationProperties.Name="Sanitized test preview" />
+                     AutomationProperties.Name="脱敏测试预览" />
 
             <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
-                <Button x:Name="SaveButton" Content="Save" IsDefault="True" AutomationProperties.Name="Save provider" />
-                <Button x:Name="CancelButton" Content="Cancel" IsCancel="True" AutomationProperties.Name="Cancel provider changes" />
+                <Button x:Name="SaveButton" Content="保存" IsDefault="True" AutomationProperties.Name="保存中转站" />
+                <Button x:Name="CancelButton" Content="取消" IsCancel="True" AutomationProperties.Name="取消中转站更改" />
             </StackPanel>
         </Grid>
     </Grid>

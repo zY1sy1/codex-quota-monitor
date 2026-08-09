@@ -73,7 +73,7 @@ function ConvertTo-RelayManagerPreview {
     param([AllowNull()][object]$Response)
     if ($null -eq $Response) {
         return @([pscustomobject][ordered]@{
-            Category = 'SidecarLifecycle'; Message = 'Relay script host is unavailable.'; HttpStatus = $null
+            Category = 'SidecarLifecycle'; Message = '中转站脚本主机不可用。'; HttpStatus = $null
         })
     }
     if ([bool](Get-MonitorInteractionField $Response 'Ok')) {
@@ -258,7 +258,7 @@ function New-RelayManagerController {
         }
         $canonical = & $canonicalizeProvider $candidate
         if ($null -eq $canonical) {
-            & $View.SetTestState $false $false 'Provider settings are invalid.'
+            & $View.SetTestState $false $false '中转站设置无效。'
             return $false
         }
         $updated = [Collections.Generic.List[object]]::new()
@@ -274,7 +274,7 @@ function New-RelayManagerController {
             SchemaVersion = 2; Providers = [object[]]$updated.ToArray()
         })
         if ($null -eq $document) {
-            & $View.SetTestState $false $false 'Provider settings are invalid.'
+            & $View.SetTestState $false $false '中转站设置无效。'
             return $false
         }
         try {
@@ -288,7 +288,7 @@ function New-RelayManagerController {
             return $true
         }
         catch {
-            & $View.SetTestState $false $false 'Unable to save the relay provider.'
+            & $View.SetTestState $false $false '无法保存中转站。'
             return $false
         }
     }.GetNewClosure()
@@ -316,12 +316,12 @@ function New-RelayManagerController {
         }
         catch {
             & $View.SetPreview @([pscustomobject][ordered]@{
-                Category = 'Authentication'; Message = 'Relay credentials must be entered again.'; HttpStatus = $null
+                Category = 'Authentication'; Message = '请重新输入中转站凭据。'; HttpStatus = $null
             })
-            & $View.SetTestState $true $false 'Test failed.'
+            & $View.SetTestState $true $false '测试失败。'
             return
         }
-        & $View.SetTestState $false $true 'Testing...'
+        & $View.SetTestState $false $true '正在测试…'
         try {
             $response = & $QueryProvider $draft $secrets
             $errorObject = & $get $response 'Error'
@@ -350,19 +350,19 @@ function New-RelayManagerController {
             & $View.SetPreview $preview
             if ([bool](& $get $response 'Ok')) {
                 $state.TestedDraftId = [string](& $get $draft 'Id')
-                & $View.SetTestState $true $false 'Test succeeded.'
+                & $View.SetTestState $true $false '测试成功。'
             }
             else {
                 $state.TestedDraftId = $null
-                & $View.SetTestState $true $false 'Test failed.'
+                & $View.SetTestState $true $false '测试失败。'
             }
         }
         catch {
             $state.TestedDraftId = $null
             & $View.SetPreview @([pscustomobject][ordered]@{
-                Category = 'SidecarLifecycle'; Message = 'Relay script host is unavailable.'; HttpStatus = $null
+                Category = 'SidecarLifecycle'; Message = '中转站脚本主机不可用。'; HttpStatus = $null
             })
-            & $View.SetTestState $true $false 'Test failed.'
+            & $View.SetTestState $true $false '测试失败。'
         }
         finally {
             foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) { $secrets[$name] = $null }

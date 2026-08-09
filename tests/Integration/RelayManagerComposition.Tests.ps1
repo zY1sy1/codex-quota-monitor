@@ -130,6 +130,55 @@ Describe 'relay manager WPF adapter contract' {
         }
     }
 
+    It 'localizes fixed interface text while preserving internal tags' {
+        $source = Get-Content -LiteralPath $XamlPath -Raw
+        [xml]$xaml = $source
+        $manager = [Xml.XmlNamespaceManager]::new($xaml.NameTable)
+        $manager.AddNamespace('w', 'http://schemas.microsoft.com/winfx/2006/xaml/presentation')
+
+        foreach ($expected in @(
+            'Title="中转站额度管理"', 'AutomationProperties.Name="中转站额度管理器"',
+            'Text="中转站列表"', 'Content="新增"', 'Content="编辑"', 'Content="复制"',
+            'Content="删除"', 'Content="启用"', 'Text="名称"', 'Text="类型"',
+            'Content="通用配置"', 'Content="自定义脚本"', 'Text="基础地址"',
+            'Header="高级请求"', 'Text="请求方法"', 'Text="请求路径"',
+            'Text="查询参数 JSON"', 'Text="请求头 JSON"', 'Text="请求体（可选字符串）"',
+            'Text="提取函数"', 'Text="API 密钥"', 'Text="访问令牌"', 'Text="用户 ID"',
+            'Text="超时（秒）"', 'Text="查询间隔（分钟，0 为手动）"',
+            'Content="测试中转站"', 'AutomationProperties.Name="脱敏测试预览"',
+            'Content="保存"', 'Content="取消"'
+        )) {
+            $source | Should -Match ([regex]::Escape($expected))
+        }
+
+        $displayValues = @(
+            [regex]::Matches(
+                $source,
+                '(?:Title|Text|Content|Header|AutomationProperties\.Name)="([^"]*)"'
+            ) | ForEach-Object { $_.Groups[1].Value }
+        )
+        foreach ($forbidden in @(
+            'Relay quota providers', 'Relay quota provider manager', 'Providers',
+            'Relay providers', 'Add', 'Edit', 'Duplicate', 'Delete', 'Enabled',
+            'Provider enabled', 'Name', 'Provider name', 'Provider kind', 'Generic',
+            'Custom', 'Base URL', 'Advanced request', 'Method', 'Request method',
+            'Path', 'Request path', 'Query JSON object', 'Request query',
+            'Headers JSON object', 'Request headers', 'Body (optional string)',
+            'Request body', 'Extractor function', 'Relay extractor script',
+            'Migration warning', 'API key', 'Access token', 'User ID',
+            'Timeout (seconds)', 'Timeout seconds', 'Interval (minutes, 0 for manual)',
+            'Interval minutes', 'Test provider', 'Sanitized test preview', 'Save', 'Cancel'
+        )) {
+            $displayValues | Should -Not -Contain $forbidden
+        }
+
+        $tags = @(
+            $xaml.SelectNodes('//w:ComboBoxItem', $manager) |
+                ForEach-Object { $_.GetAttribute('Tag') }
+        )
+        $tags | Should -Be @('Generic', 'Custom', 'GET', 'POST', 'PUT')
+    }
+
     It 'exposes the exact callable adapter contract' {
         $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
         $callable = @(
@@ -210,6 +259,81 @@ Describe 'relay manager WPF adapter contract' {
         $previewText | Should -Match 'HttpStatus|401'
         $previewText | Should -Not -Match $secret
         ($script:View.State.Preview | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match $secret
+    }
+
+    It 'uses Chinese defaults for disabled providers and unnamed results' {
+        $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
+        $provider = New-TestRelayDraft
+        $provider.Name = '备用站'
+        $provider.Enabled = $false
+
+        & $script:View.SetProviders @($provider)
+        & $script:View.SetPreview @([pscustomobject]@{
+            IsValid = $true
+            InvalidMessage = $null
+            Remaining = 7
+            Unit = 'USD'
+            PlanName = $null
+            Total = $null
+            Used = $null
+            Extra = $null
+        })
+
+        $script:View.State.Providers[0].DisplayName | Should -BeExactly '备用站（已禁用）'
+        [string]$script:View.Controls.PreviewList.Items[0] | Should -BeExactly '结果: 7 USD'
+    }
+
+    It 'contains only Chinese fixed relay-manager prompts and status defaults' {
+        $viewSource = Get-Content -LiteralPath $ViewPath -Raw
+        $controllerSource = Get-Content -LiteralPath $ControllerPath -Raw
+        $moduleSource = Get-Content -LiteralPath (Join-Path $CompanionRoot 'CodexQuotaMonitor.psm1') -Raw
+
+        foreach ($expected in @(
+            '允许此中转站访问 $Destination 吗？', '信任中转站目标', '（已禁用）', "'结果'"
+        )) {
+            $viewSource | Should -Match ([regex]::Escape($expected))
+        }
+        foreach ($forbidden in @(
+            'Allow this relay provider to contact', 'Trust relay destination', '(disabled)', "'Result'"
+        )) {
+            $viewSource | Should -Not -Match ([regex]::Escape($forbidden))
+        }
+
+        foreach ($expected in @(
+            '中转站设置无效。', '无法保存中转站。', '请重新输入中转站凭据。',
+            '正在测试…', '测试成功。', '测试失败。', '中转站脚本主机不可用。'
+        )) {
+            $controllerSource | Should -Match ([regex]::Escape($expected))
+        }
+        foreach ($forbidden in @(
+            'Provider settings are invalid.', 'Unable to save the relay provider.',
+            'Relay credentials must be entered again.', 'Testing...', 'Test succeeded.',
+            'Test failed.', 'Relay script host is unavailable.'
+        )) {
+            $controllerSource | Should -Not -Match ([regex]::Escape($forbidden))
+        }
+
+        $moduleSource | Should -Match ([regex]::Escape('确定删除中转站「$name」吗？'))
+        $moduleSource | Should -Match ([regex]::Escape("'Codex 额度监视器'"))
+        $moduleSource | Should -Match ([regex]::Escape('请重新输入中转站凭据。'))
+        $moduleSource | Should -Match ([regex]::Escape('中转站脚本主机不可用。'))
+        $moduleSource | Should -Not -Match ([regex]::Escape("Delete relay provider '$name'?"))
+        $moduleSource | Should -Not -Match ([regex]::Escape('Relay credentials must be entered again.'))
+        $moduleSource | Should -Not -Match ([regex]::Escape('Relay script host is unavailable.'))
+    }
+
+    It 'keeps the localized runtime module syntactically valid' {
+        $tokens = $null
+        $parseErrors = $null
+        $modulePath = Join-Path $CompanionRoot 'CodexQuotaMonitor.psm1'
+
+        [Management.Automation.Language.Parser]::ParseFile(
+            $modulePath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        ) | Out-Null
+
+        @($parseErrors) | Should -BeNullOrEmpty
     }
 
     It 'shows only a canonical scheme host and port in the trust prompt' {
@@ -373,5 +497,28 @@ Describe 'relay manager interaction controller' {
 
         & $script:View.TestState.Callbacks.OnSave
         $script:Applied.Count | Should -Be 1
+    }
+
+    It 'publishes Chinese validation and test lifecycle states' {
+        $script:View.TestState.Draft.BaseUrl = 'not-a-url'
+        & $script:View.TestState.Callbacks.OnSave
+        $script:View.TestState.TestStates[-1].Message | Should -BeExactly '中转站设置无效。'
+
+        $script:View.TestState.Draft = New-TestRelayDraft
+        $script:QueryResults.Enqueue([pscustomobject]@{
+            Ok = $true
+            Results = @([pscustomobject]@{
+                IsValid = $true; InvalidMessage = $null; Remaining = 1; Unit = 'USD'
+                PlanName = $null; Total = $null; Used = $null; Extra = $null
+            })
+        })
+        & $script:View.TestState.Callbacks.OnTest
+
+        @($script:View.TestState.TestStates.Message) | Should -Contain '正在测试…'
+        $script:View.TestState.TestStates[-1].Message | Should -BeExactly '测试成功。'
+
+        & $script:View.TestState.Callbacks.OnTest
+        $script:View.TestState.Preview[0].Message | Should -BeExactly '中转站脚本主机不可用。'
+        $script:View.TestState.TestStates[-1].Message | Should -BeExactly '测试失败。'
     }
 }

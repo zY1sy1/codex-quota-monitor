@@ -624,7 +624,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                     Ok = $false
                     Error = [pscustomobject]@{
                         Category = 'Authentication'
-                        Message = 'Relay credentials must be entered again.'
+                        Message = '请重新输入中转站凭据。'
                         HttpStatus = $null
                         RetryAfterSeconds = $null
                     }
@@ -646,7 +646,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                     Ok = $false
                     Error = [pscustomobject]@{
                         Category = 'SidecarLifecycle'
-                        Message = 'Relay script host is unavailable.'
+                        Message = '中转站脚本主机不可用。'
                         HttpStatus = $null
                         RetryAfterSeconds = $null
                     }
@@ -1038,7 +1038,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                             Ok = $false
                             Error = [pscustomobject][ordered]@{
                                 Category = 'SidecarLifecycle'
-                                Message = 'Relay script host is unavailable.'
+                                Message = '中转站脚本主机不可用。'
                                 HttpStatus = $null
                             }
                         }
@@ -1057,7 +1057,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                         Ok = $false
                         Error = [pscustomobject][ordered]@{
                             Category = 'SidecarLifecycle'
-                            Message = 'Relay script host is unavailable.'
+                            Message = '中转站脚本主机不可用。'
                             HttpStatus = $null
                         }
                     }
@@ -1141,8 +1141,8 @@ function Invoke-CodexQuotaMonitorRuntime {
                 param($Provider)
                 $name = [string]$Provider.Name
                 return [Windows.MessageBox]::Show(
-                    "Delete relay provider '$name'?",
-                    'Codex Quota Monitor',
+                    "确定删除中转站「$name」吗？",
+                    'Codex 额度监视器',
                     [Windows.MessageBoxButton]::YesNo,
                     [Windows.MessageBoxImage]::Warning
                 ) -eq [Windows.MessageBoxResult]::Yes

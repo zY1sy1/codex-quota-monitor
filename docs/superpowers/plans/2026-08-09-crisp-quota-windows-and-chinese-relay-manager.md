@@ -150,6 +150,7 @@ git commit -m "fix: align quota orb ring geometry"
 - Modify: `companion/UI/RelayManager.xaml`
 - Modify: `companion/Private/RelayManagerView.ps1`
 - Modify: `companion/Private/InteractionController.ps1`
+- Modify: `companion/CodexQuotaMonitor.psm1`
 
 - [ ] **Step 1: Add failing localization and compatibility tests**
 
@@ -161,7 +162,8 @@ Add tests that:
 4. Instantiate the view, call `SetProviders` with a disabled provider, and expect `名称（已禁用）`.
 5. Call `SetPreview` with a result lacking `PlanName` and expect the default label `结果`.
 6. Scan `RelayManagerView.ps1` for the Chinese trust prompt/title and reject the old English prompt, `(disabled)`, and `Result` fallback.
-7. Exercise controller test states so local validation, credentials, testing, and unavailable-host defaults are Chinese.
+7. Exercise controller test states so local validation, credentials, testing, success/failure, save failure, and unavailable-host defaults are Chinese.
+8. Scan the runtime composition for a Chinese delete confirmation prompt.
 
 - [ ] **Step 2: Run the relay manager test and verify RED**
 
@@ -210,14 +212,19 @@ In `RelayManagerView.ps1`, use:
 '结果'
 ```
 
-In `InteractionController.ps1`, translate only the four fixed user-facing defaults:
+In `InteractionController.ps1`, translate only the fixed user-facing defaults:
 
 ```text
 Provider settings are invalid. -> 中转站设置无效。
+Unable to save the relay provider. -> 无法保存中转站。
 Relay credentials must be entered again. -> 请重新输入中转站凭据。
 Testing... -> 正在测试…
+Test succeeded. -> 测试成功。
+Test failed. -> 测试失败。
 Relay script host is unavailable. -> 中转站脚本主机不可用。
 ```
+
+In `CodexQuotaMonitor.psm1`, translate the relay-provider delete confirmation to `确定删除中转站「$name」吗？` and its title to `Codex 额度监视器`.
 
 - [ ] **Step 5: Run relay manager and interaction tests**
 
@@ -232,7 +239,7 @@ Expected: all selected tests pass; existing security, credentials, trust fingerp
 - [ ] **Step 6: Commit the focused change**
 
 ```powershell
-git add tests/Integration/RelayManagerComposition.Tests.ps1 companion/UI/RelayManager.xaml companion/Private/RelayManagerView.ps1 companion/Private/InteractionController.ps1
+git add tests/Integration/RelayManagerComposition.Tests.ps1 companion/UI/RelayManager.xaml companion/Private/RelayManagerView.ps1 companion/Private/InteractionController.ps1 companion/CodexQuotaMonitor.psm1 docs/superpowers/plans/2026-08-09-crisp-quota-windows-and-chinese-relay-manager.md
 git commit -m "feat: localize relay manager in Chinese"
 ```
 

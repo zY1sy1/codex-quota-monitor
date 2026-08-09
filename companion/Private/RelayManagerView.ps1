@@ -168,8 +168,8 @@ function New-RelayManagerView {
         $TrustPrompt = {
             param([string]$Destination)
             [Windows.MessageBox]::Show(
-                "Allow this relay provider to contact $Destination?",
-                'Trust relay destination',
+                "允许此中转站访问 $Destination 吗？",
+                '信任中转站目标',
                 [Windows.MessageBoxButton]::YesNo,
                 [Windows.MessageBoxImage]::Warning
             ) -eq [Windows.MessageBoxResult]::Yes
@@ -273,7 +273,7 @@ function New-RelayManagerView {
             $name = [string](& $getField $provider 'Name')
             $safe.Add([pscustomobject][ordered]@{
                 Id = [string](& $getField $provider 'Id')
-                DisplayName = if ([bool](& $getField $provider 'Enabled')) { $name } else { "$name (disabled)" }
+                DisplayName = if ([bool](& $getField $provider 'Enabled')) { $name } else { "$name（已禁用）" }
             })
         }
         $state.Providers = [object[]]$safe.ToArray()
@@ -387,7 +387,7 @@ function New-RelayManagerView {
                 Extra = & $getField $item 'Extra'
             }
             $safe.Add($entry)
-            $label = if ([string]::IsNullOrWhiteSpace([string]$entry.PlanName)) { 'Result' } else { [string]$entry.PlanName }
+            $label = if ([string]::IsNullOrWhiteSpace([string]$entry.PlanName)) { '结果' } else { [string]$entry.PlanName }
             $display.Add("${label}: $($entry.Remaining) $($entry.Unit)")
         }
         $state.Preview = [object[]]$safe.ToArray()
