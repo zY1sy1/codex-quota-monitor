@@ -1,6 +1,5 @@
 if (-not (Get-Command -Name Get-MonitorThemePalette -CommandType Function -ErrorAction SilentlyContinue) -or
-    -not (Get-Command -Name Set-MonitorWindowTheme -CommandType Function -ErrorAction SilentlyContinue) -or
-    -not (Get-Command -Name Enable-MonitorWindowBlur -CommandType Function -ErrorAction SilentlyContinue)) {
+    -not (Get-Command -Name Set-MonitorWindowTheme -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'Theme.ps1')
 }
 
@@ -376,7 +375,6 @@ function New-QuotaWindowView {
         CreateQuotaCard = ${function:New-WpfQuotaCard}
         GetPlacementModel = ${function:Get-WpfQuotaWindowPlacement}
         ApplyTheme = ${function:Set-MonitorWindowTheme}
-        EnableBlur = ${function:Enable-MonitorWindowBlur}
         FocusHandlers = [Collections.Generic.List[object]]::new()
         Delegates = [ordered]@{}
     }
@@ -469,19 +467,6 @@ function New-QuotaWindowView {
     }.GetNewClosure()
     $state.Delegates.Closing = [ComponentModel.CancelEventHandler]$closingHandlerScript
 
-    $sourceInitializedScript = {
-        param($sender, $eventArgs)
-        if ($state.Disposed) { return }
-        try {
-            $handle = [Windows.Interop.WindowInteropHelper]::new($state.Window).Handle
-            $null = & $state.EnableBlur -WindowHandle $handle
-        }
-        catch {
-            # Native composition is optional; the transparent WPF surface remains usable.
-        }
-    }.GetNewClosure()
-    $state.Delegates.SourceInitialized = [EventHandler]$sourceInitializedScript
-
     $controls.HeaderDragArea.Add_MouseLeftButtonDown($state.Delegates.MouseLeftButtonDown)
     $controls.PinButton.Add_Click($state.Delegates.PinClick)
     $controls.ThemeButton.Add_Click($state.Delegates.ThemeClick)
@@ -492,7 +477,6 @@ function New-QuotaWindowView {
     $controls.OfficialTabButton.Add_Click($state.Delegates.OfficialTabClick)
     $controls.RelayTabButton.Add_Click($state.Delegates.RelayTabClick)
     $window.Add_Closing($state.Delegates.Closing)
-    $window.Add_SourceInitialized($state.Delegates.SourceInitialized)
     & $updateLayoutVisuals
 
     $removeFocusHandlers = {
@@ -680,7 +664,6 @@ function New-QuotaWindowView {
         }
         if ($null -ne $targetWindow -and $null -ne $delegates) {
             $targetWindow.Remove_Closing($delegates.Closing)
-            $targetWindow.Remove_SourceInitialized($delegates.SourceInitialized)
         }
 
         $state.Callbacks = $null
@@ -689,7 +672,6 @@ function New-QuotaWindowView {
         $state.CreateQuotaCard = $null
         $state.GetPlacementModel = $null
         $state.ApplyTheme = $null
-        $state.EnableBlur = $null
         if ($null -ne $delegates) { $delegates.Clear() }
 
         if ($null -ne $targetWindow) {
