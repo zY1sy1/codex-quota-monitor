@@ -1,4 +1,5 @@
 BeforeAll {
+    . (Join-Path $PSScriptRoot '..\..\companion\Private\RelayProviderStore.ps1')
     . (Join-Path $PSScriptRoot '..\..\companion\Private\CcSwitchUsageImport.ps1')
 
     function New-TestCcSwitchDiscoveryProvider {
@@ -23,6 +24,28 @@ BeforeAll {
             error = $null
         }
     }
+
+    function New-TestCcSwitchDescriptor {
+        param(
+            [string]$Code = "({request:{url:'{{baseUrl}}/v1/usage',method:'GET'},extractor:r=>r})",
+            [string[]]$EndpointCandidates = @('https://api.wkkapi.com'),
+            [int]$TimeoutSeconds = 10,
+            [int]$IntervalMinutes = 10,
+            [string]$ImportStatus = 'Ready'
+        )
+        [pscustomobject][ordered]@{
+            SourceProviderId = 'source-1'
+            SourceAppType = 'codex'
+            Name = 'wakaka'
+            EndpointCandidates = [string[]]$EndpointCandidates
+            Language = 'javascript'
+            Code = if ($ImportStatus -ceq 'Ready') { $Code } else { $null }
+            TimeoutSeconds = $TimeoutSeconds
+            TemplateType = 'general'
+            AutoQueryIntervalMinutes = $IntervalMinutes
+            ImportStatus = $ImportStatus
+        }
+    }
 }
 
 Describe 'CC Switch usage discovery client' {
@@ -35,6 +58,7 @@ Describe 'CC Switch usage discovery client' {
         $response.Ok | Should -BeTrue
         $response.Providers[0].Name | Should -BeExactly 'wakaka'
         $response.Providers[0].Code | Should -Match '/v1/usage'
+        $response.Providers[0].ImportStatus | Should -BeExactly 'Ready'
     }
 
     It 'accepts a precise sanitized failure response' {
@@ -136,5 +160,154 @@ Describe 'CC Switch usage discovery client' {
         $response.Error.Category | Should -BeExactly 'CcSwitchSchemaUnsupported'
         $response.Error.Message | Should -BeExactly 'CC Switch usage discovery failed.'
         ($response | ConvertTo-Json -Compress) | Should -Not -Match ([regex]::Escape($TestDrive))
+    }
+}
+
+Describe 'CC Switch usage rule conversion' {
+    It 'converts a real-format Wakaka rule into a Generic draft' {
+        $descriptor = New-TestCcSwitchDescriptor -Code @'
+({
+  request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { Authorization: "Bearer {{apiKey}}" } },
+  extractor: function(response) { const data = response.data ?? response; return { isValid: true, remaining: data.balance, unit: data.currency ?? "USD" }; }
+})
+'@
+
+        $candidate = ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor `
+            -Endpoint 'https://api.wkkapi.com' -ImportMode Auto
+
+        $candidate.Status | Should -BeExactly 'Ready'
+        $candidate.Draft.ProviderKind | Should -BeExactly 'Generic'
+        $candidate.Draft.RequestDefinition.Method | Should -BeExactly 'GET'
+        $candidate.Draft.RequestDefinition.Path | Should -BeExactly '/v1/usage'
+        $candidate.Draft.RequestDefinition.Headers.Authorization |
+            Should -BeExactly 'Bearer {{apiKey}}'
+        $candidate.Draft.TrustedDestination | Should -BeNullOrEmpty
+        $candidate.Draft.Secrets.ApiKey | Should -BeExactly ''
+        $candidate.Link.SourceProviderId | Should -BeExactly 'source-1'
+        $candidate.Link.ScriptFingerprint | Should -Match '^[0-9a-f]{64}$'
+    }
+
+    It 'requires Custom when any request syntax is not fully understood' -ForEach @(
+        @{
+            Name = 'dynamic authorization'
+            Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"GET",headers:{Authorization:getToken()}},extractor:r=>r})'
+        }
+        @{
+            Name = 'dynamic body'
+            Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"POST",body:JSON.stringify({x:1})},extractor:r=>r})'
+        }
+        @{
+            Name = 'unsupported method'
+            Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"DELETE"},extractor:r=>r})'
+        }
+        @{
+            Name = 'absolute request target'
+            Script = '({request:{url:"https://other.example/v1/usage",method:"GET"},extractor:r=>r})'
+        }
+        @{
+            Name = 'unknown request field'
+            Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"GET",credentials:"include"},extractor:r=>r})'
+        }
+        @{
+            Name = 'mixed literal and dynamic headers'
+            Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"GET",headers:{Accept:"application/json",Authorization:getToken()}},extractor:r=>r})'
+        }
+    ) {
+        $conversion = ConvertFrom-RelayUsageScript -Script $Script `
+            -BaseUrl 'https://api.wkkapi.com' -TemplateType general
+
+        $conversion.Status | Should -BeExactly 'RequiresCustom'
+        $conversion.RequestDefinition | Should -BeNullOrEmpty
+        $conversion.ExtractorScript | Should -BeNullOrEmpty
+    }
+
+    It 'preserves an uncertain script exactly only after explicit Custom selection' {
+        $code = '({request:{url:"{{baseUrl}}/v1/usage",method:"GET",headers:{Authorization:getToken()}},extractor:r=>r})'
+        $descriptor = New-TestCcSwitchDescriptor -Code $code
+
+        $automatic = ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor `
+            -Endpoint 'https://api.wkkapi.com' -ImportMode Auto
+        $custom = ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor `
+            -Endpoint 'https://api.wkkapi.com' -ImportMode Custom
+
+        $automatic.Status | Should -BeExactly 'RequiresCustom'
+        $automatic.Draft | Should -BeNullOrEmpty
+        $custom.Status | Should -BeExactly 'Ready'
+        $custom.Draft.ProviderKind | Should -BeExactly 'Custom'
+        $custom.Draft.RequestDefinition | Should -BeNullOrEmpty
+        $custom.Draft.ExtractorScript | Should -BeExactly $code
+        $custom.Draft.MigrationWarning | Should -BeExactly '已从 CC Switch 导入为 Custom；请检查目标地址并完成测试。'
+    }
+
+    It 'never converts a descriptor blocked by the discovery boundary' {
+        $descriptor = New-TestCcSwitchDescriptor -ImportStatus CredentialDetected
+
+        { ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor `
+            -Endpoint 'https://api.wkkapi.com' } |
+            Should -Throw 'CC Switch usage script cannot be imported.'
+    }
+
+    It 'rejects endpoint credentials, query strings, fragments, and unsupported schemes' -ForEach @(
+        @{ Endpoint = 'https://name:password@relay.example' }
+        @{ Endpoint = 'https://relay.example?token=value' }
+        @{ Endpoint = 'https://relay.example/path#fragment' }
+        @{ Endpoint = 'ftp://relay.example' }
+    ) {
+        $descriptor = New-TestCcSwitchDescriptor
+
+        { ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor -Endpoint $Endpoint } |
+            Should -Throw 'CC Switch endpoint is invalid.'
+    }
+
+    It 'uses a stable order-independent fingerprint and changes it for import inputs' {
+        $first = New-TestCcSwitchDescriptor -EndpointCandidates @(
+            'https://b.example', 'https://a.example'
+        )
+        $same = New-TestCcSwitchDescriptor -EndpointCandidates @(
+            'https://a.example', 'https://b.example'
+        )
+        $fingerprint = Get-CcSwitchUsageScriptFingerprint $first
+
+        Get-CcSwitchUsageScriptFingerprint $same | Should -BeExactly $fingerprint
+        Get-CcSwitchUsageScriptFingerprint (
+            New-TestCcSwitchDescriptor `
+                -Code '({request:{url:"{{baseUrl}}/other",method:"GET"},extractor:r=>r})' `
+                -EndpointCandidates @('https://b.example', 'https://a.example')
+        ) | Should -Not -BeExactly $fingerprint
+        Get-CcSwitchUsageScriptFingerprint (
+            New-TestCcSwitchDescriptor -TimeoutSeconds 11 `
+                -EndpointCandidates @('https://b.example', 'https://a.example')
+        ) | Should -Not -BeExactly $fingerprint
+        Get-CcSwitchUsageScriptFingerprint (
+            New-TestCcSwitchDescriptor -IntervalMinutes 11 `
+                -EndpointCandidates @('https://b.example', 'https://a.example')
+        ) | Should -Not -BeExactly $fingerprint
+        Get-CcSwitchUsageScriptFingerprint (
+            New-TestCcSwitchDescriptor -EndpointCandidates @('https://c.example')
+        ) | Should -Not -BeExactly $fingerprint
+    }
+
+    It 'preserves update identity and trust only while the origin is unchanged' {
+        $descriptor = New-TestCcSwitchDescriptor
+        $existing = [pscustomobject][ordered]@{
+            Id = '22222222-2222-2222-2222-222222222222'
+            Name = 'My relay'
+            Enabled = $false
+            BaseUrl = 'https://api.wkkapi.com/old-prefix'
+            IntervalMinutes = 60
+            TrustedDestination = 'https://api.wkkapi.com:443'
+        }
+
+        $sameOrigin = ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor `
+            -Endpoint 'https://api.wkkapi.com/new-prefix' -ExistingProvider $existing
+        $newOrigin = ConvertTo-CcSwitchRelayImportCandidate -Descriptor $descriptor `
+            -Endpoint 'https://other.example' -ExistingProvider $existing
+
+        $sameOrigin.Draft.Id | Should -BeExactly $existing.Id
+        $sameOrigin.Draft.Name | Should -BeExactly 'My relay'
+        $sameOrigin.Draft.Enabled | Should -BeFalse
+        $sameOrigin.Draft.IntervalMinutes | Should -Be 60
+        $sameOrigin.Draft.TrustedDestination | Should -BeExactly 'https://api.wkkapi.com:443'
+        $newOrigin.Draft.TrustedDestination | Should -BeNullOrEmpty
     }
 }

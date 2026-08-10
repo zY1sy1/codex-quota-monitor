@@ -250,7 +250,11 @@ function ConvertTo-CcSwitchDiscoveryResponse {
             TimeoutSeconds = [int]$timeout
             TemplateType = [string]$templateType
             AutoQueryIntervalMinutes = [int]$interval
-            ImportStatus = [string]$status
+            ImportStatus = switch ($status) {
+                'ready' { 'Ready' }
+                'credentialDetected' { 'CredentialDetected' }
+                'unsupportedLanguage' { 'UnsupportedLanguage' }
+            }
         })
     }
 
@@ -343,5 +347,189 @@ function Invoke-CcSwitchUsageDiscovery {
             try { $process.StandardError.Dispose() } catch {}
             $process.Dispose()
         }
+    }
+}
+
+function ConvertFrom-RelayUsageScript {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Script,
+        [Parameter(Mandatory)][string]$BaseUrl,
+        [Parameter(Mandatory)][string]$TemplateType
+    )
+    $converted = ConvertFrom-RelayLegacyScript -Script $Script -BaseUrl $BaseUrl `
+        -TemplateType $TemplateType
+    if ($null -eq $converted) {
+        return [pscustomobject][ordered]@{
+            Status = 'RequiresCustom'
+            RequestDefinition = $null
+            ExtractorScript = $null
+        }
+    }
+    $canonical = ConvertTo-CanonicalRelayRequestDefinition $converted.RequestDefinition
+    if ($null -eq $canonical -or
+        -not (Test-RelayExtractorFunctionExpression $converted.ExtractorScript)) {
+        return [pscustomobject][ordered]@{
+            Status = 'Blocked'
+            RequestDefinition = $null
+            ExtractorScript = $null
+        }
+    }
+    [pscustomobject][ordered]@{
+        Status = 'Generic'
+        RequestDefinition = $canonical
+        ExtractorScript = [string]$converted.ExtractorScript
+    }
+}
+
+function Get-CcSwitchUsageScriptFingerprint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Descriptor)
+    $endpointSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($endpoint in @($Descriptor.EndpointCandidates)) {
+        $null = $endpointSet.Add([string]$endpoint)
+    }
+    $sortedEndpoints = [string[]]@($endpointSet)
+    [Array]::Sort($sortedEndpoints, [StringComparer]::Ordinal)
+    $canonical = [ordered]@{
+        Language = [string]$Descriptor.Language
+        Code = [string]$Descriptor.Code
+        TimeoutSeconds = [int]$Descriptor.TimeoutSeconds
+        TemplateType = [string]$Descriptor.TemplateType
+        AutoQueryIntervalMinutes = [int]$Descriptor.AutoQueryIntervalMinutes
+        EndpointCandidates = $sortedEndpoints
+    }
+    $json = $canonical | ConvertTo-Json -Depth 6 -Compress
+    [byte[]]$bytes = $null
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+        return [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData($bytes)
+        ).ToLowerInvariant()
+    }
+    finally {
+        if ($null -ne $bytes) {
+            [Array]::Clear($bytes, 0, $bytes.Length)
+        }
+        $json = $null
+    }
+}
+
+function ConvertTo-CcSwitchRelayImportCandidate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Descriptor,
+        [Parameter(Mandatory)][string]$Endpoint,
+        [ValidateSet('Auto','Custom')][string]$ImportMode = 'Auto',
+        [AllowNull()][object]$ExistingProvider = $null
+    )
+    if ([string]$Descriptor.ImportStatus -cne 'Ready' -or
+        $Descriptor.Code -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$Descriptor.Code)) {
+        throw 'CC Switch usage script cannot be imported.'
+    }
+    if ($Endpoint -cne $Endpoint.Trim() -or
+        -not (Test-RelayProviderSafeText -Value $Endpoint -MaximumBytes 4096)) {
+        throw 'CC Switch endpoint is invalid.'
+    }
+    $origin = ConvertTo-RelayOriginFingerprint -BaseUrl $Endpoint
+    if ($null -eq $origin) {
+        throw 'CC Switch endpoint is invalid.'
+    }
+    $conversion = ConvertFrom-RelayUsageScript -Script ([string]$Descriptor.Code) `
+        -BaseUrl $Endpoint -TemplateType ([string]$Descriptor.TemplateType)
+    if ($conversion.Status -eq 'RequiresCustom' -and $ImportMode -eq 'Auto') {
+        return [pscustomobject][ordered]@{
+            Status = 'RequiresCustom'
+            Draft = $null
+            Link = $null
+        }
+    }
+    if ($conversion.Status -eq 'Blocked') {
+        throw 'CC Switch usage script is unsupported.'
+    }
+
+    $generic = $conversion.Status -eq 'Generic' -and $ImportMode -eq 'Auto'
+    $name = if ($null -eq $ExistingProvider) {
+        ([string]$Descriptor.Name).Trim()
+    }
+    else {
+        [string](Get-RelayProviderField $ExistingProvider 'Name')
+    }
+    if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 256) {
+        throw 'CC Switch usage script cannot be imported.'
+    }
+    $id = if ($null -eq $ExistingProvider) {
+        [guid]::NewGuid().ToString('D')
+    }
+    else {
+        [string](Get-RelayProviderField $ExistingProvider 'Id')
+    }
+    $enabled = if ($null -eq $ExistingProvider) {
+        $true
+    }
+    else {
+        [bool](Get-RelayProviderField $ExistingProvider 'Enabled')
+    }
+    $interval = if ($null -eq $ExistingProvider) {
+        [Math]::Clamp([int]$Descriptor.AutoQueryIntervalMinutes, 0, 1440)
+    }
+    else {
+        [int](Get-RelayProviderField $ExistingProvider 'IntervalMinutes')
+    }
+    $existingOrigin = if ($null -eq $ExistingProvider) {
+        $null
+    }
+    else {
+        ConvertTo-RelayOriginFingerprint -BaseUrl (
+            [string](Get-RelayProviderField $ExistingProvider 'BaseUrl')
+        )
+    }
+    $trustedDestination = if ($null -ne $ExistingProvider -and $origin -ceq $existingOrigin) {
+        Get-RelayProviderField $ExistingProvider 'TrustedDestination'
+    }
+    else {
+        $null
+    }
+
+    $draft = [pscustomobject][ordered]@{
+        Id = $id
+        Name = $name
+        Enabled = $enabled
+        ProviderKind = if ($generic) { 'Generic' } else { 'Custom' }
+        BaseUrl = $Endpoint
+        RequestDefinition = if ($generic) { $conversion.RequestDefinition } else { $null }
+        ExtractorScript = if ($generic) {
+            [string]$conversion.ExtractorScript
+        }
+        else {
+            [string]$Descriptor.Code
+        }
+        TimeoutSeconds = [Math]::Clamp([int]$Descriptor.TimeoutSeconds, 2, 30)
+        IntervalMinutes = $interval
+        TrustedDestination = $trustedDestination
+        MigrationWarning = if ($generic) {
+            $null
+        }
+        else {
+            '已从 CC Switch 导入为 Custom；请检查目标地址并完成测试。'
+        }
+        Secrets = [pscustomobject][ordered]@{
+            ApiKey = ''
+            AccessToken = ''
+            UserId = ''
+        }
+    }
+    $link = [pscustomobject][ordered]@{
+        RelayProviderId = $id
+        SourceKind = 'CcSwitchUsageScript'
+        SourceProviderId = [string]$Descriptor.SourceProviderId
+        SourceAppType = [string]$Descriptor.SourceAppType
+        ScriptFingerprint = Get-CcSwitchUsageScriptFingerprint $Descriptor
+    }
+    [pscustomobject][ordered]@{
+        Status = 'Ready'
+        Draft = $draft
+        Link = $link
     }
 }
