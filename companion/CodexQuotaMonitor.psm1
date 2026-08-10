@@ -23,6 +23,10 @@ $privateFiles = @(
     'QuotaOrbView.ps1'
     'DisplayModeController.ps1'
     'RelayManagerView.ps1'
+    'CcSwitchUsageImport.ps1'
+    'RelayImportLinkStore.ps1'
+    'CcSwitchImportView.ps1'
+    'CcSwitchImportController.ps1'
     'TrayView.ps1'
     'InteractionController.ps1'
 )
@@ -130,6 +134,10 @@ function Invoke-CodexQuotaMonitorRuntime {
         Tooltip = ${function:Get-TrayTooltip}
         ReadRelayProviders = ${function:Read-RelayProviderStore}
         WriteRelayProviders = ${function:Write-RelayProviderStore}
+        DiscoverCcSwitch = ${function:Invoke-CcSwitchUsageDiscovery}
+        ReadRelayImportLinks = ${function:Read-RelayImportLinkStore}
+        WriteRelayImportLinks = ${function:Write-RelayImportLinkStore}
+        WriteRelayImportTransaction = ${function:Write-RelayProviderImportTransaction}
         ReadRelayCache = ${function:Read-RelayCache}
         WriteRelayCache = ${function:Write-RelayCache}
         ProtectRelaySecret = ${function:Protect-RelaySecret}
@@ -157,6 +165,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         NewOrb = ${function:New-QuotaOrbView}
         NewDisplay = ${function:New-MonitorDisplayModeController}
         NewRelayManager = ${function:New-RelayManagerView}
+        NewCcSwitchImportView = ${function:New-CcSwitchImportView}
+        NewCcSwitchImportController = ${function:New-CcSwitchImportController}
         NewRelayManagerController = ${function:New-RelayManagerController}
         NewTray = ${function:New-TrayView}
         NewInteraction = ${function:New-MonitorInteractionController}
@@ -230,6 +240,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         DisplayController = $null
         RelayManagerView = $null
         RelayManagerController = $null
+        CcSwitchImportView = $null
+        CcSwitchImportController = $null
         TrayView = $null
         Interaction = $null
         RefreshEvent = [Threading.AutoResetEvent]::new($false)
@@ -994,10 +1006,37 @@ function Invoke-CodexQuotaMonitorRuntime {
             $newRelayManagerFunction = $functions.NewRelayManager
             $runtime.RelayManagerView = & $newRelayManagerFunction
 
-            $writeRelayProvidersFunction = $functions.WriteRelayProviders
-            $writeRelayProvidersAction = {
-                param($Document)
-                & $writeRelayProvidersFunction -Path $paths.RelayProviders -Document $Document
+            $newCcSwitchImportViewFunction = $functions.NewCcSwitchImportView
+            $runtime.CcSwitchImportView = & $newCcSwitchImportViewFunction
+            $discoverCcSwitchFunction = $functions.DiscoverCcSwitch
+            $readRelayImportLinksFunction = $functions.ReadRelayImportLinks
+            $defaultCcSwitchDatabasePathFunction = ${function:Get-DefaultCcSwitchDatabasePath}
+            $ccSwitchDiscoveryAction = {
+                & $discoverCcSwitchFunction -ExecutablePath $paths.RelayHost `
+                    -DatabasePath (& $defaultCcSwitchDatabasePathFunction)
+            }.GetNewClosure()
+            $readRelayImportLinksAction = {
+                & $readRelayImportLinksFunction -Path $paths.RelayImportLinks
+            }.GetNewClosure()
+            $newCcSwitchImportControllerFunction = $functions.NewCcSwitchImportController
+            $runtime.CcSwitchImportController = & $newCcSwitchImportControllerFunction `
+                -View $runtime.CcSwitchImportView `
+                -Discover $ccSwitchDiscoveryAction `
+                -ReadLinks $readRelayImportLinksAction `
+                -ConvertCandidate ${function:ConvertTo-CcSwitchRelayImportCandidate}
+
+            $writeRelayImportTransactionFunction = $functions.WriteRelayImportTransaction
+            $writeRelayStateAction = {
+                param($Document, $Mutation)
+                & $writeRelayImportTransactionFunction `
+                    -ProviderPath $paths.RelayProviders `
+                    -LinkPath $paths.RelayImportLinks `
+                    -ProviderDocument $Document `
+                    -Mutation $Mutation
+            }.GetNewClosure()
+            $importProviderAction = {
+                param($Providers)
+                & $runtime.CcSwitchImportController.Show -Providers $Providers
             }.GetNewClosure()
             $protectRelaySecretFunction = $functions.ProtectRelaySecret
             $protectRelaySecretAction = {
@@ -1151,7 +1190,8 @@ function Invoke-CodexQuotaMonitorRuntime {
             $runtime.RelayManagerController = & $newRelayManagerControllerFunction `
                 -View $runtime.RelayManagerView `
                 -Providers $runtime.RelayProviders `
-                -WriteProviders $writeRelayProvidersAction `
+                -WriteRelayState $writeRelayStateAction `
+                -ImportProvider $importProviderAction `
                 -ProtectSecret $protectRelaySecretAction `
                 -UnprotectSecret $unprotectRelaySecretAction `
                 -QueryProvider $queryRelayDraftAction `
@@ -1309,6 +1349,12 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
         elseif ($null -ne $runtime.RelayManagerView) {
             try { & $runtime.RelayManagerView.Dispose } catch { }
+        }
+        if ($null -ne $runtime.CcSwitchImportController) {
+            try { & $runtime.CcSwitchImportController.Dispose } catch { }
+        }
+        if ($null -ne $runtime.CcSwitchImportView) {
+            try { & $runtime.CcSwitchImportView.Dispose } catch { }
         }
         if ($null -ne $runtime.DisplayController) {
             try { & $runtime.DisplayController.Dispose } catch { }

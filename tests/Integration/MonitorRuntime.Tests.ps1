@@ -33,6 +33,9 @@ Describe 'Codex quota monitor production composition' {
         $pwsh = (Get-Process -Id $PID).Path
         $calls = [Collections.Generic.List[string]]::new()
         $relayCacheWrites = [Collections.Generic.List[object]]::new()
+        $ccSwitchDiscoveries = [Collections.Generic.List[object]]::new()
+        $relayImportLinkReads = [Collections.Generic.List[string]]::new()
+        $relayImportTransactions = [Collections.Generic.List[object]]::new()
         $existingRelayProvider = [pscustomobject][ordered]@{
             Id = '11111111-1111-1111-1111-111111111111'
             Name = 'Existing relay'
@@ -73,6 +76,17 @@ Describe 'Codex quota monitor production composition' {
             Show = { $calls.Add('show-relay-manager') | Out-Null }
             Dispose = { $calls.Add('dispose-relay-manager-controller') | Out-Null }
         }
+        $ccSwitchImportView = [pscustomobject][ordered]@{
+            Dispose = { $calls.Add('dispose-cc-switch-import-view') | Out-Null }
+        }
+        $ccSwitchImportController = [pscustomobject][ordered]@{
+            Show = {
+                param($Providers)
+                $calls.Add('show-cc-switch-import') | Out-Null
+                return $null
+            }
+            Dispose = { $calls.Add('dispose-cc-switch-import-controller') | Out-Null }
+        }
         $displayController = [pscustomobject][ordered]@{
             State = [pscustomobject]@{ Visible = $true; Mode = 'Full'; Theme = 'Dark'; FullLayout = 'Overview'; Topmost = $true }
             SetSnapshot = { param($Rows) $calls.Add("snapshot:$(@($Rows).Count)") | Out-Null }
@@ -82,6 +96,29 @@ Describe 'Codex quota monitor production composition' {
             ReadRelayProviders = {
                 param($Path)
                 [pscustomobject]@{ SchemaVersion = 2; Providers = @($existingRelayProvider) }
+            }.GetNewClosure()
+            DiscoverCcSwitch = {
+                param($ExecutablePath, $DatabasePath)
+                $ccSwitchDiscoveries.Add([pscustomobject][ordered]@{
+                    ExecutablePath = $ExecutablePath
+                    DatabasePath = $DatabasePath
+                    ParameterNames = [string[]]@($PSBoundParameters.Keys)
+                }) | Out-Null
+                [pscustomobject]@{ Ok = $true; Providers = @(); Error = $null }
+            }.GetNewClosure()
+            ReadRelayImportLinks = {
+                param($Path)
+                $relayImportLinkReads.Add([string]$Path) | Out-Null
+                [pscustomobject]@{ SchemaVersion = 1; Links = @() }
+            }.GetNewClosure()
+            WriteRelayImportTransaction = {
+                param($ProviderPath, $LinkPath, $ProviderDocument, $Mutation)
+                $relayImportTransactions.Add([pscustomobject][ordered]@{
+                    ProviderPath = $ProviderPath
+                    LinkPath = $LinkPath
+                    ProviderDocument = $ProviderDocument
+                    Mutation = $Mutation
+                }) | Out-Null
             }.GetNewClosure()
             ReadRelayCache = {
                 param($Path)
@@ -108,12 +145,29 @@ Describe 'Codex quota monitor production composition' {
                 $calls.Add('new-relay-manager-view') | Out-Null
                 Write-Output -NoEnumerate $relayManagerView
             }.GetNewClosure()
+            NewCcSwitchImportView = {
+                $calls.Add('new-cc-switch-import-view') | Out-Null
+                Write-Output -NoEnumerate $ccSwitchImportView
+            }.GetNewClosure()
+            NewCcSwitchImportController = {
+                param($View, $Discover, $ReadLinks, $ConvertCandidate)
+                $View | Should -Be $ccSwitchImportView
+                $ConvertCandidate | Should -BeOfType ([scriptblock])
+                $null = & $Discover
+                $null = & $ReadLinks
+                $calls.Add('new-cc-switch-import-controller') | Out-Null
+                Write-Output -NoEnumerate $ccSwitchImportController
+            }.GetNewClosure()
             NewRelayManagerController = {
                 param(
-                    $View, $Providers, $WriteProviders, $ProtectSecret, $UnprotectSecret,
+                    $View, $Providers, $WriteRelayState, $ImportProvider, $ProtectSecret, $UnprotectSecret,
                     $QueryProvider, $ApplyProviders, $RemoveProviderArtifacts, $ConfirmDelete
                 )
                 $View | Should -Be $relayManagerView
+                & $WriteRelayState ([pscustomobject]@{ SchemaVersion = 2; Providers = @() }) ([pscustomobject]@{
+                    Kind = 'None'; Link = $null; ProviderId = $null
+                })
+                $null = & $ImportProvider @()
                 & $ApplyProviders @($existingRelayProvider) @($existingRelayProvider.Id) @() $false
                 $calls.Add('new-relay-manager-controller') | Out-Null
                 Write-Output -NoEnumerate $relayManagerController
@@ -183,13 +237,33 @@ Describe 'Codex quota monitor production composition' {
 
         @($calls | Where-Object { $_ -notlike 'snapshot:*' -and $_ -ne 'dispose-display' }) |
             Should -Be @(
-                'new-relay-manager-view', 'new-relay-manager-controller',
-                'new-display', 'show-relay-manager', 'initialize-desktop',
-                'dispose-relay-manager-controller'
+                'new-relay-manager-view', 'new-cc-switch-import-view',
+                'new-cc-switch-import-controller', 'show-cc-switch-import',
+                'new-relay-manager-controller', 'new-display', 'show-relay-manager',
+                'initialize-desktop', 'dispose-relay-manager-controller',
+                'dispose-cc-switch-import-controller', 'dispose-cc-switch-import-view'
             )
         @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0
         @($calls | Where-Object { $_ -eq 'dispose-display' }).Count | Should -Be 1
         @($calls | Where-Object { $_ -eq 'dispose-relay-manager-view' }).Count | Should -Be 0
+        $ccSwitchDiscoveries.Count | Should -Be 1
+        $ccSwitchDiscoveries[0].ExecutablePath | Should -BeExactly (
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'app', 'Bin', 'relay-quota-host.exe')
+        )
+        $ccSwitchDiscoveries[0].DatabasePath | Should -BeExactly (
+            [IO.Path]::GetFullPath([IO.Path]::Combine($env:USERPROFILE, '.cc-switch', 'cc-switch.db'))
+        )
+        @($ccSwitchDiscoveries[0].ParameterNames) | Should -Be @('ExecutablePath', 'DatabasePath')
+        @($relayImportLinkReads) | Should -Be @(
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-import-links.json')
+        )
+        $relayImportTransactions.Count | Should -Be 1
+        $relayImportTransactions[0].ProviderPath | Should -BeExactly (
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-providers.json')
+        )
+        $relayImportTransactions[0].LinkPath | Should -BeExactly (
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-import-links.json')
+        )
         $relayCacheWrites.Count | Should -Be 1
         @($relayCacheWrites[0].Providers).Count | Should -Be 0
         $result.Status | Should -BeExactly 'Live'

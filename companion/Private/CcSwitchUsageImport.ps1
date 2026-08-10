@@ -415,6 +415,37 @@ function Get-CcSwitchUsageScriptFingerprint {
     }
 }
 
+function Get-RelayImportedDraftTestFingerprint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Draft,
+        [Parameter(Mandatory)][object]$Secrets
+    )
+    $material = [ordered]@{
+        ProviderKind = [string](Get-RelayProviderField $Draft 'ProviderKind')
+        BaseUrl = [string](Get-RelayProviderField $Draft 'BaseUrl')
+        RequestDefinition = Get-RelayProviderField $Draft 'RequestDefinition'
+        ExtractorScript = [string](Get-RelayProviderField $Draft 'ExtractorScript')
+        TimeoutSeconds = [int](Get-RelayProviderField $Draft 'TimeoutSeconds')
+        ApiKey = [string](Get-RelayProviderField $Secrets 'ApiKey')
+        AccessToken = [string](Get-RelayProviderField $Secrets 'AccessToken')
+        UserId = [string](Get-RelayProviderField $Secrets 'UserId')
+    } | ConvertTo-Json -Depth 12 -Compress
+    [byte[]]$bytes = $null
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($material)
+        return [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData($bytes)
+        ).ToLowerInvariant()
+    }
+    finally {
+        if ($null -ne $bytes) {
+            [Array]::Clear($bytes, 0, $bytes.Length)
+        }
+        $material = $null
+    }
+}
+
 function ConvertTo-CcSwitchRelayImportCandidate {
     [CmdletBinding()]
     param(

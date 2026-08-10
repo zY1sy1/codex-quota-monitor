@@ -1,3 +1,27 @@
+function Copy-RelayManagerStringMap {
+    param([AllowNull()][object]$Value)
+    $copy = [ordered]@{}
+    if ($null -eq $Value) {
+        return [pscustomobject]$copy
+    }
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($entry in ([Collections.IDictionary]$Value).GetEnumerator()) {
+            $name = [string]$entry.Key
+            if (-not [string]::IsNullOrEmpty($name)) {
+                $copy[$name] = [string]$entry.Value
+            }
+        }
+        return [pscustomobject]$copy
+    }
+    foreach ($property in $Value.PSObject.Properties) {
+        $name = [string]$property.Name
+        if (-not [string]::IsNullOrEmpty($name)) {
+            $copy[$name] = [string]$property.Value
+        }
+    }
+    return [pscustomobject]$copy
+}
+
 function Copy-RelayManagerDraft {
     param(
         [Parameter(Mandatory)][object]$Provider,
@@ -10,23 +34,14 @@ function Copy-RelayManagerDraft {
     }
     $providerKind = [string](& $get $Provider 'ProviderKind')
     $requestDefinition = & $get $Provider 'RequestDefinition'
+    $copyStringMap = ${function:Copy-RelayManagerStringMap}
     $copiedRequest = $null
     if ($providerKind -ceq 'Generic' -and $null -ne $requestDefinition) {
-        $query = [ordered]@{}
-        foreach ($name in @($requestDefinition.Query.PSObject.Properties.Name)) {
-            if ([string]::IsNullOrEmpty([string]$name)) { continue }
-            $query[$name] = [string]$requestDefinition.Query.$name
-        }
-        $headers = [ordered]@{}
-        foreach ($name in @($requestDefinition.Headers.PSObject.Properties.Name)) {
-            if ([string]::IsNullOrEmpty([string]$name)) { continue }
-            $headers[$name] = [string]$requestDefinition.Headers.$name
-        }
         $copiedRequest = [pscustomobject][ordered]@{
             Method = [string](& $get $requestDefinition 'Method')
             Path = [string](& $get $requestDefinition 'Path')
-            Query = [pscustomobject]$query
-            Headers = [pscustomobject]$headers
+            Query = & $copyStringMap (& $get $requestDefinition 'Query')
+            Headers = & $copyStringMap (& $get $requestDefinition 'Headers')
             Body = & $get $requestDefinition 'Body'
         }
     }
@@ -43,6 +58,8 @@ function Copy-RelayManagerDraft {
         TrustedDestination = if ($ClearTrust) { $null } else {
             & $get $Provider 'TrustedDestination'
         }
+        MigrationWarning = [string](& $get $Provider 'MigrationWarning')
+        ImportLink = if ($NewIdentity) { $null } else { & $get $Provider 'ImportLink' }
         Secrets = [pscustomobject][ordered]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
     }
 }
@@ -65,6 +82,8 @@ function New-EmptyRelayManagerDraft {
         TimeoutSeconds = 10
         IntervalMinutes = 10
         TrustedDestination = $null
+        MigrationWarning = $null
+        ImportLink = $null
         Secrets = [pscustomobject][ordered]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
     }
 }
@@ -124,7 +143,8 @@ function New-RelayManagerController {
     param(
         [Parameter(Mandatory)][object]$View,
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Providers,
-        [Parameter(Mandatory)][scriptblock]$WriteProviders,
+        [Parameter(Mandatory)][scriptblock]$WriteRelayState,
+        [Parameter(Mandatory)][scriptblock]$ImportProvider,
         [Parameter(Mandatory)][scriptblock]$ProtectSecret,
         [Parameter(Mandatory)][scriptblock]$UnprotectSecret,
         [Parameter(Mandatory)][scriptblock]$QueryProvider,
@@ -136,7 +156,7 @@ function New-RelayManagerController {
     $state = [pscustomobject][ordered]@{
         Providers = [object[]]@($Providers)
         PendingSecrets = $null
-        TestedDraftId = $null
+        TestedDraftFingerprint = $null
         Disposed = $false
     }
     $get = ${function:Get-MonitorInteractionField}
@@ -144,6 +164,8 @@ function New-RelayManagerController {
     $newDraft = ${function:New-EmptyRelayManagerDraft}
     $toPreview = ${function:ConvertTo-RelayManagerPreview}
     $validFingerprint = ${function:Test-RelayManagerDestinationFingerprint}
+    $draftTestFingerprint = ${function:Get-RelayImportedDraftTestFingerprint}
+    $newLinkMutation = ${function:New-RelayImportLinkMutation}
     $canonicalizeProvider = ${function:ConvertTo-CanonicalRelayProvider}
     $canonicalizeDocument = ${function:ConvertTo-CanonicalRelayProviderDocument}
 
@@ -158,10 +180,33 @@ function New-RelayManagerController {
         & $View.SetProviders ([object[]]@($state.Providers))
     }.GetNewClosure()
 
+    $resolvePlainSecrets = {
+        param(
+            [Parameter(Mandatory)][object]$Draft,
+            [AllowNull()][object]$CurrentProvider
+        )
+        $entered = & $get $Draft 'Secrets'
+        $resolved = [ordered]@{}
+        foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) {
+            $plain = [string](& $get $entered $name)
+            if ([string]::IsNullOrEmpty($plain) -and $null -ne $state.PendingSecrets) {
+                $plain = [string](& $get $state.PendingSecrets $name)
+            }
+            if ([string]::IsNullOrEmpty($plain) -and $null -ne $CurrentProvider) {
+                $cipher = [string](& $get (& $get $CurrentProvider 'Secrets') $name)
+                if (-not [string]::IsNullOrEmpty($cipher)) {
+                    $plain = [string](& $UnprotectSecret $cipher)
+                }
+            }
+            $resolved[$name] = $plain
+        }
+        return [pscustomobject]$resolved
+    }.GetNewClosure()
+
     $add = {
         if ($state.Disposed) { return }
         $state.PendingSecrets = $null
-        $state.TestedDraftId = $null
+        $state.TestedDraftFingerprint = $null
         & $View.SetDraft (& $newDraft)
         & $View.SetPreview @()
         & $View.SetTestState $true $false $null
@@ -173,7 +218,7 @@ function New-RelayManagerController {
         $provider = @(& $findProvider $ProviderId)
         if ($provider.Count -eq 0) { return }
         $state.PendingSecrets = $null
-        $state.TestedDraftId = $null
+        $state.TestedDraftFingerprint = $null
         & $View.SetDraft (& $copyDraft $provider[0])
         & $View.SetPreview @()
         & $View.SetTestState $true $false $null
@@ -185,12 +230,39 @@ function New-RelayManagerController {
         $provider = @(& $findProvider $ProviderId)
         if ($provider.Count -eq 0) { return }
         $state.PendingSecrets = $null
-        $state.TestedDraftId = $null
+        $state.TestedDraftFingerprint = $null
         $draft = & $copyDraft $provider[0] -NewIdentity -ClearTrust
         $draft.Name = "$($draft.Name) copy"
         & $View.SetDraft $draft
         & $View.SetPreview @()
         & $View.SetTestState $true $false $null
+    }.GetNewClosure()
+
+    $import = {
+        if ($state.Disposed) { return $false }
+        try {
+            $result = & $ImportProvider ([object[]]@($state.Providers))
+            if ($null -eq $result) { return $false }
+            $draft = & $get $result 'Draft'
+            $link = & $get $result 'Link'
+            if ($null -eq $draft -or $null -eq $link -or
+                [string](& $get $draft 'Id') -cne [string](& $get $link 'RelayProviderId')) {
+                & $View.SetTestState $true $false 'Unable to import the relay provider.'
+                return $false
+            }
+            $importedDraft = & $copyDraft $draft
+            $importedDraft.ImportLink = $link
+            $state.PendingSecrets = $null
+            $state.TestedDraftFingerprint = $null
+            & $View.SetDraft $importedDraft
+            & $View.SetPreview @()
+            & $View.SetTestState $true $false 'Imported provider must be tested before saving.'
+            return $true
+        }
+        catch {
+            & $View.SetTestState $true $false 'Unable to import the relay provider.'
+            return $false
+        }
     }.GetNewClosure()
 
     $delete = {
@@ -205,8 +277,9 @@ function New-RelayManagerController {
             SchemaVersion = 2; Providers = $remaining
         })
         if ($null -eq $document) { throw 'Relay provider deletion produced an invalid store.' }
+        $mutation = & $newLinkMutation -Kind Remove -ProviderId $ProviderId
         try {
-            & $WriteProviders $document
+            & $WriteRelayState $document $mutation
             & $RemoveProviderArtifacts $ProviderId
             $state.Providers = [object[]]@($document.Providers)
             & $ApplyProviders $state.Providers @() @($ProviderId) $false
@@ -224,6 +297,31 @@ function New-RelayManagerController {
         $id = [string](& $get $draft 'Id')
         $currentItems = @(& $findProvider $id)
         $current = if ($currentItems.Count -eq 0) { $null } else { $currentItems[0] }
+        $importLink = & $get $draft 'ImportLink'
+        if ($null -ne $importLink) {
+            $testSecrets = $null
+            try {
+                $testSecrets = & $resolvePlainSecrets $draft $current
+                $currentFingerprint = & $draftTestFingerprint $draft $testSecrets
+                if ([string]::IsNullOrWhiteSpace($state.TestedDraftFingerprint) -or
+                    $currentFingerprint -cne $state.TestedDraftFingerprint) {
+                    & $View.SetTestState $true $false 'Imported providers must pass the current test before saving.'
+                    return $false
+                }
+            }
+            catch {
+                & $View.SetTestState $true $false 'Imported providers must pass the current test before saving.'
+                return $false
+            }
+            finally {
+                if ($null -ne $testSecrets) {
+                    foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) {
+                        $testSecrets.$name = $null
+                    }
+                }
+                $testSecrets = $null
+            }
+        }
         $enteredSecrets = & $get $draft 'Secrets'
         $cipherSecrets = [ordered]@{}
         foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) {
@@ -277,13 +375,19 @@ function New-RelayManagerController {
             & $View.SetTestState $false $false 'Provider settings are invalid.'
             return $false
         }
+        $mutation = if ($null -eq $importLink) {
+            & $newLinkMutation -Kind None
+        }
+        else {
+            & $newLinkMutation -Kind Upsert -Link $importLink
+        }
         try {
-            & $WriteProviders $document
+            & $WriteRelayState $document $mutation
             $state.Providers = [object[]]@($document.Providers)
-            $testPassed = $state.TestedDraftId -ceq $id
+            $testPassed = $null -ne $importLink
             & $ApplyProviders $state.Providers @($id) @() $testPassed
             $state.PendingSecrets = $null
-            $state.TestedDraftId = $null
+            $state.TestedDraftFingerprint = $null
             & $publishProviders
             return $true
         }
@@ -300,21 +404,12 @@ function New-RelayManagerController {
         $id = [string](& $get $draft 'Id')
         $currentItems = @(& $findProvider $id)
         $current = if ($currentItems.Count -eq 0) { $null } else { $currentItems[0] }
-        $entered = & $get $draft 'Secrets'
-        $secrets = [ordered]@{}
+        $secrets = $null
         try {
-            foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) {
-                $plain = [string](& $get $entered $name)
-                if ([string]::IsNullOrEmpty($plain) -and $null -ne $current) {
-                    $cipher = [string](& $get (& $get $current 'Secrets') $name)
-                    if (-not [string]::IsNullOrEmpty($cipher)) {
-                        $plain = [string](& $UnprotectSecret $cipher)
-                    }
-                }
-                $secrets[$name] = $plain
-            }
+            $secrets = & $resolvePlainSecrets $draft $current
         }
         catch {
+            $state.TestedDraftFingerprint = $null
             & $View.SetPreview @([pscustomobject][ordered]@{
                 Category = 'Authentication'; Message = 'Relay credentials must be entered again.'; HttpStatus = $null
             })
@@ -349,30 +444,38 @@ function New-RelayManagerController {
             $preview = & $toPreview $response
             & $View.SetPreview $preview
             if ([bool](& $get $response 'Ok')) {
-                $state.TestedDraftId = [string](& $get $draft 'Id')
+                $importLink = & $get $draft 'ImportLink'
+                $state.TestedDraftFingerprint = if ($null -eq $importLink) {
+                    $null
+                }
+                else {
+                    & $draftTestFingerprint $draft $secrets
+                }
                 & $View.SetTestState $true $false 'Test succeeded.'
             }
             else {
-                $state.TestedDraftId = $null
+                $state.TestedDraftFingerprint = $null
                 & $View.SetTestState $true $false 'Test failed.'
             }
         }
         catch {
-            $state.TestedDraftId = $null
+            $state.TestedDraftFingerprint = $null
             & $View.SetPreview @([pscustomobject][ordered]@{
                 Category = 'SidecarLifecycle'; Message = 'Relay script host is unavailable.'; HttpStatus = $null
             })
             & $View.SetTestState $true $false 'Test failed.'
         }
         finally {
-            foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) { $secrets[$name] = $null }
+            if ($null -ne $secrets) {
+                foreach ($name in @('ApiKey', 'AccessToken', 'UserId')) { $secrets.$name = $null }
+            }
             $secrets = $null
         }
     }.GetNewClosure()
 
     $cancel = {
         $state.PendingSecrets = $null
-        $state.TestedDraftId = $null
+        $state.TestedDraftFingerprint = $null
         return $true
     }.GetNewClosure()
     $show = {
@@ -386,14 +489,14 @@ function New-RelayManagerController {
         if ($state.Disposed) { return }
         $state.Disposed = $true
         $state.PendingSecrets = $null
-        $state.TestedDraftId = $null
+        $state.TestedDraftFingerprint = $null
         & $View.SetCallbacks -OnAdd $null -OnEdit $null -OnDuplicate $null -OnDelete $null `
-            -OnTest $null -OnSave $null -OnCancel $null
+            -OnImport $null -OnTest $null -OnSave $null -OnCancel $null
         & $View.Dispose
     }.GetNewClosure()
 
     & $View.SetCallbacks -OnAdd $add -OnEdit $edit -OnDuplicate $duplicate -OnDelete $delete `
-        -OnTest $test -OnSave $save -OnCancel $cancel
+        -OnImport $import -OnTest $test -OnSave $save -OnCancel $cancel
     & $publishProviders
     return [pscustomobject][ordered]@{
         State = $state

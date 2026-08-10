@@ -146,7 +146,7 @@ function New-RelayManagerView {
     if ($window -isnot [Windows.Window]) { throw 'Relay manager XAML root must be a Window.' }
 
     $controlNames = @(
-        'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton',
+        'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton', 'ImportButton',
         'EnabledCheckBox', 'NameTextBox', 'ProviderKindComboBox', 'BaseUrlTextBox',
         'AdvancedRequestExpander', 'MethodComboBox', 'PathTextBox', 'QueryTextBox',
         'HeadersTextBox', 'BodyTextBox', 'ExtractorScriptTextBox', 'MigrationWarningText',
@@ -182,6 +182,7 @@ function New-RelayManagerView {
         Providers = @()
         DraftId = $null
         TrustedDestination = $null
+        ImportLink = $null
         Preview = @()
         CanTest = $true
         IsTesting = $false
@@ -242,6 +243,7 @@ function New-RelayManagerView {
         @{ Control = 'EditButton'; Callback = 'OnEdit'; UsesSelection = $true; HideOnTrue = $false },
         @{ Control = 'DuplicateButton'; Callback = 'OnDuplicate'; UsesSelection = $true; HideOnTrue = $false },
         @{ Control = 'DeleteButton'; Callback = 'OnDelete'; UsesSelection = $true; HideOnTrue = $false },
+        @{ Control = 'ImportButton'; Callback = 'OnImport'; UsesSelection = $false; HideOnTrue = $false },
         @{ Control = 'TestButton'; Callback = 'OnTest'; UsesSelection = $false; HideOnTrue = $false },
         @{ Control = 'SaveButton'; Callback = 'OnSave'; UsesSelection = $false; HideOnTrue = $true },
         @{ Control = 'CancelButton'; Callback = 'OnCancel'; UsesSelection = $false; HideOnTrue = $true }
@@ -307,6 +309,7 @@ function New-RelayManagerView {
             TimeoutSeconds = $timeout
             IntervalMinutes = $interval
             TrustedDestination = $state.TrustedDestination
+            ImportLink = $state.ImportLink
             Secrets = [pscustomobject][ordered]@{
                 ApiKey = [string]$state.Controls.ApiKeyPasswordBox.Password
                 AccessToken = [string]$state.Controls.AccessTokenPasswordBox.Password
@@ -320,6 +323,7 @@ function New-RelayManagerView {
         if ($state.Disposed -or $null -eq $Draft) { return }
         $state.DraftId = [string](& $getField $Draft 'Id')
         $state.TrustedDestination = & $getField $Draft 'TrustedDestination'
+        $state.ImportLink = & $getField $Draft 'ImportLink'
         $kind = [string](& $getField $Draft 'ProviderKind')
         if ($kind -notin @('Generic','Custom')) { $kind = 'Generic' }
         $state.Controls.ProviderKindComboBox.SelectedItem = @(
@@ -403,9 +407,9 @@ function New-RelayManagerView {
     }.GetNewClosure()
 
     $setCallbacks = {
-        param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnTest, $OnSave, $OnCancel)
+        param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnImport, $OnTest, $OnSave, $OnCancel)
         if (-not $state.Disposed) {
-            $state.Callbacks = [pscustomobject][ordered]@{ OnAdd=$OnAdd; OnEdit=$OnEdit; OnDuplicate=$OnDuplicate; OnDelete=$OnDelete; OnTest=$OnTest; OnSave=$OnSave; OnCancel=$OnCancel }
+            $state.Callbacks = [pscustomobject][ordered]@{ OnAdd=$OnAdd; OnEdit=$OnEdit; OnDuplicate=$OnDuplicate; OnDelete=$OnDelete; OnImport=$OnImport; OnTest=$OnTest; OnSave=$OnSave; OnCancel=$OnCancel }
         }
     }.GetNewClosure()
 
@@ -417,10 +421,10 @@ function New-RelayManagerView {
         }
         $controls.ProviderKindComboBox.Remove_SelectionChanged($state.Delegates.SelectionChanged)
         $controls.MethodComboBox.Remove_SelectionChanged($state.Delegates.SelectionChanged)
-        foreach ($name in @('AddButton','EditButton','DuplicateButton','DeleteButton','TestButton','SaveButton','CancelButton')) {
+        foreach ($name in @('AddButton','EditButton','DuplicateButton','DeleteButton','ImportButton','TestButton','SaveButton','CancelButton')) {
             $controls[$name].Remove_Click($state.Delegates[$name])
         }
-        $state.Callbacks = $null; $state.TrustPrompt = $null; $state.Providers = @(); $state.Preview = @()
+        $state.Callbacks = $null; $state.TrustPrompt = $null; $state.Providers = @(); $state.Preview = @(); $state.ImportLink = $null
         try { $window.Close() } catch [InvalidOperationException] {}
     }.GetNewClosure()
 
