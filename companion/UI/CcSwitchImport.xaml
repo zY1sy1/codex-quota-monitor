@@ -1,0 +1,137 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="从 CC Switch 导入余额查询规则"
+        Width="780"
+        Height="560"
+        MinWidth="700"
+        MinHeight="480"
+        WindowStartupLocation="CenterOwner"
+        Background="#FF202634"
+        Foreground="#FFF4F3F1"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        AutomationProperties.Name="从 CC Switch 导入余额查询规则">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="5,2" />
+        </Style>
+        <Style TargetType="RadioButton">
+            <Setter Property="Margin" Value="0,5,0,0" />
+        </Style>
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#FFAFB8CB" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <DockPanel LastChildFill="True">
+            <Button x:Name="RefreshButton"
+                    DockPanel.Dock="Right"
+                    Content="刷新"
+                    TabIndex="0"
+                    AutomationProperties.Name="刷新 CC Switch 查询规则" />
+            <TextBlock Text="从 CC Switch 导入余额查询规则"
+                       FontSize="18"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+        </DockPanel>
+
+        <Grid Grid.Row="1" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300" />
+                <ColumnDefinition Width="14" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Style="{StaticResource FieldLabel}" Text="可导入的查询规则" />
+                <ListBox x:Name="SourceList"
+                         Grid.Row="1"
+                         DisplayMemberPath="DisplayName"
+                         Background="#FF2A3141"
+                         Foreground="#FFF4F3F1"
+                         BorderBrush="#FF596276"
+                         TabIndex="1"
+                         AutomationProperties.Name="CC Switch 查询规则" />
+            </Grid>
+
+            <StackPanel Grid.Column="2">
+                <TextBlock Style="{StaticResource FieldLabel}" Text="目标地址" />
+                <ComboBox x:Name="EndpointComboBox"
+                          IsEditable="True"
+                          IsTextSearchEnabled="False"
+                          TabIndex="2"
+                          AutomationProperties.Name="导入目标地址" />
+
+                <TextBlock Style="{StaticResource FieldLabel}"
+                           Margin="0,14,0,4"
+                           Text="转换方式" />
+                <ComboBox x:Name="ImportModeComboBox"
+                          TabIndex="3"
+                          AutomationProperties.Name="导入模式">
+                    <ComboBoxItem Content="自动转换为 Generic" Tag="Auto" />
+                    <ComboBoxItem Content="作为 Custom 导入" Tag="Custom" />
+                </ComboBox>
+
+                <TextBlock Style="{StaticResource FieldLabel}"
+                           Margin="0,14,0,4"
+                           Text="保存方式" />
+                <RadioButton x:Name="UpdateRadioButton"
+                             Content="更新现有查询规则"
+                             TabIndex="4"
+                             AutomationProperties.Name="更新现有查询规则" />
+                <RadioButton x:Name="CopyRadioButton"
+                             Content="创建副本"
+                             TabIndex="5"
+                             AutomationProperties.Name="创建查询规则副本" />
+
+                <Border Margin="0,16,0,0"
+                        Padding="10"
+                        Background="#FF2A3141"
+                        BorderBrush="#FF596276"
+                        BorderThickness="1">
+                    <TextBlock x:Name="ConversionText"
+                               TextWrapping="Wrap"
+                               AutomationProperties.Name="转换状态" />
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="True">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="ImportButton"
+                        Content="导入到编辑器"
+                        IsDefault="True"
+                        TabIndex="6"
+                        AutomationProperties.Name="导入到中转站编辑器" />
+                <Button x:Name="CancelButton"
+                        Content="取消"
+                        IsCancel="True"
+                        TabIndex="7"
+                        AutomationProperties.Name="取消 CC Switch 导入" />
+            </StackPanel>
+            <TextBlock x:Name="StatusText"
+                       Margin="0,0,12,0"
+                       VerticalAlignment="Center"
+                       TextWrapping="Wrap"
+                       AutomationProperties.Name="CC Switch 导入状态" />
+        </DockPanel>
+    </Grid>
+</Window>
