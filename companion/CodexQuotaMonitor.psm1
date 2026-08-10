@@ -1304,6 +1304,13 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
         else {
             Add-Type -AssemblyName WindowsBase -ErrorAction Stop
+            $dispatcher = [Windows.Threading.Dispatcher]::CurrentDispatcher
+            $dispatcherFrame = if ($RunForSeconds -gt 0) {
+                [Windows.Threading.DispatcherFrame]::new()
+            }
+            else {
+                $null
+            }
             $runtime.DispatcherTimer = [Windows.Threading.DispatcherTimer]::new()
             $runtime.DispatcherTimer.Interval = [TimeSpan]::FromMilliseconds($TickMilliseconds)
             $dispatcherHandlerScript = {
@@ -1317,15 +1324,23 @@ function Invoke-CodexQuotaMonitorRuntime {
                 }
                 if ($runtime.StopRequested) {
                     $runtime.DispatcherTimer.Stop()
-                    [Windows.Threading.Dispatcher]::CurrentDispatcher.BeginInvokeShutdown(
-                        [Windows.Threading.DispatcherPriority]::Normal
-                    )
+                    if ($null -ne $dispatcherFrame) {
+                        $dispatcherFrame.Continue = $false
+                    }
+                    else {
+                        $dispatcher.BeginInvokeShutdown([Windows.Threading.DispatcherPriority]::Normal)
+                    }
                 }
             }.GetNewClosure()
             $runtime.DispatcherTickHandler = [EventHandler]$dispatcherHandlerScript
             $runtime.DispatcherTimer.add_Tick($runtime.DispatcherTickHandler)
             $runtime.DispatcherTimer.Start()
-            [Windows.Threading.Dispatcher]::Run()
+            if ($null -ne $dispatcherFrame) {
+                [Windows.Threading.Dispatcher]::PushFrame($dispatcherFrame)
+            }
+            else {
+                [Windows.Threading.Dispatcher]::Run()
+            }
             if ($null -ne $runtime.FatalError) {
                 throw $runtime.FatalError
             }

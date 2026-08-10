@@ -267,6 +267,9 @@ Describe 'Codex quota monitor production composition' {
         $relayCacheWrites.Count | Should -Be 1
         @($relayCacheWrites[0].Providers).Count | Should -Be 0
         $result.Status | Should -BeExactly 'Live'
+        $dispatcher = [Windows.Threading.Dispatcher]::CurrentDispatcher
+        $dispatcher.HasShutdownStarted | Should -BeFalse
+        $dispatcher.HasShutdownFinished | Should -BeFalse
     }
 
     It 'runs headless through the full fake App Server handshake and writes only sanitized health' {
