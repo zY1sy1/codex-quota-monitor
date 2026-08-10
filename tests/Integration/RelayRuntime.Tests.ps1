@@ -226,6 +226,55 @@ Describe 'relay runtime composition' {
         @($run.QueryCalls | Sort-Object) | Should -Be @('one', 'two')
     }
 
+    It 'preserves precise relay failure categories instead of collapsing script failures' {
+        $providers = @(
+            New-TestRuntimeRelayProvider 'not-found'
+            New-TestRuntimeRelayProvider 'rate-limit'
+            New-TestRuntimeRelayProvider 'syntax'
+            New-TestRuntimeRelayProvider 'extractor'
+        )
+        $responses = @{
+            'not-found' = [pscustomobject]@{
+                Ok = $false
+                Error = [pscustomobject]@{
+                    Category = 'HttpStatus'; Message = 'Relay returned an error.'
+                    HttpStatus = 404; RetryAfterSeconds = $null
+                }
+            }
+            'rate-limit' = [pscustomobject]@{
+                Ok = $false
+                Error = [pscustomobject]@{
+                    Category = 'HttpStatus'; Message = 'Relay returned an error.'
+                    HttpStatus = 429; RetryAfterSeconds = 60
+                }
+            }
+            syntax = [pscustomobject]@{
+                Ok = $false
+                Error = [pscustomobject]@{
+                    Category = 'ScriptSyntax'; Message = 'Relay script failed.'
+                    HttpStatus = $null; RetryAfterSeconds = $null
+                }
+            }
+            extractor = [pscustomobject]@{
+                Ok = $false
+                Error = [pscustomobject]@{
+                    Category = 'ExtractorExecution'; Message = 'Relay script failed.'
+                    HttpStatus = $null; RetryAfterSeconds = $null
+                }
+            }
+        }
+
+        $run = Invoke-TestRelayRuntime -Providers $providers -Cache (New-TestRuntimeCache) `
+            -Responses $responses
+        $states = @{}
+        foreach ($state in @($run.Result.RelayStates)) { $states[$state.ProviderId] = $state }
+
+        $states['not-found'].LastErrorCategory | Should -BeExactly 'EndpointNotFound'
+        $states['rate-limit'].LastErrorCategory | Should -BeExactly 'RateLimit'
+        $states.syntax.LastErrorCategory | Should -BeExactly 'ScriptSyntax'
+        $states.extractor.LastErrorCategory | Should -BeExactly 'ExtractorExecution'
+    }
+
     It 'keeps one relay stale while another is live and writes cache only for success' {
         $providers = @(
             New-TestRuntimeRelayProvider 'stale'

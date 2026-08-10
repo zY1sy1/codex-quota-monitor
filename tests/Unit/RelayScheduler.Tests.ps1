@@ -195,6 +195,8 @@ Describe 'relay provider scheduler' {
         @{ Category = 'Dns'; HttpStatus = $null; Expected = 'Retry' }
         @{ Category = 'Timeout'; HttpStatus = $null; Expected = 'Retry' }
         @{ Category = 'SidecarLifecycle'; HttpStatus = $null; Expected = 'Retry' }
+        @{ Category = 'RateLimit'; HttpStatus = $null; Expected = 'RateLimit' }
+        @{ Category = 'EndpointNotFound'; HttpStatus = $null; Expected = 'InvalidScript' }
         @{ Category = 'ScriptSyntax'; HttpStatus = $null; Expected = 'InvalidScript' }
         @{ Category = 'RequestValidation'; HttpStatus = $null; Expected = 'InvalidScript' }
         @{ Category = 'ResultValidation'; HttpStatus = $null; Expected = 'InvalidScript' }

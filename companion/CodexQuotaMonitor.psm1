@@ -698,11 +698,20 @@ function Invoke-CodexQuotaMonitorRuntime {
             $retryAfter = $response.Error.RetryAfterSeconds
             $policyFunction = $runtime.Functions.RelayFailurePolicy
             $policy = & $policyFunction -Category $category -HttpStatus $httpStatus
-            $stateCategory = switch ($policy) {
-                'Authentication' { 'Authentication' }
-                'InvalidScript' { 'ResultValidation' }
-                'TrustRequired' { 'DestinationTrustRequired' }
-                default { $category }
+            $stateCategory = if ($category -eq 'HttpStatus' -and [int]$httpStatus -eq 404) {
+                'EndpointNotFound'
+            }
+            elseif ($category -eq 'HttpStatus' -and [int]$httpStatus -eq 429) {
+                'RateLimit'
+            }
+            elseif ($policy -eq 'Authentication') {
+                'Authentication'
+            }
+            elseif ($policy -eq 'TrustRequired') {
+                'DestinationTrustRequired'
+            }
+            else {
+                $category
             }
             $failureFunction = $runtime.Functions.CompleteRelayFailure
             $runtime.RelayStates[$providerId] = & $failureFunction `
