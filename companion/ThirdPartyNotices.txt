@@ -25,5 +25,22 @@ url
   Source: https://github.com/servo/rust-url
   License: MIT OR Apache-2.0
 
+SQLite
+  Source: https://sqlite.org/
+  Repository: https://sqlite.org/src/
+  License: Public Domain
+
+rusqlite
+  Source: https://github.com/rusqlite/rusqlite
+  License: MIT
+
+regex
+  Source: https://github.com/rust-lang/regex
+  License: MIT OR Apache-2.0
+
+zeroize
+  Source: https://github.com/RustCrypto/utils/tree/master/zeroize
+  License: MIT OR Apache-2.0
+
 The packaged sidecar does not download dependencies at install time. Rust is
 needed only to reproduce the build from the locked Cargo dependency graph.

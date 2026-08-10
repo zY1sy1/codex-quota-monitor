@@ -5,6 +5,7 @@ BeforeAll {
     $script:CompanionRoot = Join-Path $PSScriptRoot '..\..\companion'
     $script:XamlPath = Join-Path $script:CompanionRoot 'UI\CcSwitchImport.xaml'
     $script:ViewPath = Join-Path $script:CompanionRoot 'Private\CcSwitchImportView.ps1'
+    $script:InspectorSourcePath = Join-Path $script:CompanionRoot '..\sidecar\relay-quota-host\src\cc_switch.rs'
     if (Test-Path -LiteralPath $script:ViewPath -PathType Leaf) {
         . $script:ViewPath
     }
@@ -80,5 +81,26 @@ Describe 'CC Switch import WPF composition' {
             Should -Not -Match $sentinel
         ($script:View.Controls.SourceList.ItemsSource | ConvertTo-Json -Depth 6 -Compress) |
             Should -Not -Match $sentinel
+    }
+
+    It 'keeps inspector SQL on the approved usage-script and public-endpoint allowlist' {
+        $source = Get-Content -LiteralPath $InspectorSourcePath -Raw
+        $providerQuery = [regex]::Match(
+            $source,
+            'const PROVIDER_QUERY: &str = r#"(?<sql>.*?)"#;',
+            [Text.RegularExpressions.RegexOptions]::Singleline
+        ).Groups['sql'].Value
+        $endpointQuery = [regex]::Match(
+            $source,
+            'const ENDPOINT_QUERY: &str = r#"(?<sql>.*?)"#;',
+            [Text.RegularExpressions.RegexOptions]::Singleline
+        ).Groups['sql'].Value
+
+        $providerQuery | Should -Not -BeNullOrEmpty
+        $providerQuery | Should -Match '\$\.usage_script\.code'
+        $providerQuery | Should -Not -Match '(?i)settings_config|\$\.usage_script\.apiKey|SELECT\s+\*'
+        $providerQuery | Should -Not -Match '(?im)^\s*meta\s*,?\s*$'
+        $endpointQuery | Should -Match '(?s)SELECT\s+provider_id,\s*app_type,\s*url\s+FROM\s+provider_endpoints'
+        $endpointQuery | Should -Not -Match '(?i)log|rollup|balance|cache|secret|credential|SELECT\s+\*'
     }
 }

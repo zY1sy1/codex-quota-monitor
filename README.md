@@ -93,6 +93,16 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 
 已有的 Schema 1 文件会在读取时按 provider 独立迁移；迁移失败的单个 provider 会降级为 Custom 并保留原脚本，不会阻断其他 provider 或官方额度。
 
+### 从 CC Switch 导入
+
+在“管理中转站”中选择“从 CC Switch 导入”可以复用 CC Switch 已保存的额度查询规则。完整流程是：`管理中转站 → 从 CC Switch 导入 → 选择查询规则 → 检查目标地址 → 在监视器中重新输入 API Key → 测试 → 保存并启用`。导入后的草稿必须先测试，测试成功后才能保存。
+
+导入器以只读方式打开 CC Switch 的 SQLite 数据库，只查询经审核的 usage-script JSON 路径和公开 endpoint 字段。它不会选择 `providers.settings_config`、完整的 `providers.meta` 或 `usage_script.apiKey`，不会读取、导入或显示 CC Switch 凭据。API Key 必须由用户在监视器的密码框中重新输入。
+
+可安全拆分的规则优先转换为 `Generic`；无法可靠拆分时会明确提示，只有用户确认后才按 `Custom` 导入并保留原脚本。导入器不会猜测端点；没有可用的余额接口或可验证 usage script 的 provider 不会被伪装成可查询 provider。
+
+来源链接与 provider 配置相互独立：它只记录导入来源和指纹，用于识别更新或复制；删除来源链接不会删除 provider，删除 provider 也不会修改 CC Switch 数据库。
+
 Base URL、API Key、Access Token 和 User ID 只在管理窗口的密码输入框中填写。保存时使用当前 Windows 用户 DPAPI 加密，`relay-providers.json` 只保存密文和经过规范化的配置，不保存 API key、Access Token、User ID 或其他明文凭据。
 
 所有 provider 都必须使用明确的目标地址信任。请求 Path 必须保持 Base URL 的 origin；信任值规范化为 `scheme://host:port`，不包含路径、查询参数或凭据。HTTPS 可用于远程目标，明文 HTTP 只允许本机回环地址；重定向不会自动跨到未信任 origin。首次测试新目标或修改 origin 后，按 UI 提示确认目标即可。

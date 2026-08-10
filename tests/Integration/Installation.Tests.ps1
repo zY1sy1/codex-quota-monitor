@@ -129,6 +129,11 @@ Describe 'Codex quota monitor installation lifecycle' {
                 'Bin\relay-quota-host.sha256'
                 'Presets\relay-usage.json'
                 'ThirdPartyNotices.txt'
+                'UI\CcSwitchImport.xaml'
+                'Private\CcSwitchUsageImport.ps1'
+                'Private\RelayImportLinkStore.ps1'
+                'Private\CcSwitchImportView.ps1'
+                'Private\CcSwitchImportController.ps1'
             )) {
             Test-Path -LiteralPath (Join-Path $context.App $relativePath) -PathType Leaf |
                 Should -BeTrue
