@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, path::Path, sync::OnceLock, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+    path::Path,
+    sync::OnceLock,
+    time::Duration,
+};
 
 use regex::{Regex, RegexSet};
 use rusqlite::{Connection, Error as SqlError, ErrorCode, OpenFlags};
@@ -372,5 +378,22 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
         ok: true,
         providers,
         error: None,
+    }
+}
+
+pub fn run_inspector_mode(path: &Path) -> i32 {
+    let response = inspect_cc_switch_database(path);
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
+    if serde_json::to_writer(&mut writer, &response).is_err()
+        || writer.write_all(b"\n").is_err()
+        || writer.flush().is_err()
+    {
+        return 1;
+    }
+    if response.ok {
+        0
+    } else {
+        1
     }
 }

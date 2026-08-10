@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -378,5 +379,33 @@ fn rejects_a_discovery_response_above_the_client_byte_limit() {
         response.error.as_ref().map(|error| error.category),
         Some("CcSwitchSchemaUnsupported")
     );
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn inspector_process_emits_one_sanitized_json_line() {
+    let path = unique_fixture_path("process");
+    create_cc_switch_fixture(&path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_relay-quota-host"))
+        .arg("--inspect-cc-switch")
+        .arg(&path)
+        .output()
+        .expect("run inspector process");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        output.stdout.iter().filter(|byte| **byte == b'\n').count(),
+        1
+    );
+    assert!(output.stdout.ends_with(b"\n"));
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse inspector output");
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["providers"][0]["name"], "wakaka");
+    let stdout = String::from_utf8(output.stdout).expect("inspector output is UTF-8");
+    assert!(!stdout.contains("FORBIDDEN_META_SECRET_78431"));
+    assert!(!stdout.contains("FORBIDDEN_SETTINGS_SECRET_91357"));
     fs::remove_file(path).expect("remove fixture");
 }
