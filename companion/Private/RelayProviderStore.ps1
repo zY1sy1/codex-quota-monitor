@@ -421,7 +421,7 @@ function ConvertFrom-RelayJavascriptString {
     }
 }
 
-function Get-RelayLegacyStringField {
+function Get-RelayLegacyStringPropertyMatches {
     param(
         [Parameter(Mandatory)][string]$Source,
         [Parameter(Mandatory)][string]$Name
@@ -429,18 +429,165 @@ function Get-RelayLegacyStringField {
     $escapedName = [regex]::Escape($Name)
     $doubleQuote = [char]34
     $singleQuote = [char]39
-    $doublePattern = '(?s)(?:\b' + $escapedName + '\b|' + $doubleQuote + $escapedName + $doubleQuote + '|' +
-        $singleQuote + $escapedName + $singleQuote + ')\s*:\s*' + $doubleQuote +
-        '(?<value>(?:\\.|[^' + $doubleQuote + ']*)*)' + $doubleQuote
-    $match = [regex]::Match($Source, $doublePattern)
-    if (-not $match.Success) {
-        $singlePattern = '(?s)(?:\b' + $escapedName + '\b|' + $doubleQuote + $escapedName + $doubleQuote + '|' +
-            $singleQuote + $escapedName + $singleQuote + ')\s*:\s*' + $singleQuote +
-            '(?<value>(?:\\.|[^' + $singleQuote + ']*)*)' + $singleQuote
-        $match = [regex]::Match($Source, $singlePattern)
+    $propertyName = '(?:\b' + $escapedName + '\b|' +
+        $doubleQuote + $escapedName + $doubleQuote + '|' +
+        $singleQuote + $escapedName + $singleQuote + ')'
+    $doubleValue = $doubleQuote + '(?<doubleValue>(?:\\.|[^' + $doubleQuote + '])*)' +
+        $doubleQuote
+    $singleValue = $singleQuote + '(?<singleValue>(?:\\.|[^' + $singleQuote + '])*)' +
+        $singleQuote
+    $matches = [regex]::Matches(
+        $Source,
+        '(?s)' + $propertyName + '\s*:\s*(?:' + $doubleValue + '|' + $singleValue + ')'
+    )
+    $results = [Collections.Generic.List[object]]::new()
+    foreach ($match in $matches) {
+        $encodedValue = if ($match.Groups['doubleValue'].Success) {
+            $match.Groups['doubleValue'].Value
+        }
+        else {
+            $match.Groups['singleValue'].Value
+        }
+        $results.Add([pscustomobject]@{
+            Match = $match
+            Value = ConvertFrom-RelayJavascriptString -Value $encodedValue
+        })
     }
-    if (-not $match.Success) { return $null }
-    ConvertFrom-RelayJavascriptString -Value $match.Groups['value'].Value
+    return [object[]]$results.ToArray()
+}
+
+function Find-RelayLegacyObjectProperty {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $escapedName = [regex]::Escape($Name)
+    $doubleQuote = [char]34
+    $singleQuote = [char]39
+    $propertyName = '(?:\b' + $escapedName + '\b|' +
+        $doubleQuote + $escapedName + $doubleQuote + '|' +
+        $singleQuote + $escapedName + $singleQuote + ')'
+    $prefix = [regex]::Match($Source, '(?s)' + $propertyName + '\s*:\s*\{')
+    if (-not $prefix.Success) {
+        return $null
+    }
+
+    $openIndex = $prefix.Index + $prefix.Length - 1
+    $depth = 0
+    $quote = [char]0
+    $escaped = $false
+    for ($index = $openIndex; $index -lt $Source.Length; $index++) {
+        $character = $Source[$index]
+        if ($quote -ne [char]0) {
+            if ($escaped) {
+                $escaped = $false
+            }
+            elseif ($character -eq '\') {
+                $escaped = $true
+            }
+            elseif ($character -eq $quote) {
+                $quote = [char]0
+            }
+            continue
+        }
+        if ($character -in @([char]34, [char]39, [char]96)) {
+            $quote = $character
+            continue
+        }
+        if ($character -eq '{') {
+            $depth++
+            continue
+        }
+        if ($character -ne '}') {
+            continue
+        }
+        $depth--
+        if ($depth -eq 0) {
+            return [pscustomobject]@{
+                Index = $prefix.Index
+                Length = $index - $prefix.Index + 1
+                Value = $Source.Substring($openIndex + 1, $index - $openIndex - 1)
+            }
+        }
+        if ($depth -lt 0) {
+            return $null
+        }
+    }
+    return $null
+}
+
+function Test-RelayLegacyPropertiesFullyConsumed {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [object[]]$Spans = @()
+    )
+    $orderedSpans = @($Spans | Sort-Object Index)
+    if ($orderedSpans.Count -eq 0) {
+        return [string]::IsNullOrWhiteSpace($Source)
+    }
+    $cursor = 0
+    for ($index = 0; $index -lt $orderedSpans.Count; $index++) {
+        $span = $orderedSpans[$index]
+        if ($span.Index -lt $cursor -or $span.Length -le 0 -or
+            $span.Index + $span.Length -gt $Source.Length) {
+            return $false
+        }
+        $separator = $Source.Substring($cursor, $span.Index - $cursor)
+        if (($index -eq 0 -and $separator -notmatch '^\s*$') -or
+            ($index -gt 0 -and $separator -notmatch '^\s*,\s*$')) {
+            return $false
+        }
+        $cursor = $span.Index + $span.Length
+    }
+    return $Source.Substring($cursor) -match '^\s*$'
+}
+
+function ConvertFrom-RelayLegacyHeaders {
+    param([Parameter(Mandatory)][string]$Source)
+    $doubleQuote = [char]34
+    $singleQuote = [char]39
+    $bareName = '(?<bareName>[A-Za-z0-9!#$%&*+.^_|\x60~-]+)'
+    $doubleName = $doubleQuote + '(?<doubleName>(?:\\.|[^' + $doubleQuote + '])*)' +
+        $doubleQuote
+    $singleName = $singleQuote + '(?<singleName>(?:\\.|[^' + $singleQuote + '])*)' +
+        $singleQuote
+    $doubleValue = $doubleQuote + '(?<doubleValue>(?:\\.|[^' + $doubleQuote + '])*)' +
+        $doubleQuote
+    $singleValue = $singleQuote + '(?<singleValue>(?:\\.|[^' + $singleQuote + '])*)' +
+        $singleQuote
+    $matches = [regex]::Matches(
+        $Source,
+        '(?s)(?:' + $doubleName + '|' + $singleName + '|' + $bareName +
+        ')\s*:\s*(?:' + $doubleValue + '|' + $singleValue + ')'
+    )
+    if (-not (Test-RelayLegacyPropertiesFullyConsumed -Source $Source -Spans @($matches))) {
+        return $null
+    }
+    $headers = [ordered]@{}
+    $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($match in $matches) {
+        $headerName = if ($match.Groups['bareName'].Success) {
+            $match.Groups['bareName'].Value
+        }
+        elseif ($match.Groups['doubleName'].Success) {
+            ConvertFrom-RelayJavascriptString $match.Groups['doubleName'].Value
+        }
+        else {
+            ConvertFrom-RelayJavascriptString $match.Groups['singleName'].Value
+        }
+        $headerValue = if ($match.Groups['doubleValue'].Success) {
+            ConvertFrom-RelayJavascriptString $match.Groups['doubleValue'].Value
+        }
+        else {
+            ConvertFrom-RelayJavascriptString $match.Groups['singleValue'].Value
+        }
+        if ($null -eq $headerName -or $null -eq $headerValue -or
+            -not $seenNames.Add([string]$headerName)) {
+            return $null
+        }
+        $headers[[string]$headerName] = [string]$headerValue
+    }
+    Write-Output -NoEnumerate -InputObject $headers
 }
 
 function ConvertFrom-RelayLegacyScript {
@@ -451,74 +598,109 @@ function ConvertFrom-RelayLegacyScript {
         [Parameter(Mandatory)][string]$TemplateType
     )
 
-    if ($TemplateType -eq 'Custom') { return $null }
-    $requestMatch = [regex]::Match($Script, '(?s)\brequest\s*:\s*\{(?<request>.*?)\}\s*,\s*extractor\s*:')
-    if (-not $requestMatch.Success) { return $null }
-    $requestText = $requestMatch.Groups['request'].Value
-    $url = Get-RelayLegacyStringField -Source $requestText -Name 'url'
-    $method = Get-RelayLegacyStringField -Source $requestText -Name 'method'
-    if ($null -eq $url -or $null -eq $method -or $url -notmatch '^\{\{baseUrl\}\}(?<path>/.*)?$') {
+    if ($TemplateType -eq 'Custom' -or [string]::IsNullOrWhiteSpace($Script) -or
+        [Text.Encoding]::UTF8.GetByteCount($Script) -gt 262144) {
         return $null
     }
-    $path = if ($null -eq $Matches.path -or [string]::IsNullOrEmpty($Matches.path)) { '/' } else { $Matches.path }
+    $doubleQuote = [char]34
+    $singleQuote = [char]39
+    $requestName = '(?:\brequest\b|' + $doubleQuote + 'request' + $doubleQuote + '|' +
+        $singleQuote + 'request' + $singleQuote + ')'
+    $extractorName = '(?:\bextractor\b|' + $doubleQuote + 'extractor' + $doubleQuote + '|' +
+        $singleQuote + 'extractor' + $singleQuote + ')'
+    $wrappedPattern = '(?s)^\s*\(\s*\{\s*' + $requestName +
+        '\s*:\s*\{(?<request>.*?)\}\s*,\s*' + $extractorName +
+        '\s*:\s*(?<extractor>.*?)\s*\}\s*\)\s*;?\s*$'
+    $barePattern = '(?s)^\s*\{\s*' + $requestName +
+        '\s*:\s*\{(?<request>.*?)\}\s*,\s*' + $extractorName +
+        '\s*:\s*(?<extractor>.*?)\s*\}\s*;?\s*$'
+    $requestMatch = [regex]::Match($Script, $wrappedPattern)
+    if (-not $requestMatch.Success) {
+        $requestMatch = [regex]::Match($Script, $barePattern)
+    }
+    if (-not $requestMatch.Success) {
+        return $null
+    }
+    $requestText = $requestMatch.Groups['request'].Value
+    $urlMatches = @(Get-RelayLegacyStringPropertyMatches -Source $requestText -Name 'url')
+    $methodMatches = @(Get-RelayLegacyStringPropertyMatches -Source $requestText -Name 'method')
+    if ($urlMatches.Count -ne 1 -or $methodMatches.Count -ne 1 -or
+        $null -eq $urlMatches[0].Value -or $null -eq $methodMatches[0].Value) {
+        return $null
+    }
+    $url = [string]$urlMatches[0].Value
+    $method = ([string]$methodMatches[0].Value).Trim().ToUpperInvariant()
+    $urlMatch = [regex]::Match($url, '^\{\{baseUrl\}\}(?<path>/.*)?$')
+    if (-not $urlMatch.Success -or $method -notin @('GET', 'POST', 'PUT')) {
+        return $null
+    }
+    $path = if ([string]::IsNullOrEmpty($urlMatch.Groups['path'].Value)) {
+        '/'
+    }
+    else {
+        $urlMatch.Groups['path'].Value
+    }
 
     $headers = [ordered]@{}
-    $headersMatch = [regex]::Match(
-        $requestText,
-        '(?s)\bheaders\s*:\s*\{(?<headers>.*?)}\s*(?:,\s*body\s*:|$)'
-    )
-    if ($headersMatch.Success) {
-        $doubleQuote = [char]34
-        $singleQuote = [char]39
-        $headerPattern = '(?s)(?:' + $doubleQuote + '(?<name>(?:\\.|[^' + $doubleQuote + ']*)*)' + $doubleQuote +
-            '|(?<name>[A-Za-z0-9!#$%&*+.^_|\x60~-]+))\s*:\s*' + $doubleQuote +
-            '(?<value>(?:\\.|[^' + $doubleQuote + ']*)*)' + $doubleQuote
-        $singleHeaderPattern = '(?s)(?:' + $singleQuote + '(?<name>(?:\\.|[^' + $singleQuote + ']*)*)' + $singleQuote +
-            '|(?<name>[A-Za-z0-9!#$%&*+.^_|\x60~-]+))\s*:\s*' + $singleQuote +
-            '(?<value>(?:\\.|[^' + $singleQuote + ']*)*)' + $singleQuote
-        $headersFound = [regex]::Matches($headersMatch.Groups['headers'].Value, $headerPattern)
-        if ($headersFound.Count -eq 0) {
-            $headersFound = [regex]::Matches($headersMatch.Groups['headers'].Value, $singleHeaderPattern)
-        }
-        foreach ($header in $headersFound) {
-            $headerName = ConvertFrom-RelayJavascriptString -Value $header.Groups['name'].Value
-            $headerValue = ConvertFrom-RelayJavascriptString -Value $header.Groups['value'].Value
-            if ($null -eq $headerName -or $null -eq $headerValue) { return $null }
-            $headers[$headerName] = $headerValue
+    $headersMatch = Find-RelayLegacyObjectProperty -Source $requestText -Name 'headers'
+    if ($null -ne $headersMatch) {
+        $headers = ConvertFrom-RelayLegacyHeaders -Source $headersMatch.Value
+        if ($null -eq $headers) {
+            return $null
         }
     }
 
     $body = $null
-    $doubleQuote = [char]34
-    $singleQuote = [char]39
-    $bodyPattern = '(?s)\bbody\s*:\s*(?<body>' + $doubleQuote + '(?:\\.|[^' + $doubleQuote + '])*' + $doubleQuote +
+    $bodyName = '(?:\bbody\b|' + $doubleQuote + 'body' + $doubleQuote + '|' +
+        $singleQuote + 'body' + $singleQuote + ')'
+    $bodyPattern = '(?s)' + $bodyName + '\s*:\s*(?<body>' +
+        $doubleQuote + '(?:\\.|[^' + $doubleQuote + '])*' + $doubleQuote +
         '|' + $singleQuote + '(?:\\.|[^' + $singleQuote + '])*' + $singleQuote + '|null|undefined)'
-    $bodyMatch = [regex]::Match($requestText, $bodyPattern)
-    if ($bodyMatch.Success -and $bodyMatch.Groups['body'].Value -notin @('null', 'undefined')) {
-        $bodyText = $bodyMatch.Groups['body'].Value
+    $bodyMatches = [regex]::Matches($requestText, $bodyPattern)
+    if ($bodyMatches.Count -gt 1) {
+        return $null
+    }
+    if ($bodyMatches.Count -eq 1 -and
+        $bodyMatches[0].Groups['body'].Value -notin @('null', 'undefined')) {
+        $bodyText = $bodyMatches[0].Groups['body'].Value
         $body = ConvertFrom-RelayJavascriptString -Value $bodyText.Substring(1, $bodyText.Length - 2)
-        if ($null -eq $body) { return $null }
+        if ($null -eq $body) {
+            return $null
+        }
     }
 
-    $extractorIndex = $Script.IndexOf('extractor:', [StringComparison]::Ordinal)
-    if ($extractorIndex -lt 0) { return $null }
-    $extractor = $Script.Substring($extractorIndex + 'extractor:'.Length).Trim()
-    if ($extractor.EndsWith('})')) {
-        $extractor = $extractor.Substring(0, $extractor.Length - 2).Trim()
+    $propertySpans = [Collections.Generic.List[object]]::new()
+    $propertySpans.Add($urlMatches[0].Match)
+    $propertySpans.Add($methodMatches[0].Match)
+    if ($null -ne $headersMatch) {
+        $propertySpans.Add($headersMatch)
     }
-    elseif ($extractor.EndsWith('}')) {
-        $extractor = $extractor.Substring(0, $extractor.Length - 1).Trim()
+    if ($bodyMatches.Count -eq 1) {
+        $propertySpans.Add($bodyMatches[0])
     }
-    if (-not (Test-RelayExtractorFunctionExpression $extractor)) { return $null }
+    if (-not (Test-RelayLegacyPropertiesFullyConsumed -Source $requestText `
+        -Spans $propertySpans.ToArray())) {
+        return $null
+    }
+
+    $extractor = $requestMatch.Groups['extractor'].Value.Trim()
+    if (-not (Test-RelayExtractorFunctionExpression $extractor)) {
+        return $null
+    }
+
+    $requestDefinition = ConvertTo-CanonicalRelayRequestDefinition ([ordered]@{
+        Method = $method
+        Path = $path
+        Query = [ordered]@{}
+        Headers = $headers
+        Body = $body
+    })
+    if ($null -eq $requestDefinition) {
+        return $null
+    }
 
     [ordered]@{
-        RequestDefinition = [ordered]@{
-            Method = $method
-            Path = $path
-            Query = [ordered]@{}
-            Headers = $headers
-            Body = $body
-        }
+        RequestDefinition = $requestDefinition
         ExtractorScript = $extractor
     }
 }

@@ -153,6 +153,7 @@ function Get-RelayProviderFailureStatus {
         'RequestTooLarge',
         'DestinationValidation',
         'DestinationTrustRequired',
+        'EndpointNotFound',
         'ExtractorExecution',
         'ResultValidation'
     )) {

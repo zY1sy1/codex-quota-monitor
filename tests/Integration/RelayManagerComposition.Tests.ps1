@@ -7,8 +7,12 @@ BeforeAll {
     $script:ViewPath = Join-Path $script:CompanionRoot 'Private\RelayManagerView.ps1'
     $script:ControllerPath = Join-Path $script:CompanionRoot 'Private\InteractionController.ps1'
     $script:StorePath = Join-Path $script:CompanionRoot 'Private\RelayProviderStore.ps1'
+    $script:CcSwitchImportPath = Join-Path $script:CompanionRoot 'Private\CcSwitchUsageImport.ps1'
+    $script:ImportLinkStorePath = Join-Path $script:CompanionRoot 'Private\RelayImportLinkStore.ps1'
 
     if (Test-Path -LiteralPath $script:StorePath -PathType Leaf) { . $script:StorePath }
+    if (Test-Path -LiteralPath $script:CcSwitchImportPath -PathType Leaf) { . $script:CcSwitchImportPath }
+    if (Test-Path -LiteralPath $script:ImportLinkStorePath -PathType Leaf) { . $script:ImportLinkStorePath }
     if (Test-Path -LiteralPath $script:ControllerPath -PathType Leaf) { . $script:ControllerPath }
     if (Test-Path -LiteralPath $script:ViewPath -PathType Leaf) { . $script:ViewPath }
 
@@ -51,6 +55,22 @@ BeforeAll {
         }
     }
 
+    function New-TestRelayImportResult {
+        $draft = New-TestRelayDraft -Id '22222222-2222-2222-2222-222222222222' `
+            -BaseUrl 'https://api.wkkapi.com'
+        $draft.Name = 'wakaka'
+        [pscustomobject][ordered]@{
+            Draft = $draft
+            Link = [pscustomobject][ordered]@{
+                RelayProviderId = $draft.Id
+                SourceKind = 'CcSwitchUsageScript'
+                SourceProviderId = 'source-1'
+                SourceAppType = 'codex'
+                ScriptFingerprint = ('b' * 64)
+            }
+        }
+    }
+
     function New-FakeRelayManagerView {
         param([object]$InitialDraft = (New-TestRelayDraft))
         $state = [pscustomobject][ordered]@{
@@ -88,7 +108,7 @@ BeforeAll {
                 return [bool]$state.TrustAnswer
             }.GetNewClosure()
             SetCallbacks = {
-                param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnTest, $OnSave, $OnCancel)
+                param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnImport, $OnTest, $OnSave, $OnCancel)
                 $state.Callbacks = [pscustomobject]$PSBoundParameters
             }.GetNewClosure()
             Dispose = { $state.Disposed = $true }.GetNewClosure()
@@ -113,7 +133,7 @@ Describe 'relay manager WPF adapter contract' {
         $manager.AddNamespace('x', 'http://schemas.microsoft.com/winfx/2006/xaml')
 
         foreach ($name in @(
-            'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton',
+            'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton', 'ImportButton',
             'EnabledCheckBox', 'NameTextBox', 'ProviderKindComboBox', 'BaseUrlTextBox',
             'AdvancedRequestExpander', 'MethodComboBox', 'PathTextBox', 'QueryTextBox',
             'HeadersTextBox', 'BodyTextBox', 'ExtractorScriptTextBox', 'MigrationWarningText',
@@ -231,6 +251,29 @@ Describe 'relay manager WPF adapter contract' {
         $draft.Secrets.UserId | Should -BeExactly 'user-secret'
         (@($script:View.Controls.Values | Where-Object { $_ -is [Windows.Controls.TextBox] } |
             ForEach-Object Text) -join "`n") | Should -Not -Match 'api-secret|token-secret|user-secret'
+    }
+
+    It 'round-trips import metadata without placing it in a text control' {
+        $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
+        $draft = New-TestRelayDraft
+        $draft | Add-Member -NotePropertyName ImportLink -NotePropertyValue ([pscustomobject]@{
+            RelayProviderId = $draft.Id
+            SourceKind = 'CcSwitchUsageScript'
+            SourceProviderId = 'hidden-source-59127'
+            SourceAppType = 'codex'
+            ScriptFingerprint = ('a' * 64)
+        })
+
+        & $script:View.SetDraft $draft
+        $roundTrip = & $script:View.ReadDraft
+
+        $roundTrip.ImportLink.SourceProviderId | Should -BeExactly 'hidden-source-59127'
+        (@($script:View.Controls.Values |
+            Where-Object { $_ -is [Windows.Controls.TextBox] -or $_ -is [Windows.Controls.TextBlock] } |
+            ForEach-Object { [string]$_.Text }) -join "`n") | Should -Not -Match 'hidden-source-59127'
+
+        & $script:View.SetDraft (New-TestRelayDraft -Id '22222222-2222-2222-2222-222222222222')
+        (& $script:View.ReadDraft).ImportLink | Should -BeNullOrEmpty
     }
 
     It 'disables Test for malformed Generic base URLs and absolute paths' {
@@ -356,15 +399,28 @@ Describe 'relay manager interaction controller' {
         $script:Existing.Secrets.UserId = 'Y2lwaGVyLXVzZXI='
         $script:View = New-FakeRelayManagerView -InitialDraft (New-TestRelayDraft)
         $script:SavedDocuments = [Collections.Generic.List[object]]::new()
+        $script:WriteMutations = [Collections.Generic.List[object]]::new()
         $script:Applied = [Collections.Generic.List[object]]::new()
         $script:Removed = [Collections.Generic.List[string]]::new()
         $script:Queries = [Collections.Generic.List[object]]::new()
         $script:QueryResults = [Collections.Generic.Queue[object]]::new()
+        $script:ImportResults = [Collections.Generic.Queue[object]]::new()
         $script:ConfirmDelete = $true
+        $script:WriteShouldFail = $false
         $script:Controller = New-RelayManagerController `
             -View $script:View `
             -Providers @($script:Existing) `
-            -WriteProviders { param($Document) $script:SavedDocuments.Add($Document) } `
+            -WriteRelayState {
+                param($Document, $Mutation)
+                if ($script:WriteShouldFail) { throw 'simulated transaction failure' }
+                $script:SavedDocuments.Add($Document)
+                $script:WriteMutations.Add($Mutation)
+            } `
+            -ImportProvider {
+                param($Providers)
+                if ($script:ImportResults.Count -eq 0) { return $null }
+                return $script:ImportResults.Dequeue()
+            } `
             -ProtectSecret {
                 param($value)
                 if ($value) {
@@ -483,6 +539,82 @@ Describe 'relay manager interaction controller' {
         $script:SavedDocuments.Count | Should -Be 0
         ($script:View.TestState.Preview | ConvertTo-Json -Depth 8 -Compress) |
             Should -Not -Match 'RawResponse|RequestHeaders|DestinationFingerprint'
+    }
+
+    It 'requires a current successful test before saving an imported provider and mutates its link' {
+        $script:ImportResults.Enqueue((New-TestRelayImportResult))
+        $script:QueryResults.Enqueue([pscustomobject]@{
+            Ok = $true
+            Results = @([pscustomobject]@{
+                IsValid = $true; InvalidMessage = $null; Remaining = 8; Unit = 'USD'
+                PlanName = 'Wallet'; Total = $null; Used = $null; Extra = $null
+            })
+        })
+
+        & $script:View.TestState.Callbacks.OnImport
+        $script:View.TestState.Draft.Name | Should -BeExactly 'wakaka'
+        $script:View.TestState.Draft.ImportLink.SourceProviderId | Should -BeExactly 'source-1'
+
+        (& $script:View.TestState.Callbacks.OnSave) | Should -BeFalse
+        $script:View.TestState.TestStates[-1].Message |
+            Should -BeExactly '导入的中转站必须通过当前配置测试后才能保存。'
+
+        & $script:View.TestState.Callbacks.OnTest
+        (& $script:View.TestState.Callbacks.OnSave) | Should -BeTrue
+        $script:WriteMutations[-1].Kind | Should -BeExactly 'Upsert'
+        $script:WriteMutations[-1].Link.SourceProviderId | Should -BeExactly 'source-1'
+
+        & $script:View.TestState.Callbacks.OnDelete $script:View.TestState.Draft.Id
+        $script:WriteMutations[-1].Kind | Should -BeExactly 'Remove'
+        $script:WriteMutations[-1].ProviderId | Should -BeExactly $script:View.TestState.Draft.Id
+    }
+
+    It 'invalidates an imported provider test when its BaseUrl changes' {
+        $script:ImportResults.Enqueue((New-TestRelayImportResult))
+        foreach ($remaining in @(8, 7)) {
+            $script:QueryResults.Enqueue([pscustomobject]@{
+                Ok = $true
+                Results = @([pscustomobject]@{
+                    IsValid = $true; InvalidMessage = $null; Remaining = $remaining; Unit = 'USD'
+                    PlanName = 'Wallet'; Total = $null; Used = $null; Extra = $null
+                })
+            })
+        }
+
+        & $script:View.TestState.Callbacks.OnImport
+        & $script:View.TestState.Callbacks.OnTest
+        $script:View.TestState.Draft.BaseUrl = 'https://changed.example'
+
+        (& $script:View.TestState.Callbacks.OnSave) | Should -BeFalse
+        $script:SavedDocuments.Count | Should -Be 0
+        $script:View.TestState.TestStates[-1].Message |
+            Should -BeExactly '导入的中转站必须通过当前配置测试后才能保存。'
+
+        & $script:View.TestState.Callbacks.OnTest
+        (& $script:View.TestState.Callbacks.OnSave) | Should -BeTrue
+        $script:SavedDocuments.Count | Should -Be 1
+    }
+
+    It 'does not mutate controller or runtime state when the relay transaction fails' {
+        $script:View.TestState.Draft = New-TestRelayDraft -Id '33333333-3333-3333-3333-333333333333'
+        $script:WriteShouldFail = $true
+
+        (& $script:View.TestState.Callbacks.OnSave) | Should -BeFalse
+
+        $script:Applied.Count | Should -Be 0
+        @($script:Controller.State.Providers).Count | Should -Be 1
+        $script:Controller.State.Providers[0].Id | Should -BeExactly $script:Existing.Id
+    }
+
+    It 'preserves ordered Generic query and header entries when copying a draft' {
+        $provider = New-TestRelayDraft
+        $provider.RequestDefinition.Query = [ordered]@{ account = 'primary' }
+        $provider.RequestDefinition.Headers = [ordered]@{ Authorization = 'Bearer {{apiKey}}' }
+
+        $copy = Copy-RelayManagerDraft -Provider $provider
+
+        $copy.RequestDefinition.Query.account | Should -BeExactly 'primary'
+        $copy.RequestDefinition.Headers.Authorization | Should -BeExactly 'Bearer {{apiKey}}'
     }
 
     It 'does not apply scheduler definitions unless Save succeeds' {

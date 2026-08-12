@@ -19,6 +19,7 @@ Describe 'Get-MonitorPaths' {
         $paths.Logs | Should -BeExactly (Join-Path $root 'logs')
         $paths.Settings | Should -BeExactly (Join-Path $root 'data\settings.json')
         $paths.Health | Should -BeExactly (Join-Path $root 'data\health.json')
+        $paths.RelayImportLinks | Should -BeExactly (Join-Path $root 'data\relay-import-links.json')
         $paths.StartupShortcut | Should -BeExactly (Join-Path $startup 'Codex Quota Monitor.lnk')
     }
 }

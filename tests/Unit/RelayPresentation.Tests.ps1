@@ -33,13 +33,15 @@ BeforeAll {
         param(
             [string]$Status = 'Live',
             [object[]]$Results = @((New-TestRelayPresentationResult)),
-            [AllowNull()][object]$LastSuccessAt = ([DateTimeOffset]'2026-08-01T08:00:00Z')
+            [AllowNull()][object]$LastSuccessAt = ([DateTimeOffset]'2026-08-01T08:00:00Z'),
+            [AllowNull()][string]$LastErrorCategory = $null
         )
         [pscustomobject]@{
             ProviderId = 'wkk'
             Status = $Status
             Results = $Results
             LastSuccessAt = $LastSuccessAt
+            LastErrorCategory = $LastErrorCategory
         }
     }
 
@@ -157,6 +159,37 @@ Describe 'relay presentation rows' {
         $row.ValueText | Should -BeExactly '--'
         $row.State | Should -BeExactly 'InvalidScript'
         $row.IsStale | Should -BeFalse
+    }
+
+    It 'shows the precise sanitized failure reason' -ForEach @(
+        @{ Category='EndpointNotFound'; Expected='余额接口不存在' }
+        @{ Category='InvalidJson'; Expected='返回内容不是 JSON' }
+        @{ Category='ExtractorExecution'; Expected='返回内容无法解析' }
+        @{ Category='ResultValidation'; Expected='余额字段不符合要求' }
+        @{ Category='RateLimit'; Expected='查询频率受限' }
+        @{ Category='DestinationTrustRequired'; Expected='需要确认目标地址' }
+        @{ Category='Authentication'; Expected='需要重新验证凭据' }
+        @{ Category='ScriptSyntax'; Expected='查询脚本语法无效' }
+        @{ Category='RequestValidation'; Expected='查询请求配置无效' }
+    ) {
+        $provider = [pscustomobject]@{ Id='relay'; Name='Relay' }
+        $state = New-TestRelayPresentationState -Status 'Unavailable' -Results @() `
+            -LastSuccessAt $null -LastErrorCategory $Category
+
+        $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
+
+        $row.SecondaryText | Should -BeExactly $Expected
+    }
+
+    It 'shows the precise failure reason while keeping last-good rows stale' {
+        $provider = [pscustomobject]@{ Id='relay'; Name='Relay' }
+        $state = New-TestRelayPresentationState -Status 'InvalidScript' `
+            -LastErrorCategory 'ExtractorExecution'
+
+        $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
+
+        $row.IsStale | Should -BeTrue
+        $row.SecondaryText | Should -BeExactly '返回内容无法解析'
     }
 
     It 'does not present or rank a mixed invalid result even when it carries a number' {

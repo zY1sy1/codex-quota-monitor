@@ -72,6 +72,8 @@ Describe 'relay provider state transitions' {
         @{ Category = 'Authentication'; Expected = 'AuthRequired' }
         @{ Category = 'ScriptSyntax'; Expected = 'InvalidScript' }
         @{ Category = 'DestinationTrustRequired'; Expected = 'InvalidScript' }
+        @{ Category = 'EndpointNotFound'; Expected = 'InvalidScript' }
+        @{ Category = 'RateLimit'; Expected = 'Stale' }
     ) {
         $cached = [object[]]@(New-TestUsageResult -Remaining ([double]7))
         $cachedAt = [DateTimeOffset]'2026-08-01T08:00:00Z'
@@ -82,6 +84,7 @@ Describe 'relay provider state transitions' {
         $failed.Status | Should -BeExactly $Expected
         $failed.Results[0].Remaining | Should -Be 7
         $failed.LastSuccessAt | Should -Be $cachedAt
+        $failed.LastErrorCategory | Should -BeExactly $Category
     }
 
     It 'maps an all-invalid successful extractor result to AuthRequired without replacing last-good data' {

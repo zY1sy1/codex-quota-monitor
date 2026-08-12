@@ -61,6 +61,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <TextBlock Text="中转站列表" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" />
             <ListBox x:Name="ProviderList"
@@ -76,6 +77,11 @@
                 <Button x:Name="DuplicateButton" Content="复制" AutomationProperties.Name="复制中转站" />
                 <Button x:Name="DeleteButton" Content="删除" AutomationProperties.Name="删除中转站" />
             </UniformGrid>
+            <Button x:Name="ImportButton"
+                    Grid.Row="3"
+                    Margin="0,8,0,0"
+                    Content="从 CC Switch 导入"
+                    AutomationProperties.Name="从 CC Switch 导入余额查询规则" />
         </Grid>
 
         <Grid Grid.Column="2">

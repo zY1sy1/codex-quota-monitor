@@ -241,6 +241,23 @@ Describe 'relay provider schema-one migration' {
         $provider.ExtractorScript | Should -BeExactly $script
     }
 
+    It 'falls back to Custom without partially consuming uncertain request syntax' -ForEach @(
+        @{ Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"GET",headers:{Authorization:getToken()}},extractor:r=>r})' }
+        @{ Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"POST",body:JSON.stringify({x:1})},extractor:r=>r})' }
+        @{ Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"DELETE"},extractor:r=>r})' }
+        @{ Script = '({request:{url:"{{baseUrl}}/v1/usage",method:"GET",credentials:"include"},extractor:r=>r})' }
+    ) {
+        $legacy = New-TestLegacyProviderDocument -TemplateType General -Script $Script
+        $path = Join-Path $TestDrive ("full-consumption\$([guid]::NewGuid()).json")
+        Write-TestJson -Path $path -Document $legacy
+
+        $provider = (Read-RelayProviderStore -Path $path).Providers[0]
+
+        $provider.ProviderKind | Should -BeExactly 'Custom'
+        $provider.RequestDefinition | Should -BeNullOrEmpty
+        $provider.ExtractorScript | Should -BeExactly $Script
+    }
+
     It 'falls back to Custom without dropping an unknown legacy script' {
         $script = 'legacy-unknown-script-sentinel'
         $legacy = New-TestLegacyProviderDocument -TemplateType Unknown -Script $script

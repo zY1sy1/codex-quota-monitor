@@ -76,6 +76,27 @@ function (response) {
 
 如果旧脚本的请求 URL 不是 `{{baseUrl}}` 加相对路径，或请求定义无法安全解析，系统会降级为 `Custom` 而不是丢弃 provider。用户可以在管理窗口检查原脚本、重新选择 Generic 并确认新的目标 origin。
 
+## 从 CC Switch 导入
+
+“从 CC Switch 导入”只复用查询规则，不迁移凭据。导入器以只读方式打开用户选择的 CC Switch SQLite 数据库，只查询经审核的 usage-script JSON 路径和公开 endpoint 字段；SQL 不选择 `providers.settings_config`、完整的 `providers.meta` 或 `usage_script.apiKey`。数据库中的 API Key、Token、Cookie 和其他凭据不会进入描述符、日志、UI 或 provider store，用户必须在监视器的 `PasswordBox` 中重新输入凭据。
+
+使用流程为：`管理中转站 → 从 CC Switch 导入 → 选择查询规则 → 检查目标地址 → 重新输入 API Key → 测试 → 保存并启用`。导入生成的草稿必须先测试，只有测试成功且目标 origin 已确认后才能保存。
+
+系统先尝试把公开 endpoint、请求定义和 extractor 转换为结构化 `Generic` provider。无法可靠拆分的安全规则会显示明确警告，只有用户确认后才作为 `Custom` 导入；取消确认不会写入任何内容。导入器不会猜测路径、认证方式或余额字段；没有可用的余额接口或可验证 usage script 的 provider 会被标记为不可导入，而不是生成一个看似可用的配置。
+
+来源链接与 provider 配置相互独立。链接只保存 CC Switch 来源 ID、应用类型、规则指纹和本地 provider ID，用于在以后区分“更新现有 provider”和“复制为新 provider”。删除来源链接不会删除或修改 provider，删除 provider 也不会写回 CC Switch 数据库。
+
+导入、测试和运行时使用同一组稳定错误分类：
+
+| 分类 | 含义与操作 |
+| --- | --- |
+| `EndpointNotFound` | 请求的公开 endpoint 不存在；检查 CC Switch 规则和服务端接口，不自动尝试其他路径。 |
+| `InvalidJson` | 服务端响应不是规则所需的有效 JSON；不记录原始响应。 |
+| `ExtractorExecution` | extractor 在沙箱中执行失败；检查导入的字段访问和函数逻辑。 |
+| `ResultValidation` | extractor 返回值不满足归一化余额契约；不会用零替代失败结果。 |
+| `RateLimit` | 服务端返回限流；保留最后成功数据并按调度策略退避。 |
+| `DestinationTrustRequired` | 目标 origin 尚未确认或已经变化；检查地址后在 UI 中显式确认。 |
+
 ## 配置示例
 
 可直接复制并按实际服务端字段修改的 schema 2 示例见 [`docs/examples/generic-relay-provider.json`](examples/generic-relay-provider.json)。示例只使用 `example` 主机和空密文：

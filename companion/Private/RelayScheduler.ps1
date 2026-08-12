@@ -167,6 +167,9 @@ function Get-RelaySchedulerFailurePolicy {
     if ($Category -eq 'DestinationTrustRequired') {
         return 'TrustRequired'
     }
+    if ($Category -eq 'RateLimit') {
+        return 'RateLimit'
+    }
     if ($Category -eq 'HttpStatus') {
         if ($HttpStatus -in @(401, 403)) { return 'Authentication' }
         if ($HttpStatus -eq 429) { return 'RateLimit' }
@@ -194,6 +197,7 @@ function Get-RelaySchedulerFailurePolicy {
         'RequestValidation',
         'RequestTooLarge',
         'DestinationValidation',
+        'EndpointNotFound',
         'ExtractorExecution',
         'ResultValidation'
     )) {

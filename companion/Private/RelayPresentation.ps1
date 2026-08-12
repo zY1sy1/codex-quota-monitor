@@ -76,11 +76,25 @@ function New-RelaySharedPresentationRow {
 }
 
 function Get-RelayStatusSecondaryText {
-    param([Parameter(Mandatory)][string]$Status)
+    param(
+        [Parameter(Mandatory)][string]$Status,
+        [AllowNull()][string]$ErrorCategory
+    )
+    switch ($ErrorCategory) {
+        'EndpointNotFound' { return '余额接口不存在' }
+        'InvalidJson' { return '返回内容不是 JSON' }
+        'ExtractorExecution' { return '返回内容无法解析' }
+        'ResultValidation' { return '余额字段不符合要求' }
+        'RateLimit' { return '查询频率受限' }
+        'DestinationTrustRequired' { return '需要确认目标地址' }
+        'Authentication' { return '需要重新验证凭据' }
+        'ScriptSyntax' { return '查询脚本语法无效' }
+        'RequestValidation' { return '查询请求配置无效' }
+    }
     switch ($Status) {
         'Starting' { return '等待首次查询' }
         'AuthRequired' { return '需要重新验证凭据' }
-        'InvalidScript' { return '脚本或配置无效' }
+        'InvalidScript' { return '查询规则无效' }
         'Unavailable' { return '暂无可用数据' }
         'Disabled' { return '已停用' }
         default { return '' }
@@ -102,6 +116,7 @@ function ConvertTo-RelayPresentationRow {
     if ([string]::IsNullOrWhiteSpace($status)) {
         $status = 'Unavailable'
     }
+    $errorCategory = [string](Get-ObjectField -InputObject $State -Name 'LastErrorCategory')
     $lastSuccessValue = Get-ObjectField -InputObject $State -Name 'LastSuccessAt'
     $updatedAt = if ($null -eq $lastSuccessValue) {
         $null
@@ -113,7 +128,8 @@ function ConvertTo-RelayPresentationRow {
     if ($results.Count -eq 0) {
         New-RelaySharedPresentationRow -Key "relay:$providerId`:status" `
             -SourceId $providerId -Label $providerName -ValueText '--' `
-            -SecondaryText (Get-RelayStatusSecondaryText $status) `
+            -SecondaryText (Get-RelayStatusSecondaryText -Status $status `
+                -ErrorCategory $errorCategory) `
             -IsStale $false -UpdatedAt $updatedAt -State $status
         return
     }
@@ -156,6 +172,13 @@ function ConvertTo-RelayPresentationRow {
         }
         $secondary = Limit-TextElementLength -Text $extra -MaximumLength 256
         $isStale = $status -ne 'Live' -and $null -ne $updatedAt
+        if ($isStale) {
+            $failureText = Get-RelayStatusSecondaryText -Status $status `
+                -ErrorCategory $errorCategory
+            if (-not [string]::IsNullOrEmpty($failureText)) {
+                $secondary = $failureText
+            }
+        }
         New-RelaySharedPresentationRow -Key "relay:$providerId`:$index" `
             -SourceId $providerId -Label $label -ValueText $valueText `
             -SecondaryText $secondary -ProgressValue $progress -IsStale $isStale `
