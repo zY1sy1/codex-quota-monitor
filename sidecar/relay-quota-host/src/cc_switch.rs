@@ -30,6 +30,7 @@ SELECT
     json_extract(meta, '$.usage_script.code'),
     json_extract(meta, '$.usage_script.timeout'),
     json_extract(meta, '$.usage_script.templateType'),
+    json_type(meta, '$.usage_script.templateType'),
     json_extract(meta, '$.usage_script.autoQueryInterval')
 FROM providers
 WHERE json_type(meta, '$.usage_script') = 'object'
@@ -287,7 +288,8 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
             row.get::<_, String>(5)?,
             row.get::<_, i64>(6)?,
             row.get::<_, Option<String>>(7)?,
-            row.get::<_, i64>(8)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, i64>(9)?,
         ))
     }) {
         Ok(value) => value,
@@ -297,15 +299,36 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
     let mut providers = Vec::new();
     let mut estimated_response_bytes = DISCOVERY_RESPONSE_BASE_BYTES;
     for row in rows {
-        let (id, app_type, name, enabled, language, mut code, timeout, template_type, interval) =
-            match row {
-                Ok(value) => value,
-                Err(error) => {
-                    let (category, message) = sql_error_details(&error);
-                    return bounded_failure(&mut providers, category, message);
-                }
-            };
-        let template_type = template_type.unwrap_or_else(|| "general".to_owned());
+        let (
+            id,
+            app_type,
+            name,
+            enabled,
+            language,
+            mut code,
+            timeout,
+            template_type,
+            template_type_kind,
+            interval,
+        ) = match row {
+            Ok(value) => value,
+            Err(error) => {
+                let (category, message) = sql_error_details(&error);
+                return bounded_failure(&mut providers, category, message);
+            }
+        };
+        let template_type = match (template_type_kind.as_deref(), template_type) {
+            (None, None) | (Some("null"), None) => "general".to_owned(),
+            (Some("text"), Some(value)) => value,
+            _ => {
+                code.zeroize();
+                return bounded_failure(
+                    &mut providers,
+                    "CcSwitchSchemaUnsupported",
+                    "CC Switch database schema is unsupported.",
+                );
+            }
+        };
 
         if !enabled
             || !valid_text(&id)

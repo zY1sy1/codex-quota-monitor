@@ -15,6 +15,8 @@ enum TemplateTypeFixture<'a> {
     Omitted,
     Null,
     Number(i64),
+    Array,
+    Object,
 }
 
 fn unique_fixture_path(label: &str) -> PathBuf {
@@ -82,6 +84,12 @@ fn usage_meta_with_template_type(
         }
         TemplateTypeFixture::Number(value) => {
             usage_script.insert("templateType".to_owned(), serde_json::json!(value));
+        }
+        TemplateTypeFixture::Array => {
+            usage_script.insert("templateType".to_owned(), serde_json::json!([]));
+        }
+        TemplateTypeFixture::Object => {
+            usage_script.insert("templateType".to_owned(), serde_json::json!({}));
         }
     }
     serde_json::json!({ "usage_script": usage_script }).to_string()
@@ -301,6 +309,55 @@ fn rejects_numeric_template_type_without_leaking_credentials() {
     assert!(!serialized.contains("FORBIDDEN_META_SECRET_78431"));
     assert!(!serialized.contains("FORBIDDEN_SETTINGS_SECRET_91357"));
     fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn rejects_array_and_object_template_types_without_leaking_credentials() {
+    let cases = [
+        ("array", TemplateTypeFixture::Array),
+        ("object", TemplateTypeFixture::Object),
+    ];
+    let mut outcomes = Vec::new();
+
+    for (label, template_type) in cases {
+        let path = unique_fixture_path(label);
+        let connection = Connection::open(&path).expect("create structured template type fixture");
+        create_schema(&connection);
+        insert_provider(
+            &connection,
+            "source-structured",
+            "codex",
+            "structured-template",
+            &usage_meta_with_template_type(
+                true,
+                "javascript",
+                "({request:{},extractor:r=>r})",
+                template_type,
+            ),
+        );
+        drop(connection);
+
+        let response = inspect_cc_switch_database(&path);
+        let serialized = serde_json::to_string(&response).expect("serialize response");
+        outcomes.push((
+            label,
+            response.ok,
+            response.providers.is_empty(),
+            response.error.as_ref().map(|error| error.category)
+                == Some("CcSwitchSchemaUnsupported"),
+            !serialized.contains("FORBIDDEN_META_SECRET_78431"),
+            !serialized.contains("FORBIDDEN_SETTINGS_SECRET_91357"),
+        ));
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    assert_eq!(
+        outcomes,
+        [
+            ("array", false, true, true, true, true),
+            ("object", false, true, true, true, true),
+        ]
+    );
 }
 
 #[test]
