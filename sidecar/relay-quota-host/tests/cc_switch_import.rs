@@ -10,6 +10,13 @@ use rusqlite::{params, Connection};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+enum TemplateTypeFixture<'a> {
+    Explicit(&'a str),
+    Omitted,
+    Null,
+    Number(i64),
+}
+
 fn unique_fixture_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "cc-switch-import-{label}-{}-{}.db",
@@ -40,18 +47,44 @@ fn create_schema(connection: &Connection) {
 }
 
 fn usage_meta(enabled: bool, language: &str, code: &str) -> String {
-    serde_json::json!({
-        "usage_script": {
-            "enabled": enabled,
-            "language": language,
-            "code": code,
-            "timeout": 10,
-            "templateType": "general",
-            "autoQueryInterval": 10,
-            "apiKey": "FORBIDDEN_META_SECRET_78431"
+    usage_meta_with_template_type(
+        enabled,
+        language,
+        code,
+        TemplateTypeFixture::Explicit("general"),
+    )
+}
+
+fn usage_meta_with_template_type(
+    enabled: bool,
+    language: &str,
+    code: &str,
+    template_type: TemplateTypeFixture<'_>,
+) -> String {
+    let mut usage_script = serde_json::json!({
+        "enabled": enabled,
+        "language": language,
+        "code": code,
+        "timeout": 10,
+        "autoQueryInterval": 10,
+        "apiKey": "FORBIDDEN_META_SECRET_78431"
+    });
+    let usage_script = usage_script
+        .as_object_mut()
+        .expect("usage script fixture is an object");
+    match template_type {
+        TemplateTypeFixture::Explicit(value) => {
+            usage_script.insert("templateType".to_owned(), serde_json::json!(value));
         }
-    })
-    .to_string()
+        TemplateTypeFixture::Omitted => {}
+        TemplateTypeFixture::Null => {
+            usage_script.insert("templateType".to_owned(), serde_json::Value::Null);
+        }
+        TemplateTypeFixture::Number(value) => {
+            usage_script.insert("templateType".to_owned(), serde_json::json!(value));
+        }
+    }
+    serde_json::json!({ "usage_script": usage_script }).to_string()
 }
 
 fn insert_provider(connection: &Connection, id: &str, app_type: &str, name: &str, meta: &str) {
@@ -163,6 +196,110 @@ fn reads_only_whitelisted_usage_fields() {
             .expect("modified time"),
         before
     );
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn discovers_rules_with_explicit_and_omitted_template_types() {
+    let path = unique_fixture_path("optional-template-type");
+    let connection = Connection::open(&path).expect("create optional template type fixture");
+    create_schema(&connection);
+    let code = "({request:{},extractor:r=>r})";
+    insert_provider(
+        &connection,
+        "source-explicit",
+        "codex",
+        "alpha-explicit",
+        &usage_meta_with_template_type(
+            true,
+            "javascript",
+            code,
+            TemplateTypeFixture::Explicit("claude"),
+        ),
+    );
+    insert_provider(
+        &connection,
+        "source-omitted",
+        "codex",
+        "beta-omitted",
+        &usage_meta_with_template_type(true, "javascript", code, TemplateTypeFixture::Omitted),
+    );
+    drop(connection);
+
+    let response = inspect_cc_switch_database(&path);
+    let serialized = serde_json::to_string(&response).expect("serialize response");
+
+    assert!(response.ok);
+    assert_eq!(response.providers.len(), 2);
+    assert_eq!(response.providers[0].source_provider_id, "source-explicit");
+    assert_eq!(response.providers[0].template_type, "claude");
+    assert_eq!(response.providers[1].source_provider_id, "source-omitted");
+    assert_eq!(response.providers[1].template_type, "general");
+    assert!(!serialized.contains("FORBIDDEN_META_SECRET_78431"));
+    assert!(!serialized.contains("FORBIDDEN_SETTINGS_SECRET_91357"));
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn defaults_null_template_type_to_general() {
+    let path = unique_fixture_path("null-template-type");
+    let connection = Connection::open(&path).expect("create null template type fixture");
+    create_schema(&connection);
+    insert_provider(
+        &connection,
+        "source-null",
+        "codex",
+        "null-template",
+        &usage_meta_with_template_type(
+            true,
+            "javascript",
+            "({request:{},extractor:r=>r})",
+            TemplateTypeFixture::Null,
+        ),
+    );
+    drop(connection);
+
+    let response = inspect_cc_switch_database(&path);
+    let serialized = serde_json::to_string(&response).expect("serialize response");
+
+    assert!(response.ok);
+    assert_eq!(response.providers.len(), 1);
+    assert_eq!(response.providers[0].template_type, "general");
+    assert!(!serialized.contains("FORBIDDEN_META_SECRET_78431"));
+    assert!(!serialized.contains("FORBIDDEN_SETTINGS_SECRET_91357"));
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn rejects_numeric_template_type_without_leaking_credentials() {
+    let path = unique_fixture_path("numeric-template-type");
+    let connection = Connection::open(&path).expect("create numeric template type fixture");
+    create_schema(&connection);
+    insert_provider(
+        &connection,
+        "source-number",
+        "codex",
+        "numeric-template",
+        &usage_meta_with_template_type(
+            true,
+            "javascript",
+            "({request:{},extractor:r=>r})",
+            TemplateTypeFixture::Number(7),
+        ),
+    );
+    drop(connection);
+
+    let response = inspect_cc_switch_database(&path);
+    let serialized = serde_json::to_string(&response).expect("serialize response");
+
+    assert!(!response.ok);
+    assert!(response.providers.is_empty());
+    assert_eq!(
+        response.error.as_ref().map(|error| error.category),
+        Some("CcSwitchSchemaUnsupported")
+    );
+    assert!(!serialized.contains("FORBIDDEN_META_SECRET_78431"));
+    assert!(!serialized.contains("FORBIDDEN_SETTINGS_SECRET_91357"));
     fs::remove_file(path).expect("remove fixture");
 }
 

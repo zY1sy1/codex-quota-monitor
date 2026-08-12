@@ -286,7 +286,7 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, i64>(6)?,
-            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(7)?,
             row.get::<_, i64>(8)?,
         ))
     }) {
@@ -305,6 +305,7 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
                     return bounded_failure(&mut providers, category, message);
                 }
             };
+        let template_type = template_type.unwrap_or_else(|| "general".to_owned());
 
         if !enabled
             || !valid_text(&id)
