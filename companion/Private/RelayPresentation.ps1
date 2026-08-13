@@ -1,6 +1,6 @@
 function Format-RelayPresentationNumber {
     param([Parameter(Mandatory)][double]$Value)
-    return $Value.ToString('0.########', [Globalization.CultureInfo]::InvariantCulture)
+    return $Value.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Format-RelayPresentationAmount {

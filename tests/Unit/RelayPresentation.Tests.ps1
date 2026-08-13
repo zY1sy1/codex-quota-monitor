@@ -94,10 +94,10 @@ Describe 'relay presentation rows' {
         $row.State | Should -BeExactly 'Live'
     }
 
-    It 'formats CNY, request counts, and explicit zero without mixing units' -ForEach @(
-        @{ Remaining = [double]50; Unit = 'CNY'; Expected = '¥50 CNY' }
-        @{ Remaining = [double]120; Unit = 'requests'; Expected = '120 requests' }
-        @{ Remaining = [double]0; Unit = 'USD'; Expected = '$0 USD' }
+    It 'formats amounts with exactly two decimal places without mixing units' -ForEach @(
+        @{ Remaining = [double]50; Unit = 'CNY'; Expected = '¥50.00 CNY' }
+        @{ Remaining = [double]120; Unit = 'requests'; Expected = '120.00 requests' }
+        @{ Remaining = [double]0; Unit = 'USD'; Expected = '$0.00 USD' }
     ) {
         $provider = [pscustomobject]@{ Id = 'p'; Name = 'Provider' }
         $state = New-TestRelayPresentationState -Results @(
@@ -109,6 +109,17 @@ Describe 'relay presentation rows' {
         $row.ValueText | Should -BeExactly $Expected
     }
 
+    It 'rounds relay amounts for display while preserving numeric inputs' {
+        $provider = [pscustomobject]@{ Id = 'p'; Name = 'Provider' }
+        $result = New-TestRelayPresentationResult -Remaining ([double]18.426) -Unit 'USD'
+        $state = New-TestRelayPresentationState -Results @($result)
+
+        $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
+
+        $row.ValueText | Should -BeExactly '$18.43 USD'
+        $result.Remaining | Should -Be 18.426
+    }
+
     It 'derives percentage from remaining over total and clamps only the progress display' {
         $provider = [pscustomobject]@{ Id = 'p'; Name = 'Provider' }
         $state = New-TestRelayPresentationState -Results @(
@@ -117,7 +128,7 @@ Describe 'relay presentation rows' {
 
         $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
 
-        $row.ValueText | Should -BeExactly '$150 / $100 USD'
+        $row.ValueText | Should -BeExactly '$150.00 / $100.00 USD'
         $row.ProgressValue | Should -Be 100
     }
 
@@ -130,7 +141,7 @@ Describe 'relay presentation rows' {
 
         $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
 
-        $row.ValueText | Should -BeExactly '30 / 100 requests used'
+        $row.ValueText | Should -BeExactly '30.00 / 100.00 requests used'
         $row.ProgressValue | Should -Be 70
     }
 
