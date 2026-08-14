@@ -81,6 +81,9 @@ function Invoke-CodexQuotaMonitorRuntime {
 
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
 
+        [AllowNull()]
+        [string]$ProgramRoot,
+
         [ValidateNotNullOrEmpty()]
         [string]$InstancePrefix = 'Local\CodexQuotaMonitor',
 
@@ -195,7 +198,10 @@ function Invoke-CodexQuotaMonitorRuntime {
     }
 
     $pathsFunction = $functions.GetPaths
-    $paths = & $pathsFunction -LocalAppData $LocalAppData -Startup $Startup
+    $paths = & $pathsFunction `
+        -LocalAppData $LocalAppData `
+        -Startup $Startup `
+        -ProgramRoot $ProgramRoot
     [IO.Directory]::CreateDirectory($paths.Data) | Out-Null
     [IO.Directory]::CreateDirectory($paths.Logs) | Out-Null
 
@@ -1222,7 +1228,9 @@ function Invoke-CodexQuotaMonitorRuntime {
                 & $startupPreferenceFunction `
                     -Enabled $Enabled `
                     -Paths $paths `
-                    -RuntimeScriptPath (Join-Path $PSScriptRoot 'Start-CodexQuotaMonitor.ps1')
+                    -RuntimeScriptPath (Join-Path $PSScriptRoot 'Start-CodexQuotaMonitor.ps1') `
+                    -PwshPath (Join-Path $PSHOME 'pwsh.exe') `
+                    -LauncherScript (Join-Path $paths.App 'Start-CodexQuotaMonitor.vbs')
             }.GetNewClosure()
             $requestRefreshAction = {
                 $runtime.RefreshEvent.Set() | Out-Null

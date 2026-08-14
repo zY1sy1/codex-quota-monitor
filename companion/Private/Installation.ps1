@@ -565,10 +565,11 @@ function Get-CodexQuotaMonitorStatus {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor'
     )
 
-    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup
+    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     $installed = Test-MonitorInstalledLayout -Paths $paths
     $running = $false
     try {
@@ -632,6 +633,7 @@ function Get-CodexQuotaMonitorStatus {
         DisplayMode = if ($health.Valid) { $health.DisplayMode } else { $null }
         Theme = if ($health.Valid) { $health.Theme } else { $null }
         Root = $paths.Root
+        ProgramRoot = $paths.ProgramRoot
         AppPath = $paths.App
         SettingsPath = $paths.Settings
         HealthPath = $paths.Health
@@ -645,15 +647,17 @@ function Test-CodexQuotaMonitorHealth {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [switch]$Live,
         [ValidateRange(1, 3600)][int]$MaximumAgeSeconds = 120
     )
 
-    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup
+    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     $status = Get-CodexQuotaMonitorStatus `
         -LocalAppData $LocalAppData `
         -Startup $Startup `
+        -ProgramRoot $ProgramRoot `
         -InstancePrefix $InstancePrefix
     $health = Read-MonitorHealthSnapshot -Path $paths.Health
     $fresh = $false
@@ -751,9 +755,9 @@ function Repair-MonitorInterruptedPublishState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Paths)
 
-    $stagePath = Join-Path $Paths.Root 'app.new'
-    $backupPath = Join-Path $Paths.Root 'app.old'
-    $failedPath = Join-Path $Paths.Root 'app.failed'
+    $stagePath = Join-Path $Paths.ProgramRoot 'app.new'
+    $backupPath = Join-Path $Paths.ProgramRoot 'app.old'
+    $failedPath = Join-Path $Paths.ProgramRoot 'app.failed'
     if (Test-Path -LiteralPath $backupPath -PathType Container) {
         Restore-MonitorPublishedApplication `
             -Paths $Paths `
@@ -770,10 +774,10 @@ function Repair-MonitorInterruptedPublishState {
         Move-Item -LiteralPath $failedPath -Destination $Paths.App -ErrorAction Stop
     }
     elseif (Test-Path -LiteralPath $failedPath) {
-        Remove-MonitorManagedItem -Path $failedPath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $failedPath -Root $Paths.ProgramRoot
     }
     if (Test-Path -LiteralPath $stagePath) {
-        Remove-MonitorManagedItem -Path $stagePath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $stagePath -Root $Paths.ProgramRoot
     }
 }
 
@@ -784,8 +788,8 @@ function Publish-MonitorApplication {
         [Parameter(Mandatory)][object]$Paths
     )
 
-    $stagePath = Join-Path $Paths.Root 'app.new'
-    $backupPath = Join-Path $Paths.Root 'app.old'
+    $stagePath = Join-Path $Paths.ProgramRoot 'app.new'
+    $backupPath = Join-Path $Paths.ProgramRoot 'app.old'
     Repair-MonitorInterruptedPublishState -Paths $Paths
     [IO.Directory]::CreateDirectory($stagePath) | Out-Null
     try {
@@ -839,7 +843,7 @@ function Publish-MonitorApplication {
     }
     catch {
         if (Test-Path -LiteralPath $stagePath) {
-            try { Remove-MonitorManagedItem -Path $stagePath -Root $Paths.Root } catch { }
+            try { Remove-MonitorManagedItem -Path $stagePath -Root $Paths.ProgramRoot } catch { }
         }
         throw
     }
@@ -852,7 +856,7 @@ function Restore-MonitorPublishedApplication {
         [Parameter(Mandatory)][object]$PublishState
     )
 
-    $failedPath = Join-Path $Paths.Root 'app.failed'
+    $failedPath = Join-Path $Paths.ProgramRoot 'app.failed'
     if ($PublishState.HadPrevious -and
         -not (Test-Path -LiteralPath $PublishState.BackupPath -PathType Container)) {
         throw [InvalidOperationException]::new(
@@ -860,7 +864,7 @@ function Restore-MonitorPublishedApplication {
         )
     }
     if (Test-Path -LiteralPath $failedPath) {
-        Remove-MonitorManagedItem -Path $failedPath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $failedPath -Root $Paths.ProgramRoot
     }
 
     $currentMoved = $false
@@ -889,10 +893,10 @@ function Restore-MonitorPublishedApplication {
     }
 
     if (Test-Path -LiteralPath $failedPath) {
-        Remove-MonitorManagedItem -Path $failedPath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $failedPath -Root $Paths.ProgramRoot
     }
     if (Test-Path -LiteralPath $PublishState.StagePath) {
-        Remove-MonitorManagedItem -Path $PublishState.StagePath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $PublishState.StagePath -Root $Paths.ProgramRoot
     }
 }
 
@@ -904,10 +908,10 @@ function Complete-MonitorPublishedApplication {
     )
 
     if (Test-Path -LiteralPath $PublishState.BackupPath) {
-        Remove-MonitorManagedItem -Path $PublishState.BackupPath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $PublishState.BackupPath -Root $Paths.ProgramRoot
     }
     if (Test-Path -LiteralPath $PublishState.StagePath) {
-        Remove-MonitorManagedItem -Path $PublishState.StagePath -Root $Paths.Root
+        Remove-MonitorManagedItem -Path $PublishState.StagePath -Root $Paths.ProgramRoot
     }
 }
 
@@ -941,6 +945,8 @@ function New-MonitorRuntimeStartInfo {
             $localAppData
             '-Startup'
             $startup
+            '-ProgramRoot'
+            $Paths.ProgramRoot
             '-InstancePrefix'
             $InstancePrefix
         )) {
@@ -1088,6 +1094,7 @@ function Invoke-CodexQuotaMonitorInstall {
         [Parameter(Mandatory)][string]$SourcePath,
         [string]$LocalAppData,
         [string]$Startup,
+        [AllowNull()][string]$ProgramRoot,
         [Parameter(Mandatory)][string]$InstancePrefix,
         [AllowNull()][string]$PwshPath,
         [ValidateRange(1, 120)][int]$TimeoutSeconds,
@@ -1096,12 +1103,12 @@ function Invoke-CodexQuotaMonitorInstall {
         [AllowNull()][scriptblock]$RollbackProcessStarter
     )
 
-    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup
+    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     if ([string]::IsNullOrWhiteSpace($PwshPath)) {
         $PwshPath = Resolve-MonitorPwshPath -LocalAppData $LocalAppData
     }
     Assert-MonitorDesktopPrerequisites -PwshPath $PwshPath
-    $source = Assert-MonitorSourceLayout -SourcePath $SourcePath -TargetRoot $paths.Root
+    $source = Assert-MonitorSourceLayout -SourcePath $SourcePath -TargetRoot $paths.ProgramRoot
 
     $lease = Enter-MonitorManagementMutex -Root $paths.Root -TimeoutSeconds $TimeoutSeconds
     $publishState = $null
@@ -1109,6 +1116,7 @@ function Invoke-CodexQuotaMonitorInstall {
     $shortcutWasPresent = Test-Path -LiteralPath $paths.StartupShortcut -PathType Leaf
     try {
         [IO.Directory]::CreateDirectory($paths.Root) | Out-Null
+        [IO.Directory]::CreateDirectory($paths.ProgramRoot) | Out-Null
         [IO.Directory]::CreateDirectory($paths.Data) | Out-Null
         [IO.Directory]::CreateDirectory($paths.Logs) | Out-Null
         if (-not (Test-Path -LiteralPath $paths.Settings -PathType Leaf)) {
@@ -1146,12 +1154,18 @@ function Invoke-CodexQuotaMonitorInstall {
         $status = Get-CodexQuotaMonitorStatus `
             -LocalAppData $LocalAppData `
             -Startup $Startup `
+            -ProgramRoot $ProgramRoot `
             -InstancePrefix $InstancePrefix
         $result = New-MonitorOperationResult `
             -Operation $Operation `
             -Changed $true `
             -Status $status `
             -Additional $null
+        if (-not $SkipStart -and
+            -not $paths.LegacyApp.Equals($paths.App, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-Path -LiteralPath $paths.LegacyApp -PathType Container)) {
+            Remove-MonitorManagedItem -Path $paths.LegacyApp -Root $paths.Root
+        }
         Complete-MonitorPublishedApplication -Paths $paths -PublishState $publishState
         return $result
     }
@@ -1242,6 +1256,7 @@ function Install-CodexQuotaMonitor {
         [string]$SourcePath = $script:MonitorInstallationSourceRoot,
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [AllowNull()][string]$PwshPath,
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
@@ -1255,6 +1270,7 @@ function Install-CodexQuotaMonitor {
         -SourcePath $SourcePath `
         -LocalAppData $LocalAppData `
         -Startup $Startup `
+        -ProgramRoot $ProgramRoot `
         -InstancePrefix $InstancePrefix `
         -PwshPath $PwshPath `
         -TimeoutSeconds $TimeoutSeconds `
@@ -1269,6 +1285,7 @@ function Repair-CodexQuotaMonitor {
         [string]$SourcePath = $script:MonitorInstallationSourceRoot,
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [AllowNull()][string]$PwshPath,
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
@@ -1282,6 +1299,7 @@ function Repair-CodexQuotaMonitor {
         -SourcePath $SourcePath `
         -LocalAppData $LocalAppData `
         -Startup $Startup `
+        -ProgramRoot $ProgramRoot `
         -InstancePrefix $InstancePrefix `
         -PwshPath $PwshPath `
         -TimeoutSeconds $TimeoutSeconds `
@@ -1295,13 +1313,14 @@ function Start-CodexQuotaMonitor {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [AllowNull()][string]$PwshPath,
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
         [Parameter(DontShow)][AllowNull()][scriptblock]$ProcessStarter
     )
 
-    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup
+    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     $lease = Enter-MonitorManagementMutex -Root $paths.Root -TimeoutSeconds $TimeoutSeconds
     try {
         if (-not (Test-MonitorInstalledLayout -Paths $paths)) {
@@ -1311,6 +1330,7 @@ function Start-CodexQuotaMonitor {
             $status = Get-CodexQuotaMonitorStatus `
                 -LocalAppData $LocalAppData `
                 -Startup $Startup `
+                -ProgramRoot $ProgramRoot `
                 -InstancePrefix $InstancePrefix
             return New-MonitorOperationResult `
                 -Operation Start `
@@ -1332,6 +1352,7 @@ function Start-CodexQuotaMonitor {
         $status = Get-CodexQuotaMonitorStatus `
             -LocalAppData $LocalAppData `
             -Startup $Startup `
+            -ProgramRoot $ProgramRoot `
             -InstancePrefix $InstancePrefix
         return New-MonitorOperationResult `
             -Operation Start `
@@ -1349,12 +1370,13 @@ function Stop-CodexQuotaMonitor {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
         [Parameter(DontShow)][switch]$Wait
     )
 
-    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup
+    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     $lease = Enter-MonitorManagementMutex -Root $paths.Root -TimeoutSeconds $TimeoutSeconds
     try {
         $signalSent = Invoke-MonitorInstanceSignal `
@@ -1368,6 +1390,7 @@ function Stop-CodexQuotaMonitor {
         $status = Get-CodexQuotaMonitorStatus `
             -LocalAppData $LocalAppData `
             -Startup $Startup `
+            -ProgramRoot $ProgramRoot `
             -InstancePrefix $InstancePrefix
         return New-MonitorOperationResult `
             -Operation Stop `
@@ -1385,12 +1408,13 @@ function Uninstall-CodexQuotaMonitor {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
         [string]$Startup = [Environment]::GetFolderPath('Startup'),
+        [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
         [switch]$PreserveData
     )
 
-    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup
+    $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     $lease = Enter-MonitorManagementMutex -Root $paths.Root -TimeoutSeconds $TimeoutSeconds
     try {
         $hadRoot = Test-Path -LiteralPath $paths.Root

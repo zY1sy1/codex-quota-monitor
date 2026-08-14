@@ -12,6 +12,8 @@ param(
 
     [string] $Startup,
 
+    [string] $ProgramRoot,
+
     [string] $InstancePrefix = 'Local\CodexQuotaMonitor',
 
     [ValidateRange(0, [int]::MaxValue)]

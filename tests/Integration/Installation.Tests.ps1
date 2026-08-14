@@ -23,6 +23,7 @@ BeforeAll {
             LocalAppData = $localAppData
             Startup = $startup
             Root = Join-Path $localAppData 'CodexQuotaMonitor'
+            ProgramRoot = Join-Path $localAppData 'Programs\CodexQuotaMonitor'
             App = Join-Path $localAppData 'CodexQuotaMonitor\app'
             Data = Join-Path $localAppData 'CodexQuotaMonitor\data'
             Logs = Join-Path $localAppData 'CodexQuotaMonitor\logs'
@@ -676,7 +677,7 @@ Describe 'Codex quota monitor installation lifecycle' {
                 'QuotaWindowCount', 'LastSuccessAt', 'LastErrorCategory',
                 'LastErrorMessage', 'ProcessId', 'UpdatedAt', 'RelayProviderCount',
                 'RelayLiveCount', 'RelayStaleCount', 'RelayInvalidCount', 'RelayHostState',
-                'DisplayMode', 'Theme', 'Root', 'AppPath',
+                'DisplayMode', 'Theme', 'Root', 'ProgramRoot', 'AppPath',
                 'SettingsPath', 'HealthPath', 'LogDirectory', 'ShortcutPath'
             )
             $status.Running | Should -BeTrue
@@ -711,6 +712,100 @@ Describe 'Codex quota monitor installation lifecycle' {
                 param($Instance)
                 Close-MonitorInstance -Instance $Instance
             } $primary
+        }
+    }
+
+    It 'publishes packaged app files outside the mutable data root' {
+        $context = New-InstallationTestContext -Name 'Packaged Root'
+        $pwshPath = (Get-Process -Id $PID).Path
+
+        $result = Install-CodexQuotaMonitor `
+            -SourcePath $CompanionRoot `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -PwshPath $pwshPath `
+            -InstancePrefix $context.Prefix `
+            -SkipStart
+
+        $result.AppPath | Should -BeExactly (Join-Path $context.ProgramRoot 'app')
+        Test-Path -LiteralPath (Join-Path $context.ProgramRoot 'app\CodexQuotaMonitor.psd1') -PathType Leaf |
+            Should -BeTrue
+        Test-Path -LiteralPath $context.Data -PathType Container | Should -BeTrue
+        Test-Path -LiteralPath $context.App | Should -BeFalse
+
+        $status = Get-CodexQuotaMonitorStatus `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -InstancePrefix $context.Prefix
+        $status.Installed | Should -BeTrue
+        $status.AppPath | Should -BeExactly (Join-Path $context.ProgramRoot 'app')
+    }
+
+    It 'removes the legacy app only after packaged health succeeds' {
+        $context = New-InstallationTestContext -Name 'Packaged Migration'
+        $null = New-Item -ItemType Directory -Path $context.App, $context.Data, $context.Logs -Force
+        [IO.File]::WriteAllText((Join-Path $context.App 'legacy.marker'), 'legacy')
+        & $MonitorModule {
+            param($SettingsPath)
+            $settings = New-DefaultSettings
+            $settings.Startup = $false
+            Write-MonitorSettings -Path $SettingsPath -Settings $settings
+        } $context.Settings
+        $settingsBytes = [IO.File]::ReadAllBytes($context.Settings)
+        $script:PackagedMigrationPid = $null
+        $starter = {
+            param($StartInfo, $Paths, $InstancePrefix)
+            $readyPath = Join-Path $Paths.Data 'packaged-migration.ready'
+            $process = Start-FakeMonitorInstance `
+                -Paths $Paths `
+                -Prefix $InstancePrefix `
+                -ReadyPath $readyPath
+            $script:PackagedMigrationPid = $process.Id
+            $health = [ordered]@{
+                SchemaVersion = 1
+                Status = 'AuthRequired'
+                PlanType = $null
+                QuotaWindowCount = 0
+                LastSuccessAt = $null
+                LastErrorCategory = 'AuthRequired'
+                LastErrorMessage = 'Sign in to Codex.'
+                ProcessId = $process.Id
+                UpdatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+            }
+            [IO.File]::WriteAllText(
+                $Paths.Health,
+                ($health | ConvertTo-Json),
+                [Text.UTF8Encoding]::new($false)
+            )
+            return $process
+        }
+
+        try {
+            $result = Install-CodexQuotaMonitor `
+                -SourcePath $CompanionRoot `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -ProgramRoot $context.ProgramRoot `
+                -PwshPath (Get-Process -Id $PID).Path `
+                -InstancePrefix $context.Prefix `
+                -TimeoutSeconds 3 `
+                -ProcessStarter $starter
+
+            $result.Status | Should -BeExactly 'AuthRequired'
+            Test-Path -LiteralPath $context.App | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $context.ProgramRoot 'app\CodexQuotaMonitor.psd1') |
+                Should -BeTrue
+            [IO.File]::ReadAllBytes($context.Settings) | Should -Be $settingsBytes
+        }
+        finally {
+            $null = Stop-CodexQuotaMonitor `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -ProgramRoot $context.ProgramRoot `
+                -InstancePrefix $context.Prefix `
+                -Wait
         }
     }
 }
