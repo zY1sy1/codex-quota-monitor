@@ -3,13 +3,35 @@ function Get-MonitorPaths {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
 
-        [string]$Startup = [Environment]::GetFolderPath('Startup')
+        [string]$Startup = [Environment]::GetFolderPath('Startup'),
+
+        [AllowNull()]
+        [string]$ProgramRoot
     )
 
     $root = Join-Path $LocalAppData 'CodexQuotaMonitor'
+    $legacyApp = Join-Path $root 'app'
+    $resolvedProgramRoot = if ([string]::IsNullOrWhiteSpace($ProgramRoot)) {
+        $root
+    }
+    else {
+        [IO.Path]::GetFullPath($ProgramRoot)
+    }
+    $app = if ($resolvedProgramRoot.Equals($root, [StringComparison]::OrdinalIgnoreCase)) {
+        $legacyApp
+    }
+    else {
+        Join-Path $resolvedProgramRoot 'app'
+    }
+
     [pscustomobject][ordered]@{
         Root = $root
-        App = Join-Path $root 'app'
+        ProgramRoot = $resolvedProgramRoot
+        App = $app
+        LegacyApp = $legacyApp
+        Payload = Join-Path $resolvedProgramRoot 'payload'
+        Runtime = Join-Path $resolvedProgramRoot 'runtime\pwsh'
+        PrivatePwsh = Join-Path $resolvedProgramRoot 'runtime\pwsh\pwsh.exe'
         Data = Join-Path $root 'data'
         Logs = Join-Path $root 'logs'
         Settings = Join-Path $root 'data\settings.json'
