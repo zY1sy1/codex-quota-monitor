@@ -1411,13 +1411,15 @@ function Uninstall-CodexQuotaMonitor {
         [AllowNull()][string]$ProgramRoot,
         [ValidateNotNullOrEmpty()][string]$InstancePrefix = 'Local\CodexQuotaMonitor',
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
-        [switch]$PreserveData
+        [switch]$PreserveData,
+        [Parameter(DontShow)][switch]$PreserveProgramFiles
     )
 
     $paths = Get-MonitorPaths -LocalAppData $LocalAppData -Startup $Startup -ProgramRoot $ProgramRoot
     $lease = Enter-MonitorManagementMutex -Root $paths.Root -TimeoutSeconds $TimeoutSeconds
     try {
         $hadRoot = Test-Path -LiteralPath $paths.Root
+        $hadProgramRoot = Test-Path -LiteralPath $paths.ProgramRoot
         $hadShortcut = Test-Path -LiteralPath $paths.StartupShortcut
         $signalSent = Invoke-MonitorInstanceSignal `
             -InstancePrefix $InstancePrefix `
@@ -1429,10 +1431,24 @@ function Uninstall-CodexQuotaMonitor {
         }
         Remove-MonitorStartupShortcut -ShortcutPath $paths.StartupShortcut
 
+        $separateProgramRoot = -not $paths.ProgramRoot.Equals(
+            $paths.Root,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        if (-not $PreserveProgramFiles -and $separateProgramRoot -and
+            (Test-Path -LiteralPath $paths.ProgramRoot)) {
+            Remove-MonitorManagedItem `
+                -Path $paths.ProgramRoot `
+                -Root $paths.ProgramRoot `
+                -AllowRoot
+        }
+
         if ($PreserveData) {
             if (Test-Path -LiteralPath $paths.Root -PathType Container) {
                 foreach ($item in @(Get-ChildItem -LiteralPath $paths.Root -Force)) {
-                    if ($item.Name -notin @('data', 'logs')) {
+                    if ($item.Name -notin @('data', 'logs') -and
+                        -not ($PreserveProgramFiles -and
+                            $item.FullName.Equals($paths.App, [StringComparison]::OrdinalIgnoreCase))) {
                         Remove-MonitorManagedItem -Path $item.FullName -Root $paths.Root
                     }
                 }
@@ -1444,11 +1460,12 @@ function Uninstall-CodexQuotaMonitor {
 
         return [pscustomobject][ordered]@{
             Operation = 'Uninstall'
-            Changed = [bool]($hadRoot -or $hadShortcut -or $signalSent)
+            Changed = [bool]($hadRoot -or $hadProgramRoot -or $hadShortcut -or $signalSent)
             Installed = $false
             Running = $false
             StartupEnabled = $false
             PreservedData = [bool]$PreserveData
+            PreservedProgramFiles = [bool]$PreserveProgramFiles
             Root = $paths.Root
             DataPath = $paths.Data
             LogDirectory = $paths.Logs

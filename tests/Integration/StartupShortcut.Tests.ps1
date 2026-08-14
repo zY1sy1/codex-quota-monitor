@@ -20,6 +20,7 @@ BeforeAll {
                 Arguments = [string]$shortcut.Arguments
                 WorkingDirectory = [string]$shortcut.WorkingDirectory
                 Description = [string]$shortcut.Description
+                IconLocation = [string]$shortcut.IconLocation
             }
         }
         finally {
@@ -239,5 +240,28 @@ Describe 'current-user Startup shortcut' {
         Remove-MonitorStartupShortcut -ShortcutPath $shortcutPath
         Test-Path -LiteralPath $shortcutPath | Should -BeFalse
         Remove-MonitorStartupShortcut -ShortcutPath $shortcutPath
+    }
+
+    It 'assigns an explicit application icon when requested' {
+        $pwshPath = Resolve-MonitorPwshPath -ProbeTimeoutMilliseconds 5000
+        $directory = Join-Path $TestDrive 'Icon Shortcut'
+        $entryPath = Join-Path $directory 'Start.ps1'
+        $launcherPath = Join-Path $directory 'Start-CodexQuotaMonitor.vbs'
+        $shortcutPath = Join-Path $directory 'Codex Quota Monitor.lnk'
+        $iconPath = Join-Path $directory 'CodexQuotaMonitor.ico'
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        [IO.File]::WriteAllText($entryPath, '# entry')
+        Copy-Item (Join-Path $PSScriptRoot '..\..\companion\Start-CodexQuotaMonitor.vbs') $launcherPath
+        Copy-Item (Join-Path $PSScriptRoot '..\..\assets\codex-quota-monitor-white-blue.ico') $iconPath
+
+        $null = New-MonitorStartupShortcut `
+            -ShortcutPath $shortcutPath `
+            -EntryScript $entryPath `
+            -PwshPath $pwshPath `
+            -LauncherScript $launcherPath `
+            -IconPath $iconPath
+
+        (Read-TestShortcut -Path $shortcutPath).IconLocation |
+            Should -BeExactly ([IO.Path]::GetFullPath($iconPath) + ',0')
     }
 }

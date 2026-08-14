@@ -715,6 +715,32 @@ Describe 'Codex quota monitor installation lifecycle' {
         }
     }
 
+    It 'prepares packaged uninstall without deleting Inno-managed program files' {
+        $context = New-InstallationTestContext -Name 'Packaged Uninstall Preparation'
+        $null = Install-CodexQuotaMonitor `
+            -SourcePath $CompanionRoot `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -PwshPath (Get-Process -Id $PID).Path `
+            -InstancePrefix $context.Prefix `
+            -SkipStart
+
+        $result = Uninstall-CodexQuotaMonitor `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -InstancePrefix $context.Prefix `
+            -PreserveData `
+            -PreserveProgramFiles
+
+        $result.PreservedProgramFiles | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $context.ProgramRoot 'app\CodexQuotaMonitor.psd1') |
+            Should -BeTrue
+        Test-Path -LiteralPath $context.Data -PathType Container | Should -BeTrue
+        Test-Path -LiteralPath $context.Shortcut | Should -BeFalse
+    }
+
     It 'publishes packaged app files outside the mutable data root' {
         $context = New-InstallationTestContext -Name 'Packaged Root'
         $pwshPath = (Get-Process -Id $PID).Path
