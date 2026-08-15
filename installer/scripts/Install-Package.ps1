@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory)][string]$LocalAppData,
     [Parameter(Mandatory)][string]$Startup,
     [Parameter(Mandatory)][string]$PwshPath,
+    [switch]$DisableStartup,
     [switch]$SkipStart
 )
 
@@ -19,6 +20,15 @@ try {
     }
 
     $module = Import-Module -Name $manifestPath -Force -PassThru
+    $settingsPath = Join-Path $LocalAppData 'CodexQuotaMonitor\data\settings.json'
+    if ($DisableStartup -and -not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        & $module {
+            param($Path)
+            $settings = New-DefaultSettings
+            $settings.Startup = $false
+            Write-MonitorSettings -Path $Path -Settings $settings
+        } $settingsPath
+    }
     $result = Install-CodexQuotaMonitor `
         -SourcePath $payloadPath `
         -ProgramRoot $programRootPath `

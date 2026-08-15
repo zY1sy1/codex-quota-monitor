@@ -37,4 +37,11 @@ Describe 'bundled PowerShell runtime lock' {
         $source | Should -Match '--retry'
         $source | Should -Not -Match 'Invoke-WebRequest'
     }
+
+    It 'lets the installed entry script discover its packaged program root' {
+        $entrySource = Get-Content (Join-Path $RepoRoot 'companion\Start-CodexQuotaMonitor.ps1') -Raw
+
+        $entrySource | Should -Match 'installer-manifest\.json'
+        $entrySource | Should -Match '\$runtimeArguments\[''ProgramRoot''\]'
+    }
 }
