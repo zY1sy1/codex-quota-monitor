@@ -27,14 +27,14 @@ DefaultDirName={localappdata}\Programs\CodexQuotaMonitor
 DefaultGroupName=Codex Quota Monitor
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=none
+PrivilegesRequiredOverridesAllowed=
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.22000
 VersionInfoVersion={#NumericVersion}
 VersionInfoDescription={#ProductName} Setup
 VersionInfoProductName={#ProductName}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoProductVersion={#NumericVersion}
 SetupIconFile={#SourceRoot}\assets\CodexQuotaMonitor.ico
 UninstallDisplayIcon={app}\assets\CodexQuotaMonitor.ico
 OutputDir={#OutputDir}
@@ -176,14 +176,14 @@ begin
     ' -LocalAppData ' + QuoteArgument(ExpandConstant('{localappdata}')) +
     ' -Startup ' + QuoteArgument(ExpandConstant('{userstartup}')) +
     ' -PwshPath ' + QuoteArgument(PwshPath);
-  if not IsTaskSelected('startup') then
+  if not WizardIsTaskSelected('startup') then
     Parameters := Parameters + ' -DisableStartup';
 
   if (not RunPowerShellScript(PwshPath, ScriptPath, Parameters, ResultCode)) or
      (ResultCode <> 0) then
     RaiseException('Codex Quota Monitor failed its post-install validation.');
 
-  if not IsTaskSelected('launchafterinstall') then
+  if not WizardIsTaskSelected('launchafterinstall') then
   begin
     ScriptPath := ExpandConstant('{app}\installer\Stop-Package.ps1');
     Parameters := '-ProgramRoot ' + QuoteArgument(ExpandConstant('{app}')) +

@@ -32,7 +32,7 @@ $iss = Get-Content -LiteralPath (Join-Path $repoRoot 'installer\CodexQuotaMonito
 foreach ($pattern in @(
         'AppId=\{\{7B0B5FCB-62F5-4D3C-AF28-0EE1CA930D47\}',
         'PrivilegesRequired=lowest',
-        'PrivilegesRequiredOverridesAllowed=none',
+        'PrivilegesRequiredOverridesAllowed=\s*(?:\r?\n)',
         'ArchitecturesAllowed=x64compatible',
         'PrepareToInstall',
         'CurStepChanged',
