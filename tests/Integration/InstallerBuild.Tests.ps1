@@ -72,4 +72,20 @@ Describe 'Windows installer build pipeline' {
                 -StandardPaths @() } |
             Should -Throw '*Inno Setup 6 compiler*'
     }
+
+    It 'selects one executable when command discovery returns multiple cargo shims' {
+        Test-Path -LiteralPath $BuildScript -PathType Leaf | Should -BeTrue
+        if (-not (Test-Path -LiteralPath $BuildScript -PathType Leaf)) { return }
+        . $BuildScript
+        $exePath = Join-Path $TestDrive 'cargo.exe'
+        $cmdPath = Join-Path $TestDrive 'cargo.cmd'
+        $null = New-Item -ItemType File -Path $exePath, $cmdPath
+        $commands = @(
+            [pscustomobject]@{ Source = $cmdPath }
+            [pscustomobject]@{ Source = $exePath }
+        )
+
+        Select-BuildCommandPath -Name 'Cargo' -Commands $commands |
+            Should -BeExactly $exePath
+    }
 }

@@ -112,6 +112,31 @@ function Resolve-InnoCompiler {
     )
 }
 
+function Select-BuildCommandPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [AllowEmptyCollection()][object[]]$Commands
+    )
+
+    $paths = @($Commands | ForEach-Object {
+            if ($null -ne $_ -and
+                $null -ne $_.PSObject.Properties['Source'] -and
+                -not [string]::IsNullOrWhiteSpace([string]$_.Source) -and
+                (Test-Path -LiteralPath ([string]$_.Source) -PathType Leaf)) {
+                [IO.Path]::GetFullPath([string]$_.Source)
+            }
+        })
+    $selected = $paths |
+        Sort-Object @{ Expression = { if ([IO.Path]::GetExtension($_) -ieq '.exe') { 0 } else { 1 } } },
+            @{ Expression = { $_ } } |
+        Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace([string]$selected)) {
+        throw [PlatformNotSupportedException]::new("$Name is required for this build.")
+    }
+    return [string]$selected
+}
+
 function Write-InstallerHashFile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$SetupPath)
@@ -197,16 +222,15 @@ if (-not $SkipRustTests) {
     if ($LASTEXITCODE -ne 0) {
         throw [InvalidOperationException]::new('The packaged relay host verification failed.')
     }
-    $cargo = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -eq $cargo) {
-        throw [PlatformNotSupportedException]::new('Cargo is required unless -SkipRustTests is supplied.')
-    }
+    $cargoPath = Select-BuildCommandPath `
+        -Name 'Cargo' `
+        -Commands @(Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue)
     $cargoManifest = Join-Path $repoRoot 'sidecar\relay-quota-host\Cargo.toml'
-    & $cargo.Source fmt --manifest-path $cargoManifest -- --check
+    & $cargoPath fmt --manifest-path $cargoManifest -- --check
     if ($LASTEXITCODE -ne 0) { throw 'cargo fmt failed.' }
-    & $cargo.Source clippy --manifest-path $cargoManifest --all-targets --locked -- -D warnings
+    & $cargoPath clippy --manifest-path $cargoManifest --all-targets --locked -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw 'cargo clippy failed.' }
-    & $cargo.Source test --manifest-path $cargoManifest --locked
+    & $cargoPath test --manifest-path $cargoManifest --locked
     if ($LASTEXITCODE -ne 0) { throw 'cargo test failed.' }
 }
 
