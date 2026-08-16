@@ -11,8 +11,8 @@ Codex Quota Monitor 是一个面向 Windows 当前用户的个人 Codex 插件�
 
 ## 系统要求
 
-- Windows 桌面环境；当前版本以 Windows 11 为目标；
-- PowerShell 7.4 或更高版本，可通过 `pwsh` 启动；
+- Windows 桌面环境；标准安装包以 Windows 11 x64 为目标；
+- 使用仓库脚本安装时需要 PowerShell 7.4 或更高版本；标准安装包已内置私有 PowerShell 7.6.4；
 - 当前 Windows 用户可以启动已安装的 Codex。
 
 若只使用 API key、Amazon Bedrock，或者 Codex 尚未登录 ChatGPT，程序仍可运行并报告状态，但不会显示 ChatGPT 订阅额度。
@@ -28,6 +28,16 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 安装程序会验证 PowerShell 7.4 与 Windows 桌面组件，将运行文件复制到当前用户的 `%LOCALAPPDATA%\CodexQuotaMonitor\app`，按已保存的设置创建开机启动快捷方式，然后启动悬浮窗并等待运行状态文件。重复执行安装命令是安全的；已保存的窗口设置和日志不会被安装文件覆盖。
 
 安装与运行不需要管理员权限，不会创建 Windows 服务、计划任务或机器级配置。
+
+### 分享给其他 Windows 用户
+
+把 `CodexQuotaMonitor-Setup-<version>-x64.exe` 发给对方即可。接收者双击安装，选择桌面快捷方式、开机启动和安装后启动选项；整个过程无需命令行、无需管理员权限，也不要求对方预先安装 PowerShell。安装包自带独立的 PowerShell 7.6.4 x64，不会修改系统 PowerShell、`PATH` 或执行策略。
+
+Codex 本身仍是外部前置条件：接收者需要自行安装 Codex，并使用自己的账户登录。安装包不包含构建电脑上的账号、Token、中转站凭据、设置、缓存或日志。未安装或未登录 Codex 不会阻止程序文件安装，但额度状态会提示相应原因。
+
+当前本地构建未签名。Windows SmartScreen 可能显示 `Unknown publisher`（未知发布者）；接收者应确认文件来源和随附 SHA-256 后再选择继续。重复运行更新版本的安装包会执行升级，并保留当前用户的数据、日志、窗口偏好和加密的中转站配置。
+
+从“已安装的应用”卸载时会询问是否保留个人设置和日志，默认保留数据以便以后重装；选择完全删除时才会移除 `%LOCALAPPDATA%\CodexQuotaMonitor\data` 和 `logs`。安装包和开发者构建方法详见 `installer/README.md`。
 
 ## 使用悬浮窗
 
@@ -183,6 +193,7 @@ pwsh -NoProfile -File .\scripts\Set-CodexQuotaMonitorShortcutIcon.ps1
 | 路径 | 内容 |
 | --- | --- |
 | `%LOCALAPPDATA%\CodexQuotaMonitor\app` | 已安装的 PowerShell/WPF 运行文件 |
+| `%LOCALAPPDATA%\Programs\CodexQuotaMonitor` | 标准安装包的程序文件、私有 PowerShell 运行时和卸载器 |
 | `%LOCALAPPDATA%\CodexQuotaMonitor\data\settings.json` | 窗口位置、置顶、显示/隐藏和开机启动偏好 |
 | `%LOCALAPPDATA%\CodexQuotaMonitor\data\health.json` | 经过约束的运行状态、额度窗口数量、更新时间和错误分类 |
 | `%LOCALAPPDATA%\CodexQuotaMonitor\logs\monitor.log` | 当前结构化运行日志 |

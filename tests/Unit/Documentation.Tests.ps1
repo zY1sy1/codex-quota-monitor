@@ -57,3 +57,32 @@ Describe 'generic relay provider documentation' {
         $migration | Should -Match '没有可用的余额接口'
     }
 }
+
+Describe 'Windows installer documentation' {
+    It 'documents recipient installation, upgrade, uninstall, and build behavior' {
+        $readmePath = Join-Path $script:RepoRoot 'README.md'
+        $installerReadmePath = Join-Path $script:RepoRoot 'installer\README.md'
+        Test-Path -LiteralPath $installerReadmePath -PathType Leaf | Should -BeTrue
+
+        $documents = @(
+            (Get-Content -LiteralPath $readmePath -Raw)
+            (Get-Content -LiteralPath $installerReadmePath -Raw)
+        ) -join "`n"
+        foreach ($pattern in @(
+                'CodexQuotaMonitor-Setup-<version>-x64\.exe',
+                'Windows 11 x64',
+                'PowerShell 7\.6\.4',
+                '不需要管理员|无需管理员',
+                'SmartScreen',
+                'Unknown publisher|未知发布者',
+                'Codex.*安装.*登录|安装.*Codex.*登录',
+                '升级.*保留|保留.*升级',
+                '保留.*数据|数据.*保留',
+                'Build-WindowsInstaller\.ps1 -Configuration Development',
+                'outputs\\installer'
+            )) {
+            $documents | Should -Match $pattern
+        }
+        $documents | Should -Match '不包含.*凭据|不会.*打包.*凭据'
+    }
+}
