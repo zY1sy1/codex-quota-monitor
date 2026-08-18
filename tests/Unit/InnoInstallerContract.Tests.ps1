@@ -23,6 +23,7 @@ Describe 'Inno Setup installer contract' {
 
         $source | Should -Match 'PrepareToInstall'
         $source | Should -Match 'Stop-Package\.ps1'
+        $source | Should -Match "ExtractTemporaryFile\('Stop-Package\.ps1'\)"
         $source | Should -Match 'Install-Package\.ps1'
         $source | Should -Match 'Prepare-Uninstall\.ps1'
         $source | Should -Match 'CurStepChanged'

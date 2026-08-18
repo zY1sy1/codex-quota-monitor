@@ -140,8 +140,8 @@ begin
     exit;
   end;
 
-  ExtractTemporaryFile('installer\Stop-Package.ps1');
-  StopScript := ExpandConstant('{tmp}\installer\Stop-Package.ps1');
+  ExtractTemporaryFile('Stop-Package.ps1');
+  StopScript := ExpandConstant('{tmp}\Stop-Package.ps1');
   Parameters := '-ProgramRoot ' + QuoteArgument(ProgramRoot) +
     ' -LocalAppData ' + QuoteArgument(ExpandConstant('{localappdata}')) +
     ' -Startup ' + QuoteArgument(ExpandConstant('{userstartup}')) +
