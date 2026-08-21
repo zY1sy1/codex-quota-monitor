@@ -38,6 +38,7 @@ BeforeAll {
         param(
             [string]$Key = 'codex|primary',
             [string]$Label = '5 小时额度',
+            [string]$SourceLabel = 'Codex 官方',
             [string]$RemainingText = '74.5%',
             [AllowNull()][object]$ProgressValue = 74.5,
             [string]$CountdownText = '04:59:59',
@@ -46,6 +47,7 @@ BeforeAll {
 
         [pscustomobject][ordered]@{
             Key = $Key
+            SourceLabel = $SourceLabel
             Label = $Label
             RemainingText = $RemainingText
             ProgressValue = $ProgressValue
@@ -80,13 +82,13 @@ Describe 'WPF floating window composition' {
         $window.Background.ToString() | Should -BeExactly '#00FFFFFF'
         $window.Width | Should -Be 420
         $window.SizeToContent | Should -Be ([Windows.SizeToContent]::Height)
-        $window.MinHeight | Should -Be 240
+        $window.MinHeight | Should -Be 136
         $window.Topmost | Should -BeTrue
         $window.ShowInTaskbar | Should -BeFalse
 
         foreach ($name in @(
             'RootBorder', 'HeaderDragArea', 'ConnectionDot', 'TitleText', 'PinButton',
-            'ThemeButton', 'ModeButton', 'LayoutButton', 'HideButton', 'CloseButton',
+            'ThemeButton', 'ModeButton', 'LayoutButton', 'RefreshButton', 'HideButton', 'CloseButton',
             'OverviewPanel', 'TabsPanel', 'OfficialRows', 'RelayRows',
             'OfficialTabRows', 'RelayTabRows', 'OfficialTabButton', 'RelayTabButton',
             'OfficialExpander', 'RelayExpander', 'FreshnessText'
@@ -116,7 +118,7 @@ Describe 'WPF floating window composition' {
         $window.Tag | Should -BeExactly 'Dark'
 
         foreach ($buttonName in @(
-            'PinButton', 'ThemeButton', 'ModeButton', 'LayoutButton', 'HideButton', 'CloseButton'
+            'PinButton', 'ThemeButton', 'ModeButton', 'LayoutButton', 'RefreshButton', 'HideButton', 'CloseButton'
         )) {
             $button = $View.Controls[$buttonName]
             $button | Should -BeOfType ([Windows.Controls.Button])
@@ -126,6 +128,11 @@ Describe 'WPF floating window composition' {
             [string]$button.ToolTip | Should -Not -BeNullOrEmpty
             [Windows.Automation.AutomationProperties]::GetName($button) | Should -Not -BeNullOrEmpty
         }
+        $View.Controls.RefreshButton.Content | Should -BeExactly '↻'
+        [string]$View.Controls.RefreshButton.ToolTip | Should -BeExactly '立即刷新'
+        [Windows.Automation.AutomationProperties]::GetName($View.Controls.RefreshButton) |
+            Should -BeExactly '立即刷新官方和中转站额度'
+        [Windows.Controls.Grid]::GetColumn($View.Controls.RefreshButton) | Should -Be 6
         [Windows.Automation.AutomationProperties]::GetName($View.Controls.ConnectionDot) | Should -Match '连接状态'
 
         $exclusive = [IO.File]::Open($XamlPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -317,8 +324,9 @@ Describe 'WPF floating window composition' {
         $focusButton = @(Get-TestDescendant -Root $card -Type ([Windows.Controls.Button]) -Tag 'QuotaFocus')[0]
         $focusButton | Should -Not -BeNullOrEmpty
         $focusButton.Focusable | Should -BeTrue
-        [string]$focusButton.ToolTip | Should -Match '取消聚焦'
-        [Windows.Automation.AutomationProperties]::GetName($focusButton) | Should -Match '取消聚焦'
+         [string]$focusButton.ToolTip | Should -BeExactly '取消迷你模式固定显示'
+         [Windows.Automation.AutomationProperties]::GetName($focusButton) |
+             Should -BeExactly '取消迷你模式固定显示'
 
         $focusButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         @($focused) | Should -Be @('official|selected')
@@ -405,6 +413,7 @@ Describe 'WPF floating window composition' {
             -OnThemeRequested { $calls.Add('theme') } `
             -OnModeRequested { $calls.Add('mode') } `
             -OnLayoutRequested { $calls.Add('layout') } `
+            -OnRefreshRequested { $calls.Add('refresh') } `
             -OnHide { $calls.Add('hide') } `
             -OnCloseRequested { $calls.Add('close') }
 
@@ -419,11 +428,12 @@ Describe 'WPF floating window composition' {
         $View.Controls.ThemeButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $View.Controls.ModeButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $View.Controls.LayoutButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.RefreshButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $View.Controls.HideButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $View.Controls.CloseButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
 
         @($calls) | Should -Be @(
-            'drag-action', 'on-drag', 'toggle', 'theme', 'mode', 'layout', 'hide', 'close'
+            'drag-action', 'on-drag', 'toggle', 'theme', 'mode', 'layout', 'refresh', 'hide', 'close'
         )
         $script:dragPlacement | Should -Not -BeNullOrEmpty
         @($script:dragPlacement.PSObject.Properties.Name) | Should -Be @('Left', 'Top', 'Topmost', 'Visible')
@@ -439,6 +449,7 @@ Describe 'WPF floating window composition' {
             -OnThemeRequested { $calls.Add('new-theme') } `
             -OnModeRequested { $calls.Add('new-mode') } `
             -OnLayoutRequested { $calls.Add('new-layout') } `
+            -OnRefreshRequested { $calls.Add('new-refresh') } `
             -OnFocusRequested { param($key) $calls.Add("new-focus:$key") } `
             -OnHide { $calls.Add('new-hide') } `
             -OnCloseRequested { $calls.Add('new-close') }
@@ -447,15 +458,45 @@ Describe 'WPF floating window composition' {
         @($calls) | Should -Be @('new-hide')
         @($View.State.Callbacks.PSObject.Properties.Name) | Should -Be @(
             'OnDrag', 'OnToggleTopmost', 'OnHide', 'OnCloseRequested'
-            'OnThemeRequested', 'OnModeRequested', 'OnLayoutRequested', 'OnFocusRequested'
+            'OnThemeRequested', 'OnModeRequested', 'OnLayoutRequested', 'OnRefreshRequested', 'OnFocusRequested'
         )
 
         & $View.Dispose
         $View.State.Callbacks | Should -BeNullOrEmpty
         $before = $calls.Count
         $View.Controls.HideButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.RefreshButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $calls.Count | Should -Be $before
         $script:View = $null
+    }
+
+    It 'shrinks when both overview groups are collapsed and restores natural height' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official')) `
+            -RelayRows @((New-TestPresentationRow -Key 'relay' -SourceLabel 'Wakaka' -Label '账户余额'))
+
+        $size = [Windows.Size]::new(420, [double]::PositiveInfinity)
+        $View.Controls.RootBorder.Measure($size)
+        $expandedHeight = $View.Controls.RootBorder.DesiredSize.Height
+
+        $View.Controls.OfficialExpander.IsExpanded = $false
+        $View.Controls.RelayExpander.IsExpanded = $false
+        $View.Controls.RootBorder.InvalidateMeasure()
+        $View.Controls.RootBorder.UpdateLayout()
+        $View.Controls.RootBorder.Measure($size)
+        $collapsedHeight = $View.Controls.RootBorder.DesiredSize.Height
+
+        $collapsedHeight | Should -BeLessThan $expandedHeight
+        $View.Window.MinHeight | Should -Be 136
+        $View.Controls.OfficialExpander.IsExpanded = $true
+        $View.Controls.RootBorder.InvalidateMeasure()
+        $View.Controls.RootBorder.UpdateLayout()
+        $View.Controls.RootBorder.Measure($size)
+        $View.Controls.RootBorder.DesiredSize.Height | Should -BeGreaterThan $collapsedHeight
+
+        $scroll = @(Get-TestDescendant -Root $View.Controls.RootBorder -Type ([Windows.Controls.ScrollViewer]))[0]
+        $scroll.MaxHeight | Should -BeLessOrEqual 560
     }
 
     It 'cancels ordinary closing, permits explicit exit, and disposes idempotently' {

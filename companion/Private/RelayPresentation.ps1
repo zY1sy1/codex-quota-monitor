@@ -1,6 +1,10 @@
 function Format-RelayPresentationNumber {
-    param([Parameter(Mandatory)][double]$Value)
-    return $Value.ToString('0.########', [Globalization.CultureInfo]::InvariantCulture)
+    param(
+        [Parameter(Mandatory)][double]$Value,
+        [AllowNull()][string]$Unit
+    )
+    $format = if ($Unit -match '^(USD|CNY)$') { '0.00' } else { '0.########' }
+    return $Value.ToString($format, [Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Format-RelayPresentationAmount {
@@ -8,7 +12,7 @@ function Format-RelayPresentationAmount {
         [Parameter(Mandatory)][double]$Value,
         [AllowNull()][string]$Unit
     )
-    $number = Format-RelayPresentationNumber $Value
+    $number = Format-RelayPresentationNumber -Value $Value -Unit $Unit
     switch -Regex ($Unit) {
         '^USD$' { return "`$$number USD" }
         '^CNY$' { return "¥$number CNY" }
@@ -28,8 +32,8 @@ function Format-RelayPresentationRatio {
         [AllowNull()][string]$Unit,
         [switch]$Used
     )
-    $firstText = Format-RelayPresentationNumber $First
-    $totalText = Format-RelayPresentationNumber $Total
+    $firstText = Format-RelayPresentationNumber -Value $First -Unit $Unit
+    $totalText = Format-RelayPresentationNumber -Value $Total -Unit $Unit
     $suffix = if ($Used) { ' used' } else { '' }
     switch -Regex ($Unit) {
         '^USD$' { return "`$$firstText / `$$totalText USD$suffix" }
@@ -50,6 +54,7 @@ function New-RelaySharedPresentationRow {
     param(
         [Parameter(Mandatory)][string]$Key,
         [Parameter(Mandatory)][string]$SourceId,
+        [Parameter(Mandatory)][string]$SourceLabel,
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)][string]$ValueText,
         [AllowEmptyString()][string]$SecondaryText = '',
@@ -62,6 +67,7 @@ function New-RelaySharedPresentationRow {
         Key = $Key
         SourceKind = 'Relay'
         SourceId = $SourceId
+        SourceLabel = $SourceLabel
         GroupLabel = '中转站额度'
         Label = $Label
         ValueText = $ValueText
@@ -127,7 +133,7 @@ function ConvertTo-RelayPresentationRow {
     $results = @(Get-ObjectField -InputObject $State -Name 'Results')
     if ($results.Count -eq 0) {
         New-RelaySharedPresentationRow -Key "relay:$providerId`:status" `
-            -SourceId $providerId -Label $providerName -ValueText '--' `
+            -SourceId $providerId -SourceLabel $providerName -Label $providerName -ValueText '--' `
             -SecondaryText (Get-RelayStatusSecondaryText -Status $status `
                 -ErrorCategory $errorCategory) `
             -IsStale $false -UpdatedAt $updatedAt -State $status
@@ -180,7 +186,7 @@ function ConvertTo-RelayPresentationRow {
             }
         }
         New-RelaySharedPresentationRow -Key "relay:$providerId`:$index" `
-            -SourceId $providerId -Label $label -ValueText $valueText `
+            -SourceId $providerId -SourceLabel $providerName -Label $label -ValueText $valueText `
             -SecondaryText $secondary -ProgressValue $progress -IsStale $isStale `
             -UpdatedAt $updatedAt -State $status
     }
@@ -188,10 +194,17 @@ function ConvertTo-RelayPresentationRow {
 
 function Copy-MonitorPresentationRow {
     param([Parameter(Mandatory)][object]$Row)
+    $sourceKind = [string](Get-ObjectField -InputObject $Row -Name 'SourceKind')
+    $sourceId = [string](Get-ObjectField -InputObject $Row -Name 'SourceId')
+    $sourceLabel = [string](Get-ObjectField -InputObject $Row -Name 'SourceLabel')
+    if ([string]::IsNullOrWhiteSpace($sourceLabel)) {
+        $sourceLabel = if ($sourceKind -eq 'Official') { 'Codex 官方' } else { $sourceId }
+    }
     [pscustomobject][ordered]@{
         Key = [string](Get-ObjectField -InputObject $Row -Name 'Key')
-        SourceKind = [string](Get-ObjectField -InputObject $Row -Name 'SourceKind')
-        SourceId = [string](Get-ObjectField -InputObject $Row -Name 'SourceId')
+        SourceKind = $sourceKind
+        SourceId = $sourceId
+        SourceLabel = $sourceLabel
         GroupLabel = [string](Get-ObjectField -InputObject $Row -Name 'GroupLabel')
         Label = [string](Get-ObjectField -InputObject $Row -Name 'Label')
         ValueText = [string](Get-ObjectField -InputObject $Row -Name 'ValueText')
@@ -251,6 +264,7 @@ function Get-CompactFocusRow {
                 return $row
             }
         }
+        return $null
     }
     $candidates = [Collections.Generic.List[object]]::new()
     foreach ($row in @($Rows)) {

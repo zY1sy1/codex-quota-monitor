@@ -21,6 +21,7 @@ BeforeAll {
     function New-TestOrbRow {
         param(
             [string]$Key = 'official:weekly',
+            [string]$SourceLabel = 'Codex 官方',
             [string]$Label = '周额度',
             [string]$ValueText = '74%',
             [AllowNull()][object]$ProgressValue = 74,
@@ -32,6 +33,7 @@ BeforeAll {
             Key = $Key
             SourceKind = 'Official'
             SourceId = 'codex'
+            SourceLabel = $SourceLabel
             GroupLabel = 'Codex 官方额度'
             Label = $Label
             ValueText = $ValueText
@@ -157,7 +159,8 @@ Describe 'quota orb composition' {
         It 'renders a pinned absolute wallet without fabricating an arc' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
             $wallet = New-TestOrbRow -Key 'relay:wakaka:wallet' -Label '账户余额' `
-                -ValueText '$18.42 USD' -ProgressValue $null -ResetTime '最近更新：刚刚'
+                -SourceLabel 'Wakaka' -ValueText '$18.42 USD' -ProgressValue $null `
+                -ResetTime '最近更新：刚刚'
 
             & $OrbView.RenderFocus -Row $wallet -PinnedKey 'relay:wakaka:wallet'
 
@@ -165,7 +168,7 @@ Describe 'quota orb composition' {
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.ValueText.Text | Should -BeExactly '$18.42 USD'
-            $OrbView.Controls.SourceText.Text | Should -BeExactly '账户余额'
+            $OrbView.Controls.SourceText.Text | Should -BeExactly 'Wakaka · 账户余额'
         }
 
         It 'renders an em dash for an unpinned absolute wallet' {
@@ -181,6 +184,16 @@ Describe 'quota orb composition' {
             $OrbView.Controls.MetricText.Text | Should -BeExactly '—'
         }
 
+        It 'shows a stable unavailable state for a missing manually pinned row' {
+            $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
+
+            & $OrbView.RenderFocus -Row $null -PinnedKey 'relay:missing'
+
+            $OrbView.Controls.MetricText.Text | Should -BeExactly '—'
+            $OrbView.Controls.SourceText.Text | Should -BeExactly '所选额度暂不可用'
+            $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        }
+
         It 'builds a safe hover tooltip with source value freshness and reset' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
             $row = New-TestOrbRow -IsStale $true
@@ -188,7 +201,7 @@ Describe 'quota orb composition' {
             & $OrbView.RenderFocus -Row $row
 
             $tooltip = [string]$OrbView.Controls.RootBorder.ToolTip
-            $tooltip | Should -Match 'Codex 官方额度.*周额度'
+            $tooltip | Should -Match 'Codex 官方 · 周额度'
             $tooltip | Should -Match '74%'
             $tooltip | Should -Match '数据已过期'
             $tooltip | Should -Match '重置时间：2026-08-08 14:50'

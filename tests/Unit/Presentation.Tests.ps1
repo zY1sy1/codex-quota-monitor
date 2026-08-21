@@ -276,6 +276,7 @@ Describe 'ConvertTo-OfficialMonitorPresentationRow' {
 
         $row.SourceKind | Should -BeExactly 'Official'
         $row.SourceId | Should -BeExactly 'codex'
+        $row.SourceLabel | Should -BeExactly 'Codex 官方'
         $row.ValueText | Should -BeExactly '74.5%'
         $row.Countdown | Should -BeExactly '05:00:00'
         $row.ResetTime | Should -BeExactly '重置时间：2026-08-01 13:00'

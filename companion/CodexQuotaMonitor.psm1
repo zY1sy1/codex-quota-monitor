@@ -1002,9 +1002,16 @@ function Invoke-CodexQuotaMonitorRuntime {
         $null = & $startRelayHost ([DateTimeOffset]::UtcNow)
         & $refreshCombinedPresentation ([DateTimeOffset]::UtcNow)
 
+        $requestRefreshAction = {
+            if ($null -ne $runtime.WindowView) {
+                & $runtime.WindowView.SetFreshness $false '正在刷新…'
+            }
+            $runtime.RefreshEvent.Set() | Out-Null
+        }.GetNewClosure()
+
         if (-not $Headless) {
             $newWindowFunction = $functions.NewWindow
-            $runtime.WindowView = & $newWindowFunction
+            $runtime.WindowView = & $newWindowFunction -OnRefreshRequested $requestRefreshAction
             $newCompactBarFunction = $functions.NewCompactBar
             $runtime.CompactBarView = & $newCompactBarFunction
             $newOrbFunction = $functions.NewOrb
@@ -1115,6 +1122,10 @@ function Invoke-CodexQuotaMonitorRuntime {
                 param([string]$ProviderId)
                 $runtime.RelayStates.Remove($ProviderId)
                 $null = $runtime.RelayManualRefreshPending.Remove($ProviderId)
+                if ($null -ne $runtime.DisplayController -and
+                    $null -ne $runtime.DisplayController.PSObject.Properties['ResetFocusForProvider']) {
+                    & $runtime.DisplayController.ResetFocusForProvider $ProviderId
+                }
                 $remainingCache = [object[]]@(
                     $runtime.RelayCache.Providers | Where-Object ProviderId -ne $ProviderId
                 )
@@ -1224,9 +1235,6 @@ function Invoke-CodexQuotaMonitorRuntime {
                     -Paths $paths `
                     -RuntimeScriptPath (Join-Path $PSScriptRoot 'Start-CodexQuotaMonitor.ps1')
             }.GetNewClosure()
-            $requestRefreshAction = {
-                $runtime.RefreshEvent.Set() | Out-Null
-            }.GetNewClosure()
             $openTargetAction = {
                 param([string]$Target)
                 Start-Process -FilePath $Target | Out-Null
@@ -1244,6 +1252,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -CompactBarView $runtime.CompactBarView `
                 -OrbView $runtime.OrbView `
                 -SaveSettings $saveSettingsAction `
+                -OnRefreshRequested $requestRefreshAction `
                 -DeferShow
 
             $newInteractionFunction = $functions.NewInteraction

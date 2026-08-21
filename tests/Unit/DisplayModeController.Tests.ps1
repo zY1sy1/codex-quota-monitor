@@ -18,6 +18,7 @@ BeforeAll {
             Key = $Key
             SourceKind = $SourceKind
             SourceId = $SourceKind.ToLowerInvariant()
+            SourceLabel = if ($SourceKind -eq 'Official') { 'Codex 官方' } else { 'Wakaka' }
             GroupLabel = if ($SourceKind -eq 'Official') { 'Codex 官方额度' } else { '中转站额度' }
             Label = $Key
             ValueText = "$ProgressValue%"
@@ -92,7 +93,7 @@ Describe 'display mode controller' {
                     param(
                         $OnDrag, $OnToggleTopmost, $OnHide, $OnCloseRequested,
                         $OnThemeRequested, $OnModeRequested, $OnLayoutRequested,
-                        $OnFocusRequested, $OnOpenFull
+                        $OnFocusRequested, $OnRefreshRequested, $OnOpenFull
                     )
                     $viewState.Callbacks = [pscustomobject][ordered]@{}
                     foreach ($entry in $PSBoundParameters.GetEnumerator()) {
@@ -162,9 +163,35 @@ Describe 'display mode controller' {
         }
         $Views.Full.State.Layout | Should -BeExactly 'Tabs'
         $Views.CompactBar.State.FocusRow.Key | Should -BeExactly 'official:weekly'
+        $Views.CompactBar.State.PinnedKey | Should -BeExactly 'official:weekly'
         $Views.Orb.State.PinnedKey | Should -BeExactly 'official:weekly'
         $Controller.State.Visible | Should -BeFalse
         $Settings.Window.Full.Visible | Should -BeFalse
+    }
+
+    It 'keeps a missing pinned key in both compact views without falling back' {
+        $rows = @(
+            New-TestDisplayRow -Key 'official:weekly' -SourceKind Official -ProgressValue 74
+            New-TestDisplayRow -Key 'relay:one' -SourceKind Relay -ProgressValue 31
+        )
+        & $Controller.SetSnapshot $rows
+        & $Controller.SetFocusKey 'relay:missing'
+
+        $Views.CompactBar.State.FocusRow | Should -BeNullOrEmpty
+        $Views.Orb.State.FocusRow | Should -BeNullOrEmpty
+        $Views.CompactBar.State.PinnedKey | Should -BeExactly 'relay:missing'
+        $Views.Orb.State.PinnedKey | Should -BeExactly 'relay:missing'
+    }
+
+    It 'resets a deleted relay focus key to Auto and persists once' {
+        & $Controller.SetFocusKey 'relay:wkk:0'
+        $script:SaveCalls = 0
+
+        & $Controller.ResetFocusForProvider 'wkk'
+
+        $Controller.State.FocusKey | Should -BeExactly 'Auto'
+        $Settings.Compact.FocusMetric | Should -BeExactly 'Auto'
+        $script:SaveCalls | Should -Be 1
     }
 
     It 'opens full from a compact view without requesting a new snapshot' {

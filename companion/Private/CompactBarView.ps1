@@ -292,24 +292,53 @@ function New-CompactBarView {
     $window.Add_Closing($state.Delegates.Closing)
 
     $renderFocus = {
-        param([Parameter(Position = 0)][AllowNull()][object]$Row)
+        param(
+            [Parameter(Position = 0)][AllowNull()][object]$Row,
+            [Parameter(Position = 1)][AllowNull()][string]$PinnedKey
+        )
         if ($state.Disposed) { return }
         $state.FocusRow = $Row
         if ($null -eq $Row) {
-            $state.Controls.MetricLabel.Text = '暂无可比较额度'
+            $state.Controls.MetricLabel.Text = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
+                '暂无可比较额度'
+            }
+            else {
+                '所选额度暂不可用'
+            }
             $state.Controls.MetricValue.Text = '—'
             $state.Controls.CountdownText.Text = ''
             $state.Controls.ResetTimeText.Text = ''
+            $state.Controls.RootBorder.ToolTip = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
+                $null
+            }
+            else {
+                '所选额度暂不可用'
+            }
             $state.ProgressValue = $null
             $state.Controls.ProgressTrack.Visibility = [Windows.Visibility]::Collapsed
             & $updateProgress
             return
         }
 
-        $state.Controls.MetricLabel.Text = & $state.GetPresentationText $Row @('Label')
-        $state.Controls.MetricValue.Text = & $state.GetPresentationText $Row @('ValueText', 'RemainingText')
-        $state.Controls.CountdownText.Text = & $state.GetPresentationText $Row @('Countdown', 'CountdownText')
-        $state.Controls.ResetTimeText.Text = & $state.GetPresentationText $Row @('ResetTime', 'ResetTimeText')
+        $sourceLabel = & $state.GetPresentationText $Row @('SourceLabel')
+        $label = & $state.GetPresentationText $Row @('Label')
+        $displayLabel = if (-not [string]::IsNullOrWhiteSpace($sourceLabel) -and
+            -not [string]::IsNullOrWhiteSpace($label)) {
+            "$sourceLabel · $label"
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($label)) {
+            $label
+        }
+        else {
+            $sourceLabel
+        }
+        $valueText = & $state.GetPresentationText $Row @('ValueText', 'RemainingText')
+        $countdownText = & $state.GetPresentationText $Row @('Countdown', 'CountdownText')
+        $resetTimeText = & $state.GetPresentationText $Row @('ResetTime', 'ResetTimeText')
+        $state.Controls.MetricLabel.Text = $displayLabel
+        $state.Controls.MetricValue.Text = $valueText
+        $state.Controls.CountdownText.Text = $countdownText
+        $state.Controls.ResetTimeText.Text = $resetTimeText
         $state.ProgressValue = & $state.ConvertProgress (
             & $state.GetPresentationField -Row $Row -Name 'ProgressValue'
         )
@@ -319,6 +348,15 @@ function New-CompactBarView {
         else {
             $state.Controls.ProgressTrack.Visibility = [Windows.Visibility]::Visible
         }
+        $freshness = if ([bool](& $state.GetPresentationField -Row $Row -Name 'IsStale')) {
+            '数据已过期'
+        }
+        else {
+            '数据正常'
+        }
+        $state.Controls.RootBorder.ToolTip = @(
+            $displayLabel, $valueText, $freshness, $countdownText, $resetTimeText
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Join-String -Separator "`n"
         & $updateProgress
     }.GetNewClosure()
 

@@ -155,7 +155,7 @@ function New-WpfQuotaCard {
     $focusButton.Focusable = $true
     $focusButton.Content = $(if ($selected) { '●' } else { '○' })
     $focusButton.Tag = 'QuotaFocus'
-    $focusButton.ToolTip = $(if ($selected) { '取消聚焦此额度' } else { '聚焦此额度' })
+    $focusButton.ToolTip = $(if ($selected) { '取消迷你模式固定显示' } else { '设为迷你模式显示项' })
     [Windows.Automation.AutomationProperties]::SetName($focusButton, [string]$focusButton.ToolTip)
     [Windows.Controls.Grid]::SetColumn($focusButton, 2)
 
@@ -280,6 +280,7 @@ function New-QuotaWindowView {
         [Parameter()][AllowNull()][scriptblock]$OnModeRequested,
         [Parameter()][AllowNull()][scriptblock]$OnLayoutRequested,
         [Parameter()][AllowNull()][scriptblock]$OnFocusRequested,
+        [Parameter()][AllowNull()][scriptblock]$OnRefreshRequested,
         [Parameter()][AllowNull()][scriptblock]$DragAction
     )
 
@@ -319,7 +320,7 @@ function New-QuotaWindowView {
 
     $controlNames = @(
         'RootBorder', 'HeaderDragArea', 'ConnectionDot', 'TitleText', 'PinButton',
-        'ThemeButton', 'ModeButton', 'LayoutButton', 'HideButton', 'CloseButton',
+        'ThemeButton', 'ModeButton', 'LayoutButton', 'RefreshButton', 'HideButton', 'CloseButton',
         'OverviewPanel', 'TabsPanel', 'OfficialRows', 'RelayRows',
         'OfficialTabRows', 'RelayTabRows', 'OfficialTabButton', 'RelayTabButton',
         'OfficialExpander', 'RelayExpander', 'FreshnessText'
@@ -369,6 +370,7 @@ function New-QuotaWindowView {
             OnModeRequested = $OnModeRequested
             OnLayoutRequested = $OnLayoutRequested
             OnFocusRequested = $OnFocusRequested
+            OnRefreshRequested = $OnRefreshRequested
         }
         DragAction = $DragAction
         CreateBrush = ${function:ConvertTo-WpfBrush}
@@ -404,6 +406,7 @@ function New-QuotaWindowView {
         @{ Name = 'ThemeClick'; Callback = 'OnThemeRequested' },
         @{ Name = 'ModeClick'; Callback = 'OnModeRequested' },
         @{ Name = 'LayoutClick'; Callback = 'OnLayoutRequested' },
+        @{ Name = 'RefreshClick'; Callback = 'OnRefreshRequested' },
         @{ Name = 'HideClick'; Callback = 'OnHide' },
         @{ Name = 'CloseClick'; Callback = 'OnCloseRequested' }
     )) {
@@ -472,6 +475,7 @@ function New-QuotaWindowView {
     $controls.ThemeButton.Add_Click($state.Delegates.ThemeClick)
     $controls.ModeButton.Add_Click($state.Delegates.ModeClick)
     $controls.LayoutButton.Add_Click($state.Delegates.LayoutClick)
+    $controls.RefreshButton.Add_Click($state.Delegates.RefreshClick)
     $controls.HideButton.Add_Click($state.Delegates.HideClick)
     $controls.CloseButton.Add_Click($state.Delegates.CloseClick)
     $controls.OfficialTabButton.Add_Click($state.Delegates.OfficialTabClick)
@@ -627,7 +631,8 @@ function New-QuotaWindowView {
             [Parameter()][AllowNull()][scriptblock]$OnThemeRequested,
             [Parameter()][AllowNull()][scriptblock]$OnModeRequested,
             [Parameter()][AllowNull()][scriptblock]$OnLayoutRequested,
-            [Parameter()][AllowNull()][scriptblock]$OnFocusRequested
+            [Parameter()][AllowNull()][scriptblock]$OnFocusRequested,
+            [Parameter()][AllowNull()][scriptblock]$OnRefreshRequested
         )
         if ($state.Disposed) { return }
         $state.Callbacks = [pscustomobject][ordered]@{
@@ -638,6 +643,7 @@ function New-QuotaWindowView {
             OnThemeRequested = $OnThemeRequested
             OnModeRequested = $OnModeRequested
             OnLayoutRequested = $OnLayoutRequested
+            OnRefreshRequested = $OnRefreshRequested
             OnFocusRequested = $OnFocusRequested
         }
     }.GetNewClosure()
@@ -656,6 +662,7 @@ function New-QuotaWindowView {
             $targetControls.ThemeButton.Remove_Click($delegates.ThemeClick)
             $targetControls.ModeButton.Remove_Click($delegates.ModeClick)
             $targetControls.LayoutButton.Remove_Click($delegates.LayoutClick)
+            $targetControls.RefreshButton.Remove_Click($delegates.RefreshClick)
             $targetControls.HideButton.Remove_Click($delegates.HideClick)
             $targetControls.CloseButton.Remove_Click($delegates.CloseClick)
             $targetControls.OfficialTabButton.Remove_Click($delegates.OfficialTabClick)

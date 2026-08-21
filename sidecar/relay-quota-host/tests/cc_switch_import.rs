@@ -104,6 +104,9 @@ fn create_cc_switch_fixture(path: &Path) {
 
 #[test]
 fn blocks_literal_credentials_without_blocking_placeholders() {
+    assert_eq!(classify_script(""), ImportStatus::CredentialDetected);
+    assert_eq!(classify_script("  \n\t"), ImportStatus::CredentialDetected);
+
     let blocked = [
         r#"({request:{url:'{{baseUrl}}/usage',headers:{Authorization:'Bearer sk-live-1234567890abcdef'}},extractor:r=>r})"#,
         r#"const apiKey = 'abcdef0123456789abcdef0123456789';"#,
@@ -164,6 +167,37 @@ fn reads_only_whitelisted_usage_fields() {
         before
     );
     fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn defaults_missing_optional_template_type_to_general() {
+    let path = unique_fixture_path("optional-template-type");
+    let connection = Connection::open(&path).expect("create optional template fixture");
+    create_schema(&connection);
+    insert_provider(
+        &connection,
+        "source-without-template",
+        "codex",
+        "without-template",
+        &serde_json::json!({
+            "usage_script": {
+                "enabled": true,
+                "language": "javascript",
+                "code": "({request:{url:'{{baseUrl}}/usage',method:'GET'},extractor:r=>r})",
+                "timeout": 10,
+                "autoQueryInterval": 10
+            }
+        })
+        .to_string(),
+    );
+    drop(connection);
+
+    let response = inspect_cc_switch_database(&path);
+
+    assert!(response.ok);
+    assert_eq!(response.providers.len(), 1);
+    assert_eq!(response.providers[0].template_type, "general");
+    fs::remove_file(path).expect("remove optional template fixture");
 }
 
 #[test]

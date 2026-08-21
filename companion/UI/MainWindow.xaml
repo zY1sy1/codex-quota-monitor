@@ -7,7 +7,7 @@
         Background="Transparent"
         Width="420"
         SizeToContent="Height"
-        MinHeight="240"
+        MinHeight="136"
         MaxHeight="720"
         Topmost="True"
         ShowInTaskbar="False"
@@ -81,6 +81,7 @@
                     <ColumnDefinition Width="30" />
                     <ColumnDefinition Width="30" />
                     <ColumnDefinition Width="30" />
+                    <ColumnDefinition Width="30" />
                 </Grid.ColumnDefinitions>
                 <Grid x:Name="HeaderDragArea"
                       Grid.Column="0"
@@ -116,9 +117,11 @@
                         Content="▣" ToolTip="切换显示模式" AutomationProperties.Name="切换显示模式" />
                 <Button x:Name="LayoutButton" Grid.Column="5" Style="{StaticResource FlatIconButton}"
                         Content="⇄" ToolTip="切换完整窗口布局" AutomationProperties.Name="切换完整窗口布局" />
-                <Button x:Name="HideButton" Grid.Column="6" Style="{StaticResource FlatIconButton}"
+                <Button x:Name="RefreshButton" Grid.Column="6" Style="{StaticResource FlatIconButton}"
+                        Content="↻" ToolTip="立即刷新" AutomationProperties.Name="立即刷新官方和中转站额度" />
+                <Button x:Name="HideButton" Grid.Column="7" Style="{StaticResource FlatIconButton}"
                         Content="_" ToolTip="隐藏悬浮窗" AutomationProperties.Name="隐藏悬浮窗" />
-                <Button x:Name="CloseButton" Grid.Column="7" Style="{StaticResource FlatIconButton}"
+                <Button x:Name="CloseButton" Grid.Column="8" Style="{StaticResource FlatIconButton}"
                         Content="×" ToolTip="关闭到系统托盘" AutomationProperties.Name="关闭到系统托盘" />
             </Grid>
 

@@ -32,6 +32,7 @@ Describe 'Codex quota monitor production composition' {
         $instancePrefix = 'Local\CodexQuotaMonitor.DesktopInitializer.' + [guid]::NewGuid().ToString('N')
         $pwsh = (Get-Process -Id $PID).Path
         $calls = [Collections.Generic.List[string]]::new()
+        $refreshCallbacks = [Collections.Generic.List[object]]::new()
         $relayCacheWrites = [Collections.Generic.List[object]]::new()
         $ccSwitchDiscoveries = [Collections.Generic.List[object]]::new()
         $relayImportLinkReads = [Collections.Generic.List[string]]::new()
@@ -137,7 +138,11 @@ Describe 'Codex quota monitor production composition' {
                 param($Path, $Cache)
                 $relayCacheWrites.Add($Cache) | Out-Null
             }.GetNewClosure()
-            NewWindow = { Write-Output -NoEnumerate $windowView }.GetNewClosure()
+            NewWindow = {
+                param([AllowNull()][scriptblock]$OnRefreshRequested)
+                $refreshCallbacks.Add($OnRefreshRequested) | Out-Null
+                Write-Output -NoEnumerate $windowView
+            }.GetNewClosure()
             NewCompactBar = { Write-Output -NoEnumerate $compactBarView }.GetNewClosure()
             NewOrb = { Write-Output -NoEnumerate $orbView }.GetNewClosure()
             NewTray = { param([switch]$Visible) Write-Output -NoEnumerate $trayView }.GetNewClosure()
@@ -173,10 +178,14 @@ Describe 'Codex quota monitor production composition' {
                 Write-Output -NoEnumerate $relayManagerController
             }.GetNewClosure()
             NewDisplay = {
-                param($Settings, $FullView, $CompactBarView, $OrbView, $SaveSettings, [switch]$DeferShow)
+                param(
+                    $Settings, $FullView, $CompactBarView, $OrbView, $SaveSettings,
+                    [AllowNull()][scriptblock]$OnRefreshRequested, [switch]$DeferShow
+                )
                 $FullView | Should -Be $windowView
                 $CompactBarView | Should -Be $compactBarView
                 $OrbView | Should -Be $orbView
+                $refreshCallbacks.Add($OnRefreshRequested) | Out-Null
                 $DeferShow | Should -BeTrue
                 $calls.Add('new-display') | Out-Null
                 Write-Output -NoEnumerate $displayController
@@ -195,6 +204,7 @@ Describe 'Codex quota monitor production composition' {
                     $LogDirectory,
                     $OnManageRelays
                 )
+                $refreshCallbacks.Add($RequestRefresh) | Out-Null
                 $DisplayController | Should -Be $displayController
                 $OnManageRelays | Should -BeOfType ([scriptblock])
                 & $OnManageRelays
@@ -245,6 +255,10 @@ Describe 'Codex quota monitor production composition' {
             )
         @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0
         @($calls | Where-Object { $_ -eq 'dispose-display' }).Count | Should -Be 1
+        $refreshCallbacks.Count | Should -Be 3
+        $refreshCallbacks[0] | Should -BeOfType ([scriptblock])
+        [object]::ReferenceEquals($refreshCallbacks[0], $refreshCallbacks[1]) | Should -BeTrue
+        [object]::ReferenceEquals($refreshCallbacks[1], $refreshCallbacks[2]) | Should -BeTrue
         @($calls | Where-Object { $_ -eq 'dispose-relay-manager-view' }).Count | Should -Be 0
         $ccSwitchDiscoveries.Count | Should -Be 1
         $ccSwitchDiscoveries[0].ExecutablePath | Should -BeExactly (

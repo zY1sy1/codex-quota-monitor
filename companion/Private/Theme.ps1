@@ -56,7 +56,7 @@ function Set-MonitorWindowTheme {
     $Controls.FreshnessText.Foreground = ConvertTo-MonitorThemeBrush $palette.TextSecondary
     $Controls.ConnectionDot.Background = ConvertTo-MonitorThemeBrush $palette.TextSecondary
     foreach ($name in @(
-        'PinButton', 'ThemeButton', 'ModeButton', 'LayoutButton', 'HideButton', 'CloseButton',
+        'PinButton', 'ThemeButton', 'ModeButton', 'LayoutButton', 'RefreshButton', 'HideButton', 'CloseButton',
         'OfficialTabButton', 'RelayTabButton'
     )) {
         if ($Controls.Contains($name)) {

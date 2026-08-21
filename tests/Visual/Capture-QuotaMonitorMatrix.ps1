@@ -28,10 +28,11 @@ function New-MatrixRow {
         [Parameter(Mandatory)][string]$Key,
         [Parameter(Mandatory)][string]$SourceKind,
         [Parameter(Mandatory)][string]$SourceId,
+        [Parameter(Mandatory)][string]$SourceLabel,
         [Parameter(Mandatory)][string]$GroupLabel,
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)][string]$ValueText,
-        [Parameter(Mandatory)][double]$ProgressValue,
+        [Parameter(Mandatory)][AllowNull()][object]$ProgressValue,
         [Parameter(Mandatory)][string]$Countdown,
         [Parameter(Mandatory)][string]$ResetTime,
         [string]$Unit = 'USD'
@@ -41,6 +42,7 @@ function New-MatrixRow {
         Key = $Key
         SourceKind = $SourceKind
         SourceId = $SourceId
+        SourceLabel = $SourceLabel
         GroupLabel = $GroupLabel
         Label = $Label
         RemainingText = $ValueText
@@ -60,21 +62,26 @@ function New-MatrixRow {
 }
 
 $officialRows = @(
-    New-MatrixRow -Key 'official:five-hour' -SourceKind Official -SourceId codex `
+New-MatrixRow -Key 'official:five-hour' -SourceKind Official -SourceId codex `
+        -SourceLabel 'Codex 官方' `
         -GroupLabel 'Codex 官方额度' -Label '5 小时额度' -ValueText '74%' `
         -ProgressValue 74 -Countdown '04:59:59' -ResetTime '重置时间：今天 18:00'
-    New-MatrixRow -Key 'official:weekly' -SourceKind Official -SourceId codex `
+New-MatrixRow -Key 'official:weekly' -SourceKind Official -SourceId codex `
+        -SourceLabel 'Codex 官方' `
         -GroupLabel 'Codex 官方额度' -Label '每周额度' -ValueText '41%' `
         -ProgressValue 41 -Countdown '2 天 04:12:00' -ResetTime '重置时间：周五 09:30'
 )
 $relayRows = @(
+    New-MatrixRow -Key 'relay:percent' -SourceKind Relay -SourceId fixture `
+        -SourceLabel 'Fixture Relay' `
+        -GroupLabel '中转站额度' -Label '模型调用额度' -ValueText '62%' `
+        -ProgressValue 62 -Countdown '03:20:00' -ResetTime '重置时间：今天 20:00'
     New-MatrixRow -Key 'relay:wallet' -SourceKind Relay -SourceId fixture `
-        -GroupLabel '中转站额度' -Label 'Fixture Relay' -ValueText '¥18.42 / ¥100' `
-        -ProgressValue 82 -Countdown '—' -ResetTime '更新时间：12:00' -Unit 'CNY'
+        -SourceLabel 'Fixture Relay' `
+        -GroupLabel '中转站额度' -Label '账户余额' -ValueText '¥18.42 / ¥100' `
+        -ProgressValue $null -Countdown '—' -ResetTime '更新时间：12:00' -Unit 'CNY'
 )
 $rows = @($officialRows + $relayRows)
-$pinnedKey = 'official:five-hour'
-$focusRow = $officialRows[0]
 
 function Save-QuotaMatrixVisual {
     param(
@@ -114,48 +121,92 @@ function Save-QuotaMatrixVisual {
 }
 
 function New-MatrixViews {
-    param([Parameter(Mandatory)][ValidateSet('Light', 'Dark')][string]$Theme)
+    param(
+        [Parameter(Mandatory)][ValidateSet('Light', 'Dark')][string]$Theme,
+        [Parameter(Mandatory)][ValidateSet('Official', 'RelayPercent', 'RelayWallet', 'Unavailable')][string]$Focus
+    )
+
+    $pinnedKey = switch ($Focus) {
+        'Official' { 'official:five-hour' }
+        'RelayPercent' { 'relay:percent' }
+        'RelayWallet' { 'relay:wallet' }
+        default { 'relay:missing' }
+    }
+    $focusRow = switch ($Focus) {
+        'Official' { $officialRows[0] }
+        'RelayPercent' { $relayRows[0] }
+        'RelayWallet' { $relayRows[1] }
+        default { $null }
+    }
     $full = New-QuotaWindowView -Theme $Theme -FullLayout Overview
     $compact = New-CompactBarView -Theme $Theme
     $orb = New-QuotaOrbView -Theme $Theme
     & $full.RenderGroups -OfficialRows $officialRows -RelayRows $relayRows -State $null -FocusKey $pinnedKey
-    & $compact.RenderFocus -Row $focusRow
+    & $compact.RenderFocus -Row $focusRow -PinnedKey $pinnedKey
     & $orb.RenderFocus -Row $focusRow -PinnedKey $pinnedKey
-    return [pscustomobject][ordered]@{ Full = $full; Compact = $compact; Orb = $orb }
+    return [pscustomobject][ordered]@{ Full = $full; Compact = $compact; Orb = $orb; Focus = $Focus }
 }
 
 $captured = [Collections.Generic.List[string]]::new()
 foreach ($theme in @('Light', 'Dark')) {
     foreach ($scale in @(1.0, 1.5)) {
         $dpiLabel = if ($scale -eq 1.0) { '100' } else { '150' }
-        $views = New-MatrixViews -Theme $theme
+        $baseViews = New-MatrixViews -Theme $theme -Focus Official
         try {
             foreach ($layout in @('Overview', 'Tabs')) {
-                & $views.Full.SetLayout $layout
+                & $baseViews.Full.SetLayout $layout
                 $name = "{0}-{1}-full-{2}.png" -f $theme.ToLowerInvariant(), $dpiLabel, $layout.ToLowerInvariant()
                 $path = Join-Path $OutputDirectory $name
-                Save-QuotaMatrixVisual -Window $views.Full.Window -Path $path -Scale $scale
+                Save-QuotaMatrixVisual -Window $baseViews.Full.Window -Path $path -Scale $scale
                 $captured.Add($path)
             }
-            $name = "{0}-{1}-compact-bar.png" -f $theme.ToLowerInvariant(), $dpiLabel
+            $name = "{0}-{1}-compact-official.png" -f $theme.ToLowerInvariant(), $dpiLabel
             $path = Join-Path $OutputDirectory $name
-            Save-QuotaMatrixVisual -Window $views.Compact.Window -Path $path -Scale $scale
+            Save-QuotaMatrixVisual -Window $baseViews.Compact.Window -Path $path -Scale $scale
             $captured.Add($path)
 
-            $name = "{0}-{1}-orb.png" -f $theme.ToLowerInvariant(), $dpiLabel
+            $name = "{0}-{1}-orb-official.png" -f $theme.ToLowerInvariant(), $dpiLabel
             $path = Join-Path $OutputDirectory $name
-            Save-QuotaMatrixVisual -Window $views.Orb.Window -Path $path -Scale $scale
+            Save-QuotaMatrixVisual -Window $baseViews.Orb.Window -Path $path -Scale $scale
+            $captured.Add($path)
+
+            & $baseViews.Full.SetLayout Overview
+            $baseViews.Full.Controls.OfficialExpander.IsExpanded = $false
+            $baseViews.Full.Controls.RelayExpander.IsExpanded = $false
+            $name = "{0}-{1}-full-collapsed.png" -f $theme.ToLowerInvariant(), $dpiLabel
+            $path = Join-Path $OutputDirectory $name
+            Save-QuotaMatrixVisual -Window $baseViews.Full.Window -Path $path -Scale $scale
             $captured.Add($path)
         }
         finally {
-            foreach ($view in @($views.Full, $views.Compact, $views.Orb)) {
+            foreach ($view in @($baseViews.Full, $baseViews.Compact, $baseViews.Orb)) {
                 try { & $view.Dispose } catch {}
+            }
+        }
+
+        foreach ($focus in @('RelayPercent', 'RelayWallet', 'Unavailable')) {
+            $views = New-MatrixViews -Theme $theme -Focus $focus
+            try {
+                $name = "{0}-{1}-compact-{2}.png" -f $theme.ToLowerInvariant(), $dpiLabel, $focus.ToLowerInvariant()
+                $path = Join-Path $OutputDirectory $name
+                Save-QuotaMatrixVisual -Window $views.Compact.Window -Path $path -Scale $scale
+                $captured.Add($path)
+
+                $name = "{0}-{1}-orb-{2}.png" -f $theme.ToLowerInvariant(), $dpiLabel, $focus.ToLowerInvariant()
+                $path = Join-Path $OutputDirectory $name
+                Save-QuotaMatrixVisual -Window $views.Orb.Window -Path $path -Scale $scale
+                $captured.Add($path)
+            }
+            finally {
+                foreach ($view in @($views.Full, $views.Compact, $views.Orb)) {
+                    try { & $view.Dispose } catch {}
+                }
             }
         }
     }
 }
 
-if ($captured.Count -ne 16) {
-    throw "Expected 16 visual captures, created $($captured.Count)."
+if ($captured.Count -ne 44) {
+    throw "Expected 44 visual captures, created $($captured.Count)."
 }
 Write-Output ("Captured {0} deterministic quota-monitor images under {1}" -f $captured.Count, $OutputDirectory)

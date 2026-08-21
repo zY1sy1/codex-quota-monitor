@@ -121,7 +121,8 @@ pub fn classify_script(script: &str) -> ImportStatus {
         .filter_map(|captures| captures.get(1))
         .any(|value| !is_supported_placeholder(value.as_str()));
 
-    if script.len() > MAX_SCRIPT_BYTES
+    if script.trim().is_empty()
+        || script.len() > MAX_SCRIPT_BYTES
         || script
             .chars()
             .any(|value| value == '\u{7f}' || (value < ' ' && !matches!(value, '\r' | '\n' | '\t')))
@@ -286,7 +287,7 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, i64>(6)?,
-            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(7)?,
             row.get::<_, i64>(8)?,
         ))
     }) {
@@ -306,6 +307,7 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
                 }
             };
 
+        let template_type = template_type.unwrap_or_else(|| "general".to_owned());
         if !enabled
             || !valid_text(&id)
             || !valid_text(&app_type)

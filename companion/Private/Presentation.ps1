@@ -341,6 +341,7 @@ function ConvertTo-OfficialMonitorPresentationRow {
             Key = [string](Get-ObjectField -InputObject $Row -Name 'Key')
             SourceKind = 'Official'
             SourceId = $sourceId
+            SourceLabel = 'Codex 官方'
             GroupLabel = 'Codex 官方额度'
             Label = [string](Get-ObjectField -InputObject $Row -Name 'Label')
             ValueText = [string](Get-ObjectField -InputObject $Row -Name 'RemainingText')

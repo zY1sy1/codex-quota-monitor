@@ -59,6 +59,7 @@ BeforeAll {
             Key = $Key
             SourceKind = $SourceKind
             SourceId = if ($SourceKind -eq 'Official') { 'codex' } else { 'wkk' }
+            SourceLabel = if ($SourceKind -eq 'Official') { 'Codex 官方' } else { 'Wakaka' }
             GroupLabel = if ($SourceKind -eq 'Official') { 'Codex 官方额度' } else { '中转站额度' }
             Label = $Label
             ValueText = $ValueText
@@ -83,10 +84,11 @@ Describe 'relay presentation rows' {
         $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
 
         ($row.PSObject.Properties.Name -join ',') | Should -BeExactly `
-            'Key,SourceKind,SourceId,GroupLabel,Label,ValueText,SecondaryText,ProgressValue,Countdown,ResetTime,IsStale,UpdatedAt,State'
+            'Key,SourceKind,SourceId,SourceLabel,GroupLabel,Label,ValueText,SecondaryText,ProgressValue,Countdown,ResetTime,IsStale,UpdatedAt,State'
         $row.Key | Should -BeExactly 'relay:wkk:0'
         $row.SourceKind | Should -BeExactly 'Relay'
         $row.SourceId | Should -BeExactly 'wkk'
+        $row.SourceLabel | Should -BeExactly 'Wakaka'
         $row.GroupLabel | Should -BeExactly '中转站额度'
         $row.Label | Should -BeExactly 'Wallet'
         $row.ValueText | Should -BeExactly '$18.42 USD'
@@ -94,10 +96,10 @@ Describe 'relay presentation rows' {
         $row.State | Should -BeExactly 'Live'
     }
 
-    It 'formats CNY, request counts, and explicit zero without mixing units' -ForEach @(
-        @{ Remaining = [double]50; Unit = 'CNY'; Expected = '¥50 CNY' }
+    It 'formats currency with two decimals and keeps non-currency units compact' -ForEach @(
+        @{ Remaining = [double]50; Unit = 'CNY'; Expected = '¥50.00 CNY' }
         @{ Remaining = [double]120; Unit = 'requests'; Expected = '120 requests' }
-        @{ Remaining = [double]0; Unit = 'USD'; Expected = '$0 USD' }
+        @{ Remaining = [double]0; Unit = 'USD'; Expected = '$0.00 USD' }
     ) {
         $provider = [pscustomobject]@{ Id = 'p'; Name = 'Provider' }
         $state = New-TestRelayPresentationState -Results @(
@@ -109,6 +111,17 @@ Describe 'relay presentation rows' {
         $row.ValueText | Should -BeExactly $Expected
     }
 
+    It 'rounds currency for display while preserving the source value' {
+        $provider = [pscustomobject]@{ Id = 'p'; Name = 'Provider' }
+        $result = New-TestRelayPresentationResult -Remaining ([double]18.426) -Unit 'USD'
+        $state = New-TestRelayPresentationState -Results @($result)
+
+        $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
+
+        $row.ValueText | Should -BeExactly '$18.43 USD'
+        $result.Remaining | Should -Be 18.426
+    }
+
     It 'derives percentage from remaining over total and clamps only the progress display' {
         $provider = [pscustomobject]@{ Id = 'p'; Name = 'Provider' }
         $state = New-TestRelayPresentationState -Results @(
@@ -117,7 +130,7 @@ Describe 'relay presentation rows' {
 
         $row = @(ConvertTo-RelayPresentationRow -Provider $provider -State $state)[0]
 
-        $row.ValueText | Should -BeExactly '$150 / $100 USD'
+        $row.ValueText | Should -BeExactly '$150.00 / $100.00 USD'
         $row.ProgressValue | Should -Be 100
     }
 
@@ -231,8 +244,9 @@ Describe 'mixed source presentation selection' {
             'official:weekly', 'relay:two:0', 'relay:one:0'
         )
         ($rows[0].PSObject.Properties.Name -join ',') | Should -BeExactly `
-            'Key,SourceKind,SourceId,GroupLabel,Label,ValueText,SecondaryText,ProgressValue,Countdown,ResetTime,IsStale,UpdatedAt,State'
+            'Key,SourceKind,SourceId,SourceLabel,GroupLabel,Label,ValueText,SecondaryText,ProgressValue,Countdown,ResetTime,IsStale,UpdatedAt,State'
         $rows[0].SourceKind | Should -BeExactly 'Official'
+        $rows[0].SourceLabel | Should -BeExactly 'Codex 官方'
     }
 
     It 'chooses the lowest percentage automatically and honors an absolute pinned row' {
@@ -248,6 +262,18 @@ Describe 'mixed source presentation selection' {
         (Get-CompactFocusRow -Rows @($official80, $wallet) -PinnedKey $wallet.Key).Key |
             Should -BeExactly $wallet.Key
         Get-CompactFocusRow -Rows @($wallet) -PinnedKey $null | Should -BeNullOrEmpty
+    }
+
+    It 'does not fall back when a specific pinned key is missing or unusable' {
+        $available = New-TestSharedRow -Key 'relay:available' -SourceKind Relay `
+            -ProgressValue ([double]20) -ValueText '20%'
+        $missingKey = Get-CompactFocusRow -Rows @($available) -PinnedKey 'official:missing'
+        $missingKey | Should -BeNullOrEmpty
+
+        $invalid = New-TestSharedRow -Key 'official:invalid' -SourceKind Official `
+            -ProgressValue $null -ValueText '--%' -State AuthRequired
+        $invalidResult = Get-CompactFocusRow -Rows @($invalid, $available) -PinnedKey $invalid.Key
+        $invalidResult | Should -BeNullOrEmpty
     }
 
     It 'uses the worst comparable percentage and reports stale separately from severity' {

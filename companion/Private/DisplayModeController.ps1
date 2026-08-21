@@ -53,6 +53,7 @@ function New-MonitorDisplayModeController {
         [Parameter(Mandatory)][object]$CompactBarView,
         [Parameter(Mandatory)][object]$OrbView,
         [Parameter(Mandatory)][scriptblock]$SaveSettings,
+        [Parameter()][AllowNull()][scriptblock]$OnRefreshRequested,
         [switch]$DeferShow
     )
 
@@ -112,7 +113,7 @@ function New-MonitorDisplayModeController {
             -State $null -FocusKey $state.FocusKey
         $pinnedKey = if ($state.FocusKey -eq 'Auto') { $null } else { $state.FocusKey }
         $focus = & $getFocusRow -Rows $state.Snapshot -PinnedKey $pinnedKey
-        & $CompactBarView.RenderFocus -Row $focus
+        & $CompactBarView.RenderFocus -Row $focus -PinnedKey $pinnedKey
         & $OrbView.RenderFocus -Row $focus -PinnedKey $pinnedKey
     }.GetNewClosure()
     $persist = { & $SaveSettings $Settings }.GetNewClosure()
@@ -276,6 +277,14 @@ function New-MonitorDisplayModeController {
         param([string]$Key)
         & $setFocusKey $(if ($state.FocusKey -ceq $Key) { 'Auto' } else { $Key })
     }.GetNewClosure()
+    $resetFocusForProvider = {
+        param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ProviderId)
+        if ($state.Disposed -or $state.FocusKey -eq 'Auto') { return }
+        $prefix = 'relay:{0}:' -f $ProviderId
+        if ($state.FocusKey.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            & $setFocusKey 'Auto'
+        }
+    }.GetNewClosure()
     $fullDrag = { param($placement) & $persistPlacement -Mode Full -Placement $placement }.GetNewClosure()
     $compactDrag = { param($placement) & $persistPlacement -Mode CompactBar -Placement $placement }.GetNewClosure()
     $orbDrag = { param($placement) & $persistPlacement -Mode Orb -Placement $placement }.GetNewClosure()
@@ -292,7 +301,7 @@ function New-MonitorDisplayModeController {
         try {
             & $FullView.SetCallbacks -OnDrag $null -OnToggleTopmost $null -OnHide $null `
                 -OnCloseRequested $null -OnThemeRequested $null -OnModeRequested $null `
-                -OnLayoutRequested $null -OnFocusRequested $null
+                -OnLayoutRequested $null -OnFocusRequested $null -OnRefreshRequested $null
         } catch { $firstError = $_ }
         foreach ($view in @($CompactBarView, $OrbView)) {
             try { & $view.SetCallbacks -OnDrag $null -OnOpenFull $null -OnModeRequested $null -OnCloseRequested $null }
@@ -309,7 +318,8 @@ function New-MonitorDisplayModeController {
     & $FullView.SetLayout $state.FullLayout
     & $FullView.SetCallbacks -OnDrag $fullDrag -OnToggleTopmost $toggleTopmost -OnHide $hideAll `
         -OnCloseRequested $hideAll -OnThemeRequested $toggleTheme -OnModeRequested $cycleMode `
-        -OnLayoutRequested $toggleLayout -OnFocusRequested $toggleFocus
+        -OnLayoutRequested $toggleLayout -OnFocusRequested $toggleFocus `
+        -OnRefreshRequested $OnRefreshRequested
     & $CompactBarView.SetCallbacks -OnDrag $compactDrag -OnOpenFull $openFull `
         -OnModeRequested $cycleMode -OnCloseRequested $hideAll
     & $OrbView.SetCallbacks -OnDrag $orbDrag -OnOpenFull $openFull `
@@ -323,6 +333,7 @@ function New-MonitorDisplayModeController {
         SetTheme = $setTheme
         SetFullLayout = $setFullLayout
         SetFocusKey = $setFocusKey
+        ResetFocusForProvider = $resetFocusForProvider
         SetTopmost = $setTopmost
         HideAll = $hideAll
         ShowCurrent = $showCurrent

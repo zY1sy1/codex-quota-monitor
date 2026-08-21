@@ -305,14 +305,35 @@ function New-QuotaOrbView {
             $state.ProgressValue = $null
             $state.Controls.MetricText.Text = '—'
             $state.Controls.ValueText.Text = ''
-            $state.Controls.SourceText.Text = ''
-            $state.Controls.RootBorder.ToolTip = $null
+            $state.Controls.SourceText.Text = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
+                ''
+            }
+            else {
+                '所选额度暂不可用'
+            }
+            $state.Controls.RootBorder.ToolTip = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
+                $null
+            }
+            else {
+                '所选额度暂不可用'
+            }
             return
         }
 
+        $sourceLabel = & $state.GetPresentationText $Row @('SourceLabel')
         $label = & $state.GetPresentationText $Row @('Label')
+        $displayLabel = if (-not [string]::IsNullOrWhiteSpace($sourceLabel) -and
+            -not [string]::IsNullOrWhiteSpace($label)) {
+            "$sourceLabel · $label"
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($label)) {
+            $label
+        }
+        else {
+            $sourceLabel
+        }
         $valueText = & $state.GetPresentationText $Row @('ValueText', 'RemainingText')
-        $state.Controls.SourceText.Text = $label
+        $state.Controls.SourceText.Text = $displayLabel
         $state.Controls.ValueText.Text = $valueText
         $state.ProgressValue = & $state.ConvertProgress (
             & $state.GetPresentationField -Row $Row -Name 'ProgressValue'
@@ -347,11 +368,10 @@ function New-QuotaOrbView {
             }
         }
 
-        $groupLabel = & $state.GetPresentationText $Row @('GroupLabel')
         $isStale = [bool](& $state.GetPresentationField -Row $Row -Name 'IsStale')
         $freshness = if ($isStale) { '数据已过期' } else { '数据正常' }
         $resetTime = & $state.GetPresentationText $Row @('ResetTime', 'ResetTimeText')
-        $state.Controls.RootBorder.ToolTip = "${groupLabel} ${label}`n${valueText}`n${freshness}`n${resetTime}"
+        $state.Controls.RootBorder.ToolTip = "${displayLabel}`n${valueText}`n${freshness}`n${resetTime}"
     }.GetNewClosure()
 
     $setTheme = {

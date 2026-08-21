@@ -21,6 +21,7 @@ BeforeAll {
     function New-TestCompactRow {
         param(
             [string]$Key = 'official:five-hour',
+            [string]$SourceLabel = 'Codex 官方',
             [string]$Label = '5 小时额度',
             [string]$ValueText = '74%',
             [AllowNull()][object]$ProgressValue = 74,
@@ -32,6 +33,7 @@ BeforeAll {
             Key = $Key
             SourceKind = 'Official'
             SourceId = 'codex'
+            SourceLabel = $SourceLabel
             GroupLabel = 'Codex 官方额度'
             Label = $Label
             ValueText = $ValueText
@@ -102,25 +104,38 @@ Describe 'compact quota bar composition' {
             $track.Arrange([Windows.Rect]::new(0, 0, 200, 5))
             $track.UpdateLayout()
 
-            $CompactView.Controls.MetricLabel.Text | Should -BeExactly '5 小时额度'
+            $CompactView.Controls.MetricLabel.Text | Should -BeExactly 'Codex 官方 · 5 小时额度'
             $CompactView.Controls.MetricValue.Text | Should -BeExactly '74%'
             $CompactView.Controls.CountdownText.Text | Should -BeExactly '04:59:59'
             $CompactView.Controls.ResetTimeText.Text | Should -BeExactly '重置时间：今天 23:00'
             $track.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $CompactView.Controls.ProgressFill.Width | Should -Be 148
+            [string]$CompactView.Controls.RootBorder.ToolTip | Should -Match 'Codex 官方 · 5 小时额度'
+            [string]$CompactView.Controls.RootBorder.ToolTip | Should -Match '74%'
         }
 
         It 'hides progress for an absolute wallet without inventing a percentage' {
             $script:CompactView = New-CompactBarView -XamlPath $script:CompactBarXamlPath
             $wallet = New-TestCompactRow -Key 'relay:wakaka:wallet' -Label '账户余额' `
-                -ValueText '$18.42 USD' -ProgressValue $null -Countdown '' -ResetTime '最近更新：刚刚'
+                -SourceLabel 'Wakaka' -ValueText '$18.42 USD' -ProgressValue $null `
+                -Countdown '' -ResetTime '最近更新：刚刚'
 
             & $CompactView.RenderFocus $wallet
 
-            $CompactView.Controls.MetricLabel.Text | Should -BeExactly '账户余额'
+            $CompactView.Controls.MetricLabel.Text | Should -BeExactly 'Wakaka · 账户余额'
             $CompactView.Controls.MetricValue.Text | Should -BeExactly '$18.42 USD'
             $CompactView.Controls.ProgressTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $CompactView.Controls.ProgressFill.Width | Should -Be 0
+        }
+
+        It 'shows a stable unavailable state for a missing manually pinned row' {
+            $script:CompactView = New-CompactBarView -XamlPath $script:CompactBarXamlPath
+
+            & $CompactView.RenderFocus $null 'relay:missing'
+
+            $CompactView.Controls.MetricLabel.Text | Should -BeExactly '所选额度暂不可用'
+            $CompactView.Controls.MetricValue.Text | Should -BeExactly '—'
+            $CompactView.Controls.ProgressTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
         }
 
         It 'renders a deterministic empty focus state' {
