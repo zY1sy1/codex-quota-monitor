@@ -65,6 +65,8 @@ function New-CcSwitchImportController {
         Descriptors = [object[]]@()
         Result = $null
         Disposed = $false
+        Refreshing = $false
+        Showing = $false
     }
     $getField = ${function:Get-CcSwitchImportControllerField}
     $clearDescriptors = ${function:Clear-CcSwitchImportControllerDescriptors}
@@ -159,6 +161,10 @@ function New-CcSwitchImportController {
         if ($state.Disposed) {
             return $false
         }
+        if ($state.Refreshing) {
+            return $false
+        }
+        $state.Refreshing = $true
         & $state.View.SetBusy $true
         try {
             & $clearDescriptors $state.Descriptors
@@ -206,6 +212,7 @@ function New-CcSwitchImportController {
             return $false
         }
         finally {
+            $state.Refreshing = $false
             & $state.View.SetBusy $false
         }
     }.GetNewClosure()
@@ -282,14 +289,20 @@ function New-CcSwitchImportController {
 
     $show = {
         param([AllowEmptyCollection()][object[]]$Providers = @())
-        if ($state.Disposed) {
+        if ($state.Disposed -or $state.Showing) {
             return $null
         }
         $state.Providers = [object[]]@($Providers)
         $state.Result = $null
-        $null = & $refresh
-        $null = & $state.View.ShowDialog
-        return $state.Result
+        $state.Showing = $true
+        try {
+            $null = & $refresh
+            $null = & $state.View.ShowDialog
+            return $state.Result
+        }
+        finally {
+            $state.Showing = $false
+        }
     }.GetNewClosure()
 
     $dispose = {

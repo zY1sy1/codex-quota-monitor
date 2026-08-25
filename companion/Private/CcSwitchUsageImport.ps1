@@ -227,6 +227,12 @@ function ConvertTo-CcSwitchDiscoveryResponse {
         }
 
         $isJavaScript = [string]$language -ieq 'javascript'
+        if ($status -ceq 'ready' -and $isJavaScript -and
+            $code -is [string] -and [string]::IsNullOrWhiteSpace([string]$code)) {
+            # CC Switch may keep an enabled provider row before a usage script
+            # is populated. Skip that non-rule without discarding valid rows.
+            continue
+        }
         if ($status -ceq 'ready') {
             if (-not $isJavaScript -or
                 -not (Test-CcSwitchImportText -Value $code -MaximumBytes 262144 `

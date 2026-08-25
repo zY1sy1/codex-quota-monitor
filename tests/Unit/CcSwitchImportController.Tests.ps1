@@ -98,6 +98,46 @@ BeforeAll {
 }
 
 Describe 'CC Switch import controller' {
+    It 'ignores a reentrant open while the dialog is already showing' {
+        $script:Controller = $null
+        $script:InnerShowResult = 'unset'
+        $view = New-FakeCcSwitchImportView -DialogAction {
+            param($state)
+            $script:InnerShowResult = & $script:Controller.Show -Providers @()
+            & $state.Callbacks.OnCancel
+        }
+        $script:Controller = New-CcSwitchImportController -View $view `
+            -Discover { New-TestDiscoveryResponse } `
+            -ReadLinks { New-TestLinkDocument } `
+            -ConvertCandidate ${function:ConvertTo-CcSwitchRelayImportCandidate}
+
+        $result = & $script:Controller.Show -Providers @()
+
+        $view.TestState.ShowCalls | Should -Be 1
+        $script:InnerShowResult | Should -BeNullOrEmpty
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'ignores a reentrant refresh while discovery is already running' {
+        $script:DiscoverCalls = 0
+        $view = New-FakeCcSwitchImportView
+        $controller = $null
+        $controller = New-CcSwitchImportController -View $view `
+            -Discover {
+                $script:DiscoverCalls++
+                if ($script:DiscoverCalls -eq 1) {
+                    & $view.TestState.Callbacks.OnRefresh | Out-Null
+                }
+                New-TestDiscoveryResponse
+            } `
+            -ReadLinks { New-TestLinkDocument } `
+            -ConvertCandidate ${function:ConvertTo-CcSwitchRelayImportCandidate}
+
+        $null = & $controller.Show -Providers @()
+
+        $script:DiscoverCalls | Should -Be 1
+    }
+
     It 'discovers only when the dialog opens or Refresh is invoked' {
         $script:DiscoverCalls = 0
         $view = New-FakeCcSwitchImportView -DialogAction {

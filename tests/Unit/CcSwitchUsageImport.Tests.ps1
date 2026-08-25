@@ -77,6 +77,31 @@ Describe 'CC Switch usage discovery client' {
         $response.Error.Category | Should -BeExactly 'CcSwitchNotFound'
     }
 
+    It 'skips ready providers with an empty script and keeps usable rules' {
+        $raw = New-TestCcSwitchDiscoveryResponse
+        $raw.providers = @(
+            [pscustomobject][ordered]@{
+                sourceProviderId = 'empty-script'
+                sourceAppType = 'codex'
+                name = 'DeepSeek'
+                endpointCandidates = @('https://api.deepseek.com')
+                language = 'javascript'
+                code = ''
+                timeoutSeconds = 10
+                templateType = 'balance'
+                autoQueryIntervalMinutes = 5
+                importStatus = 'ready'
+            }
+            (New-TestCcSwitchDiscoveryProvider)
+        )
+
+        $response = ConvertTo-CcSwitchDiscoveryResponse $raw
+
+        $response.Ok | Should -BeTrue
+        $response.Providers | Should -HaveCount 1
+        $response.Providers[0].Name | Should -BeExactly 'wakaka'
+    }
+
     It 'rejects blocked descriptors that unexpectedly contain code' {
         $raw = New-TestCcSwitchDiscoveryResponse
         $raw.providers[0].importStatus = 'credentialDetected'
