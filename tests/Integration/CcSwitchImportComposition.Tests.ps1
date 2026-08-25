@@ -102,6 +102,48 @@ Describe 'CC Switch import WPF composition' {
         $script:View.State.Disposed | Should -BeFalse
     }
 
+    It 'selects the single endpoint so the dropdown is genuinely selected' {
+        $script:View = New-CcSwitchImportView -XamlPath $XamlPath `
+            -CustomImportPrompt { param($name) $false }
+
+        & $script:View.SetSelectionDetails ([pscustomobject]@{
+            EndpointCandidates = @('https://api.deepseek.com')
+            SelectedEndpoint = 'https://api.deepseek.com'
+            ConversionText = '可导入。自动模式会优先转换为 Generic。'
+            CanImport = $true
+            CanUpdate = $false
+            DefaultAction = 'Copy'
+            AllowEndpointEntry = $false
+            RequiresEndpointSelection = $false
+        })
+
+        $script:View.Controls.EndpointComboBox.SelectedIndex | Should -Be 0
+        [string]$script:View.Controls.EndpointComboBox.SelectedItem |
+            Should -BeExactly 'https://api.deepseek.com'
+        $script:View.Controls.EndpointComboBox.Text |
+            Should -BeExactly 'https://api.deepseek.com'
+    }
+
+    It 'preselects the current endpoint when it is one of several candidates' {
+        $script:View = New-CcSwitchImportView -XamlPath $XamlPath `
+            -CustomImportPrompt { param($name) $false }
+
+        & $script:View.SetSelectionDetails ([pscustomobject]@{
+            EndpointCandidates = @('https://a.example', 'https://b.example')
+            SelectedEndpoint = 'https://b.example'
+            ConversionText = '可导入。'
+            CanImport = $true
+            CanUpdate = $false
+            DefaultAction = 'Copy'
+            AllowEndpointEntry = $false
+            RequiresEndpointSelection = $true
+        })
+
+        $script:View.Controls.EndpointComboBox.SelectedIndex | Should -Be 1
+        [string]$script:View.Controls.EndpointComboBox.SelectedItem |
+            Should -BeExactly 'https://b.example'
+    }
+
     It 'keeps inspector SQL on the approved usage-script and public-endpoint allowlist' {
         $source = Get-Content -LiteralPath $InspectorSourcePath -Raw
         $providerQuery = [regex]::Match(

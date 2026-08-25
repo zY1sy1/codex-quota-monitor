@@ -215,7 +215,17 @@ function New-CcSwitchImportView {
         try {
             $controls.EndpointComboBox.ItemsSource = $endpointCandidates
             $controls.EndpointComboBox.IsEditable = $state.Details.AllowEndpointEntry
-            $controls.EndpointComboBox.SelectedIndex = -1
+            $selectedIndex = if ($endpointCandidates.Count -eq 1) {
+                0
+            }
+            elseif ($endpointCandidates.Count -gt 1 -and
+                $endpointCandidates -ccontains $selectedEndpoint) {
+                [Array]::IndexOf($endpointCandidates, $selectedEndpoint)
+            }
+            else {
+                -1
+            }
+            $controls.EndpointComboBox.SelectedIndex = $selectedIndex
             $controls.EndpointComboBox.Text = $selectedEndpoint
             $controls.ConversionText.Text = $state.Details.ConversionText
             $controls.UpdateRadioButton.IsEnabled = $state.Details.CanUpdate
