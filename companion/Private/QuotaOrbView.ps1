@@ -8,7 +8,9 @@ function Get-QuotaOrbArcGeometry {
         [double]$Radius = 35
     )
 
-    $angle = [Math]::Min(359.999, 360 * $Percent / 100)
+    # Only 0 < Percent < 100 reaches here; 0 and 100 are handled by the caller
+    # with a degenerate-arc-free path so the ring closes and empties cleanly.
+    $angle = 360 * $Percent / 100
     $radians = ($angle - 90) * [Math]::PI / 180
     [pscustomobject][ordered]@{
         EndX = $Radius + ($Radius * [Math]::Cos($radians))
@@ -341,21 +343,36 @@ function New-QuotaOrbView {
 
         if ($null -ne $state.ProgressValue) {
             $state.Controls.MetricText.Text = $valueText
-            $arc = & $state.GetArcGeometry -Percent $state.ProgressValue -Radius 35
-            $figure = [Windows.Media.PathFigure]::new()
-            $figure.StartPoint = [Windows.Point]::new(35, 0)
-            $figure.IsClosed = $false
-            $figure.IsFilled = $false
-            $segment = [Windows.Media.ArcSegment]::new()
-            $segment.Point = [Windows.Point]::new($arc.EndX, $arc.EndY)
-            $segment.Size = [Windows.Size]::new(35, 35)
-            $segment.IsLargeArc = [bool]$arc.IsLargeArc
-            $segment.SweepDirection = [Windows.Media.SweepDirection]::Clockwise
-            $figure.Segments.Add($segment)
-            $pathGeometry = [Windows.Media.PathGeometry]::new()
-            $pathGeometry.Figures.Add($figure)
-            $state.Controls.RingValue.Data = $pathGeometry
-            $state.Controls.RingValue.Visibility = [Windows.Visibility]::Visible
+            if ($state.ProgressValue -ge 100) {
+                # A genuine closed circle avoids the degenerate near-360 arc that
+                # left a hairline gap and an inset radius at exactly 100 percent.
+                $state.Controls.RingValue.Data = [Windows.Media.EllipseGeometry]::new(
+                    [Windows.Point]::new(35, 35), 35, 35)
+                $state.Controls.RingValue.Visibility = [Windows.Visibility]::Visible
+            }
+            elseif ($state.ProgressValue -le 0) {
+                # Zero remaining renders no value arc; the empty track alone shows,
+                # instead of the round-cap dot the zero-length arc used to paint.
+                $state.Controls.RingValue.Data = $null
+                $state.Controls.RingValue.Visibility = [Windows.Visibility]::Collapsed
+            }
+            else {
+                $arc = & $state.GetArcGeometry -Percent $state.ProgressValue -Radius 35
+                $figure = [Windows.Media.PathFigure]::new()
+                $figure.StartPoint = [Windows.Point]::new(35, 0)
+                $figure.IsClosed = $false
+                $figure.IsFilled = $false
+                $segment = [Windows.Media.ArcSegment]::new()
+                $segment.Point = [Windows.Point]::new($arc.EndX, $arc.EndY)
+                $segment.Size = [Windows.Size]::new(35, 35)
+                $segment.IsLargeArc = [bool]$arc.IsLargeArc
+                $segment.SweepDirection = [Windows.Media.SweepDirection]::Clockwise
+                $figure.Segments.Add($segment)
+                $pathGeometry = [Windows.Media.PathGeometry]::new()
+                $pathGeometry.Figures.Add($figure)
+                $state.Controls.RingValue.Data = $pathGeometry
+                $state.Controls.RingValue.Visibility = [Windows.Visibility]::Visible
+            }
         }
         else {
             $rowKey = [string](& $state.GetPresentationField -Row $Row -Name 'Key')

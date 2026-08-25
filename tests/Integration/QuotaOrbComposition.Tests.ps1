@@ -122,38 +122,30 @@ Describe 'quota orb composition' {
             $segment.IsLargeArc | Should -BeTrue
         }
 
-        It 'renders stable geometry for <Percent> percent' -TestCases @(
-            @{ Percent = 0; ExpectFullCircle = $false }
-            @{ Percent = 100; ExpectFullCircle = $true }
-        ) {
-            param($Percent, $ExpectFullCircle)
-
+        It 'renders no value arc at zero percent so the empty track alone shows' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
-            $row = New-TestOrbRow -ValueText "$Percent%" -ProgressValue $Percent
+            $row = New-TestOrbRow -ValueText '0%' -ProgressValue 0
+
+            & $OrbView.RenderFocus -Row $row
+
+            $OrbView.Controls.MetricText.Text | Should -BeExactly '0%'
+            $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $OrbView.Controls.RingValue.Data | Should -BeNullOrEmpty
+        }
+
+        It 'renders a genuine closed circle at one hundred percent' {
+            $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
+            $row = New-TestOrbRow -ValueText '100%' -ProgressValue 100
 
             & $OrbView.RenderFocus -Row $row
 
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Visible)
-            $figure = $OrbView.Controls.RingValue.Data.Figures[0]
-            $segment = $figure.Segments[0]
-            $figure.StartPoint.X | Should -Be 35
-            $figure.StartPoint.Y | Should -Be 0
-            $segment.Size.Width | Should -Be 35
-            $segment.Size.Height | Should -Be 35
-            $segment.SweepDirection | Should -Be ([Windows.Media.SweepDirection]::Clockwise)
-
-            if ($ExpectFullCircle) {
-                $distanceFromStart = [Math]::Sqrt(
-                    [Math]::Pow($segment.Point.X - $figure.StartPoint.X, 2) +
-                    [Math]::Pow($segment.Point.Y - $figure.StartPoint.Y, 2)
-                )
-                $distanceFromStart | Should -BeGreaterThan 0
-                $distanceFromStart | Should -BeLessThan 0.01
-                $segment.IsLargeArc | Should -BeTrue
-            }
-            else {
-                $segment.IsLargeArc | Should -BeFalse
-            }
+            $data = $OrbView.Controls.RingValue.Data
+            $data | Should -BeOfType ([Windows.Media.EllipseGeometry])
+            $data.Center.X | Should -Be 35
+            $data.Center.Y | Should -Be 35
+            $data.RadiusX | Should -Be 35
+            $data.RadiusY | Should -Be 35
         }
 
         It 'renders a pinned absolute wallet without fabricating an arc' {
