@@ -295,9 +295,9 @@ function New-CcSwitchImportView {
         }
     }.GetNewClosure()
     $closing = [ComponentModel.CancelEventHandler]{
-        param($sender, $args)
+        param($sender, $eventArgs)
         if (-not $state.Disposed) {
-            $args.Cancel = $true
+            $eventArgs.Cancel = $true
             $null = & $invoke 'OnCancel'
             $state.Window.Hide()
         }

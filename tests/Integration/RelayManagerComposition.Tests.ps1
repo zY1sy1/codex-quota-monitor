@@ -72,7 +72,10 @@ BeforeAll {
     }
 
     function New-FakeRelayManagerView {
-        param([object]$InitialDraft = (New-TestRelayDraft))
+        param(
+            [object]$InitialDraft = (New-TestRelayDraft),
+            [scriptblock]$DialogAction = { param($state) }
+        )
         $state = [pscustomobject][ordered]@{
             Draft = $InitialDraft
             Providers = @()
@@ -84,10 +87,15 @@ BeforeAll {
             Callbacks = $null
             ShowCalls = 0
             Disposed = $false
+            DialogAction = $DialogAction
         }
         [pscustomobject][ordered]@{
             TestState = $state
-            ShowDialog = { $state.ShowCalls++; return $false }.GetNewClosure()
+            ShowDialog = {
+                $state.ShowCalls++
+                & $state.DialogAction $state
+                return $false
+            }.GetNewClosure()
             SetProviders = { param($Providers) $state.Providers = @($Providers) }.GetNewClosure()
             ReadDraft = { return $state.Draft }.GetNewClosure()
             SetDraft = {
@@ -210,6 +218,24 @@ Describe 'relay manager WPF adapter contract' {
             'ShowDialog', 'SetProviders', 'ReadDraft', 'SetDraft', 'SetTestState',
             'SetPreview', 'ConfirmDestinationTrust', 'SetCallbacks', 'Dispose'
         )
+    }
+
+    It 'cancels ordinary closing and keeps the same window reopenable' {
+        $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
+        $window = $script:View.Window
+        $window.Show()
+        $window.Close()
+
+        $window.IsVisible | Should -BeFalse
+        $window.IsLoaded | Should -BeTrue
+
+        $dispatcher = [Windows.Threading.Dispatcher]::CurrentDispatcher
+        $null = $dispatcher.BeginInvoke(
+            [Action]{ $window.Hide() },
+            [Windows.Threading.DispatcherPriority]::ApplicationIdle
+        )
+        $null = & $script:View.ShowDialog
+        $script:View.State.Disposed | Should -BeFalse
     }
 
     It 'never copies existing encrypted or plaintext secrets into normal text properties' {
@@ -458,6 +484,35 @@ Describe 'relay manager interaction controller' {
         $saved.Secrets.ApiKey | Should -BeExactly ''
         $saved.Secrets.AccessToken | Should -BeExactly ''
         $saved.Secrets.UserId | Should -BeExactly ''
+    }
+
+    It 'ignores a reentrant open while the relay manager is already showing' {
+        $script:InnerShow = 'unset'
+        $script:InnerCalled = $false
+        $script:Controller = $null
+        $view = New-FakeRelayManagerView -DialogAction {
+            param($state)
+            if (-not $script:InnerCalled) {
+                $script:InnerCalled = $true
+                $script:InnerShow = & $script:Controller.Show
+            }
+            & $state.Callbacks.OnCancel
+        }
+        $script:Controller = New-RelayManagerController `
+            -View $view -Providers @() `
+            -WriteRelayState { param($Document, $Mutation) } `
+            -ImportProvider { param($Providers) $null } `
+            -ProtectSecret { param($Value) $Value } `
+            -UnprotectSecret { param($Value) $Value } `
+            -QueryProvider { param($Provider, $Secrets) $null } `
+            -ApplyProviders { param($Providers, $ChangedProviderIds) } `
+            -RemoveProviderArtifacts { param($ProviderId) } `
+            -ConfirmDelete { param($Provider) $true }
+
+        $null = & $script:Controller.Show
+
+        $view.TestState.ShowCalls | Should -Be 1
+        $script:InnerShow | Should -BeNullOrEmpty
     }
 
     It 'preserves existing encrypted secrets when password boxes stay blank' {

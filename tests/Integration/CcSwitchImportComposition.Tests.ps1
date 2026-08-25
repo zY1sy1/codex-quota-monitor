@@ -83,6 +83,25 @@ Describe 'CC Switch import WPF composition' {
             Should -Not -Match $sentinel
     }
 
+    It 'cancels ordinary closing and keeps the same window reopenable' {
+        $script:View = New-CcSwitchImportView -XamlPath $XamlPath `
+            -CustomImportPrompt { param($name) $false }
+        $window = $script:View.Window
+        $window.Show()
+        $window.Close()
+
+        $window.IsVisible | Should -BeFalse
+        $window.IsLoaded | Should -BeTrue
+
+        $dispatcher = [Windows.Threading.Dispatcher]::CurrentDispatcher
+        $null = $dispatcher.BeginInvoke(
+            [Action]{ $window.Hide() },
+            [Windows.Threading.DispatcherPriority]::ApplicationIdle
+        )
+        $null = & $script:View.ShowDialog
+        $script:View.State.Disposed | Should -BeFalse
+    }
+
     It 'keeps inspector SQL on the approved usage-script and public-endpoint allowlist' {
         $source = Get-Content -LiteralPath $InspectorSourcePath -Raw
         $providerQuery = [regex]::Match(

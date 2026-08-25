@@ -159,6 +159,7 @@ function New-RelayManagerController {
         TestedDraftId = $null
         TestedDraftFingerprint = $null
         Disposed = $false
+        Showing = $false
     }
     $get = ${function:Get-MonitorInteractionField}
     $copyDraft = ${function:Copy-RelayManagerDraft}
@@ -490,11 +491,17 @@ function New-RelayManagerController {
         return $true
     }.GetNewClosure()
     $show = {
-        if ($state.Disposed) { return }
-        & $publishProviders
-        if ($state.Providers.Count -gt 0) { & $edit ([string](& $get $state.Providers[0] 'Id')) }
-        else { & $add }
-        $null = & $View.ShowDialog
+        if ($state.Disposed -or $state.Showing) { return }
+        $state.Showing = $true
+        try {
+            & $publishProviders
+            if ($state.Providers.Count -gt 0) { & $edit ([string](& $get $state.Providers[0] 'Id')) }
+            else { & $add }
+            $null = & $View.ShowDialog
+        }
+        finally {
+            $state.Showing = $false
+        }
     }.GetNewClosure()
     $dispose = {
         if ($state.Disposed) { return }

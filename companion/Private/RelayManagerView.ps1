@@ -266,6 +266,17 @@ function New-RelayManagerView {
         $controls[$definition.Control].Add_Click($handler)
     }
 
+    $closing = [ComponentModel.CancelEventHandler]{
+        param($sender, $eventArgs)
+        if (-not $state.Disposed) {
+            $eventArgs.Cancel = $true
+            $null = & $invoke 'OnCancel'
+            $state.Window.Hide()
+        }
+    }.GetNewClosure()
+    $state.Delegates.Closing = $closing
+    $window.Add_Closing($closing)
+
     $showDialog = { if (-not $state.Disposed) { return $state.Window.ShowDialog() } }.GetNewClosure()
     $setProviders = {
         param([AllowEmptyCollection()][object[]]$Providers)
@@ -424,6 +435,7 @@ function New-RelayManagerView {
         foreach ($name in @('AddButton','EditButton','DuplicateButton','DeleteButton','ImportButton','TestButton','SaveButton','CancelButton')) {
             $controls[$name].Remove_Click($state.Delegates[$name])
         }
+        $window.Remove_Closing($state.Delegates.Closing)
         $state.Callbacks = $null; $state.TrustPrompt = $null; $state.Providers = @(); $state.Preview = @(); $state.ImportLink = $null
         try { $window.Close() } catch [InvalidOperationException] {}
     }.GetNewClosure()
