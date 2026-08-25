@@ -39,8 +39,8 @@ function Get-MonitorPaths {
         RelayProviders = Join-Path $root 'data\relay-providers.json'
         RelayImportLinks = Join-Path $root 'data\relay-import-links.json'
         RelayCache = Join-Path $root 'data\relay-cache.json'
-        RelayHost = Join-Path $root 'app\Bin\relay-quota-host.exe'
-        RelayPresets = Join-Path $root 'app\Presets\relay-usage.json'
+        RelayHost = Join-Path $app 'Bin\relay-quota-host.exe'
+        RelayPresets = Join-Path $app 'Presets\relay-usage.json'
         StartupShortcut = Join-Path $Startup 'Codex Quota Monitor.lnk'
     }
 }

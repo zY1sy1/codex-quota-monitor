@@ -28,6 +28,11 @@ param(
     [switch] $PassThru
 )
 
+if ([string]::IsNullOrWhiteSpace($env:windir) -and
+    -not [string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+    $env:windir = $env:SystemRoot
+}
+
 if ([string]::IsNullOrWhiteSpace($ProgramRoot)) {
     $candidateProgramRoot = Split-Path -Parent $PSScriptRoot
     if (Test-Path -LiteralPath (Join-Path $candidateProgramRoot 'installer-manifest.json') -PathType Leaf) {

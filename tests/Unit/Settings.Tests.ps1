@@ -41,6 +41,8 @@ Describe 'Get-MonitorPaths' {
         $paths.Payload | Should -BeExactly (Join-Path $programRoot 'payload')
         $paths.Runtime | Should -BeExactly (Join-Path $programRoot 'runtime\pwsh')
         $paths.PrivatePwsh | Should -BeExactly (Join-Path $programRoot 'runtime\pwsh\pwsh.exe')
+        $paths.RelayHost | Should -BeExactly (Join-Path $programRoot 'app\Bin\relay-quota-host.exe')
+        $paths.RelayPresets | Should -BeExactly (Join-Path $programRoot 'app\Presets\relay-usage.json')
         $paths.Data | Should -BeExactly (Join-Path $dataRoot 'data')
         $paths.Logs | Should -BeExactly (Join-Path $dataRoot 'logs')
         $paths.StartupShortcut | Should -BeExactly (Join-Path $startup 'Codex Quota Monitor.lnk')

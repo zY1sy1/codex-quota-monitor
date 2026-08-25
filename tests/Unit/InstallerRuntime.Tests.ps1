@@ -44,4 +44,12 @@ Describe 'bundled PowerShell runtime lock' {
         $entrySource | Should -Match 'installer-manifest\.json'
         $entrySource | Should -Match '\$runtimeArguments\[''ProgramRoot''\]'
     }
+
+    It 'restores WINDIR from SystemRoot before WPF startup when the host omits it' {
+        $entrySource = Get-Content (Join-Path $RepoRoot 'companion\Start-CodexQuotaMonitor.ps1') -Raw
+
+        $entrySource | Should -Match '\$env:windir'
+        $entrySource | Should -Match '\$env:SystemRoot'
+        $entrySource | Should -Match '(?s)if \(\[string\]::IsNullOrWhiteSpace\(\$env:windir\).*?\$env:windir = \$env:SystemRoot'
+    }
 }

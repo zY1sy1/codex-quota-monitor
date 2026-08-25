@@ -116,7 +116,8 @@ function Select-BuildCommandPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [AllowEmptyCollection()][object[]]$Commands
+        [AllowEmptyCollection()][object[]]$Commands,
+        [switch]$PreferWrapper
     )
 
     $paths = @($Commands | ForEach-Object {
@@ -128,7 +129,17 @@ function Select-BuildCommandPath {
             }
         })
     $selected = $paths |
-        Sort-Object @{ Expression = { if ([IO.Path]::GetExtension($_) -ieq '.exe') { 0 } else { 1 } } },
+        Sort-Object @{ Expression = {
+                $extension = [IO.Path]::GetExtension($_)
+                if ($PreferWrapper) {
+                    if ($extension -ieq '.cmd') { 0 }
+                    elseif ($extension -ieq '.exe') { 1 }
+                    else { 2 }
+                }
+                elseif ($extension -ieq '.exe') { 0 }
+                elseif ($extension -ieq '.cmd') { 1 }
+                else { 2 }
+            } },
             @{ Expression = { $_ } } |
         Select-Object -First 1
     if ([string]::IsNullOrWhiteSpace([string]$selected)) {
@@ -224,7 +235,8 @@ if (-not $SkipRustTests) {
     }
     $cargoPath = Select-BuildCommandPath `
         -Name 'Cargo' `
-        -Commands @(Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue)
+        -Commands @(Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue) `
+        -PreferWrapper
     $cargoManifest = Join-Path $repoRoot 'sidecar\relay-quota-host\Cargo.toml'
     & $cargoPath fmt --manifest-path $cargoManifest -- --check
     if ($LASTEXITCODE -ne 0) { throw 'cargo fmt failed.' }

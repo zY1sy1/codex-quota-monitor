@@ -33,5 +33,17 @@ Describe 'Inno Setup installer contract' {
         $source | Should -Not -Match '(?<!Wizard)IsTaskSelected'
         $source | Should -Match '\{sys\}\\wscript\.exe'
         $source | Should -Match 'desktopicon'
+        $source | Should -Match '\[UninstallDelete\]'
+        $source | Should -Match 'Type:\s*filesandordirs;\s*Name:\s*"\{app\}\\app"'
+    }
+
+    It 'does not launch the runtime as a child of Setup' {
+        $source = Get-Content -LiteralPath $IssPath -Raw
+
+        $source | Should -Match 'Install-Package\.ps1'
+        $source | Should -Match '-SkipStart'
+        $source | Should -Match 'ShellExec\(\s*''open'''
+        $source | Should -Match '\{sys\}\\explorer\.exe'
+        $source | Should -Match 'launchafterinstall'
     }
 }

@@ -73,7 +73,7 @@ Describe 'Windows installer build pipeline' {
             Should -Throw '*Inno Setup 6 compiler*'
     }
 
-    It 'selects one executable when command discovery returns multiple cargo shims' {
+    It 'prefers a cargo wrapper when command discovery returns multiple cargo shims' {
         Test-Path -LiteralPath $BuildScript -PathType Leaf | Should -BeTrue
         if (-not (Test-Path -LiteralPath $BuildScript -PathType Leaf)) { return }
         . $BuildScript
@@ -85,7 +85,7 @@ Describe 'Windows installer build pipeline' {
             [pscustomobject]@{ Source = $exePath }
         )
 
-        Select-BuildCommandPath -Name 'Cargo' -Commands $commands |
-            Should -BeExactly $exePath
+        Select-BuildCommandPath -Name 'Cargo' -Commands $commands -PreferWrapper |
+            Should -BeExactly $cmdPath
     }
 }

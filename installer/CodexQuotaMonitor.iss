@@ -66,6 +66,13 @@ Name: "{group}\Codex 额度监控"; Filename: "{sys}\wscript.exe"; Parameters: "
 Name: "{group}\卸载 Codex 额度监控"; Filename: "{uninstallexe}"; IconFilename: "{app}\assets\CodexQuotaMonitor.ico"
 Name: "{autodesktop}\Codex 额度监控"; Filename: "{sys}\wscript.exe"; Parameters: "//B //NoLogo ""{app}\app\Start-CodexQuotaMonitor.vbs"" ""{app}\runtime\pwsh\pwsh.exe"" ""{app}\app\Start-CodexQuotaMonitor.ps1"""; WorkingDir: "{app}\app"; IconFilename: "{app}\assets\CodexQuotaMonitor.ico"; Tasks: desktopicon
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\app"
+Type: filesandordirs; Name: "{app}\app.new"
+Type: filesandordirs; Name: "{app}\app.old"
+Type: filesandordirs; Name: "{app}\app.failed"
+Type: files; Name: "{userstartup}\Codex Quota Monitor.lnk"
+
 [Code]
 const
   StopTimeoutSeconds = 30;
@@ -169,13 +176,15 @@ var
   ScriptPath: String;
   Parameters: String;
   ResultCode: Integer;
+  LauncherPath: String;
 begin
   PwshPath := ExpandConstant('{app}\runtime\pwsh\pwsh.exe');
   ScriptPath := ExpandConstant('{app}\installer\Install-Package.ps1');
   Parameters := '-ProgramRoot ' + QuoteArgument(ExpandConstant('{app}')) +
     ' -LocalAppData ' + QuoteArgument(ExpandConstant('{localappdata}')) +
     ' -Startup ' + QuoteArgument(ExpandConstant('{userstartup}')) +
-    ' -PwshPath ' + QuoteArgument(PwshPath);
+    ' -PwshPath ' + QuoteArgument(PwshPath) +
+    ' -SkipStart';
   if not WizardIsTaskSelected('startup') then
     Parameters := Parameters + ' -DisableStartup';
 
@@ -183,16 +192,13 @@ begin
      (ResultCode <> 0) then
     RaiseException('Codex Quota Monitor failed its post-install validation.');
 
-  if not WizardIsTaskSelected('launchafterinstall') then
+  if WizardIsTaskSelected('launchafterinstall') then
   begin
-    ScriptPath := ExpandConstant('{app}\installer\Stop-Package.ps1');
-    Parameters := '-ProgramRoot ' + QuoteArgument(ExpandConstant('{app}')) +
-      ' -LocalAppData ' + QuoteArgument(ExpandConstant('{localappdata}')) +
-      ' -Startup ' + QuoteArgument(ExpandConstant('{userstartup}')) +
-      ' -TimeoutSeconds ' + IntToStr(StopTimeoutSeconds);
-    if (not RunPowerShellScript(PwshPath, ScriptPath, Parameters, ResultCode)) or
-       (ResultCode <> 0) then
-      RaiseException('Codex Quota Monitor was installed but could not be stopped.');
+    LauncherPath := ExpandConstant('{group}\Codex 额度监控.lnk');
+    if (not ShellExec('open', ExpandConstant('{sys}\explorer.exe'),
+      QuoteArgument(LauncherPath), '', SW_SHOWNORMAL,
+      ewNoWait, ResultCode)) or (ResultCode <> 0) then
+      RaiseException('Codex Quota Monitor was installed but could not be launched.');
   end;
 end;
 
