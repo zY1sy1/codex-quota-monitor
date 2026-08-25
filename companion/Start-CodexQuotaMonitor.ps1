@@ -12,6 +12,8 @@ param(
 
     [string] $Startup,
 
+    [string] $ProgramRoot,
+
     [string] $InstancePrefix = 'Local\CodexQuotaMonitor',
 
     [ValidateRange(0, [int]::MaxValue)]
@@ -26,6 +28,13 @@ param(
     [switch] $PassThru
 )
 
+if ([string]::IsNullOrWhiteSpace($ProgramRoot)) {
+    $candidateProgramRoot = Split-Path -Parent $PSScriptRoot
+    if (Test-Path -LiteralPath (Join-Path $candidateProgramRoot 'installer-manifest.json') -PathType Leaf) {
+        $ProgramRoot = $candidateProgramRoot
+    }
+}
+
 $manifestPath = Join-Path $PSScriptRoot 'CodexQuotaMonitor.psd1'
 $module = Import-Module -Name $manifestPath -Force -PassThru
 
@@ -33,6 +42,9 @@ try {
     $runtimeArguments = @{}
     foreach ($entry in $PSBoundParameters.GetEnumerator()) {
         $runtimeArguments[$entry.Key] = $entry.Value
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ProgramRoot)) {
+        $runtimeArguments['ProgramRoot'] = $ProgramRoot
     }
 
     & $module {

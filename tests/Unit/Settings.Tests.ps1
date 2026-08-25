@@ -22,6 +22,29 @@ Describe 'Get-MonitorPaths' {
         $paths.RelayImportLinks | Should -BeExactly (Join-Path $root 'data\relay-import-links.json')
         $paths.StartupShortcut | Should -BeExactly (Join-Path $startup 'Codex Quota Monitor.lnk')
     }
+
+    It 'separates packaged program files from mutable current-user data' {
+        $localAppData = Join-Path $TestDrive 'Packaged Local App Data'
+        $startup = Join-Path $TestDrive 'Packaged Startup Folder'
+        $programRoot = Join-Path $localAppData 'Programs\CodexQuotaMonitor'
+
+        $paths = Get-MonitorPaths `
+            -LocalAppData $localAppData `
+            -Startup $startup `
+            -ProgramRoot $programRoot
+
+        $dataRoot = Join-Path $localAppData 'CodexQuotaMonitor'
+        $paths.Root | Should -BeExactly $dataRoot
+        $paths.ProgramRoot | Should -BeExactly $programRoot
+        $paths.App | Should -BeExactly (Join-Path $programRoot 'app')
+        $paths.LegacyApp | Should -BeExactly (Join-Path $dataRoot 'app')
+        $paths.Payload | Should -BeExactly (Join-Path $programRoot 'payload')
+        $paths.Runtime | Should -BeExactly (Join-Path $programRoot 'runtime\pwsh')
+        $paths.PrivatePwsh | Should -BeExactly (Join-Path $programRoot 'runtime\pwsh\pwsh.exe')
+        $paths.Data | Should -BeExactly (Join-Path $dataRoot 'data')
+        $paths.Logs | Should -BeExactly (Join-Path $dataRoot 'logs')
+        $paths.StartupShortcut | Should -BeExactly (Join-Path $startup 'Codex Quota Monitor.lnk')
+    }
 }
 
 Describe 'New-DefaultSettings' {

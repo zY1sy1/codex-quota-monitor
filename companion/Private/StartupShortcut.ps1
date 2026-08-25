@@ -194,6 +194,9 @@ function New-MonitorStartupShortcut {
 
         [string]$LauncherScript,
 
+        [AllowNull()]
+        [string]$IconPath,
+
         [string]$Description = 'Codex quota monitor'
     )
 
@@ -228,6 +231,17 @@ function New-MonitorStartupShortcut {
     $fullEntryScript = [IO.Path]::GetFullPath($EntryScript)
     $fullLauncherScript = [IO.Path]::GetFullPath($LauncherScript)
     $fullPwshPath = [IO.Path]::GetFullPath($PwshPath)
+    $fullIconPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($IconPath)) {
+        if (-not [IO.Path]::IsPathFullyQualified($IconPath) -or
+            -not (Test-Path -LiteralPath $IconPath -PathType Leaf)) {
+            throw [ArgumentException]::new(
+                'IconPath must identify an existing absolute icon path.',
+                'IconPath'
+            )
+        }
+        $fullIconPath = [IO.Path]::GetFullPath($IconPath)
+    }
     $fullWscriptPath = Resolve-MonitorWscriptPath
     $arguments = "//B //NoLogo `"$fullLauncherScript`" `"$fullPwshPath`" `"$fullEntryScript`""
     $shortcutDirectory = Split-Path -Parent $fullShortcutPath
@@ -243,6 +257,9 @@ function New-MonitorStartupShortcut {
         $shortcut.Arguments = $arguments
         $shortcut.WorkingDirectory = $workingDirectory
         $shortcut.Description = $Description
+        if ($null -ne $fullIconPath) {
+            $shortcut.IconLocation = "$fullIconPath,0"
+        }
         $shortcut.Save()
     }
     finally {
@@ -263,6 +280,7 @@ function New-MonitorStartupShortcut {
         Arguments = $arguments
         WorkingDirectory = $workingDirectory
         Description = $Description
+        IconPath = $fullIconPath
     }
 }
 
