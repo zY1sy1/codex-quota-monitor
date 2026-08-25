@@ -25,6 +25,21 @@ BeforeAll {
         }
     }
 
+    function New-TestCcSwitchTemplateOnlyProvider {
+        [pscustomobject][ordered]@{
+            sourceProviderId = 'deepseek-builtin'
+            sourceAppType = 'codex'
+            name = 'DeepSeek'
+            endpointCandidates = @('https://api.deepseek.com')
+            language = 'javascript'
+            code = $null
+            timeoutSeconds = 10
+            templateType = 'balance'
+            autoQueryIntervalMinutes = 5
+            importStatus = 'templateOnly'
+        }
+    }
+
     function New-TestCcSwitchDescriptor {
         param(
             [string]$Code = "({request:{url:'{{baseUrl}}/v1/usage',method:'GET'},extractor:r=>r})",
@@ -100,6 +115,29 @@ Describe 'CC Switch usage discovery client' {
         $response.Ok | Should -BeTrue
         $response.Providers | Should -HaveCount 1
         $response.Providers[0].Name | Should -BeExactly 'wakaka'
+    }
+
+    It 'maps the known DeepSeek built-in balance template to a ready rule' {
+        $raw = New-TestCcSwitchDiscoveryResponse
+        $raw.providers = @(New-TestCcSwitchTemplateOnlyProvider)
+
+        $response = ConvertTo-CcSwitchDiscoveryResponse $raw
+
+        $response.Providers[0].ImportStatus | Should -BeExactly 'Ready'
+        $response.Providers[0].Code | Should -Match '/user/balance'
+        $response.Providers[0].Code | Should -Match 'Bearer \{\{apiKey\}\}'
+    }
+
+    It 'keeps unknown built-in templates blocked' {
+        $provider = New-TestCcSwitchTemplateOnlyProvider
+        $provider.endpointCandidates = @('https://relay.example')
+        $raw = New-TestCcSwitchDiscoveryResponse
+        $raw.providers = @($provider)
+
+        $response = ConvertTo-CcSwitchDiscoveryResponse $raw
+
+        $response.Providers[0].ImportStatus | Should -BeExactly 'TemplateOnly'
+        $response.Providers[0].Code | Should -BeNullOrEmpty
     }
 
     It 'rejects blocked descriptors that unexpectedly contain code' {
@@ -210,6 +248,23 @@ Describe 'CC Switch usage rule conversion' {
         $candidate.Draft.Secrets.ApiKey | Should -BeExactly ''
         $candidate.Link.SourceProviderId | Should -BeExactly 'source-1'
         $candidate.Link.ScriptFingerprint | Should -Match '^[0-9a-f]{64}$'
+    }
+
+    It 'converts the DeepSeek built-in balance template into a Generic draft' {
+        $raw = New-TestCcSwitchDiscoveryResponse
+        $raw.providers = @(New-TestCcSwitchTemplateOnlyProvider)
+        $descriptor = (ConvertTo-CcSwitchDiscoveryResponse $raw).Providers[0]
+
+        $candidate = ConvertTo-CcSwitchRelayImportCandidate `
+            -Descriptor $descriptor `
+            -Endpoint 'https://api.deepseek.com' `
+            -ImportMode Auto
+
+        $candidate.Status | Should -BeExactly 'Ready'
+        $candidate.Draft.ProviderKind | Should -BeExactly 'Generic'
+        $candidate.Draft.RequestDefinition.Path | Should -BeExactly '/user/balance'
+        $candidate.Draft.RequestDefinition.Headers.Authorization |
+            Should -BeExactly 'Bearer {{apiKey}}'
     }
 
     It 'requires Custom when any request syntax is not fully understood' -ForEach @(

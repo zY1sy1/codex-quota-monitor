@@ -133,6 +133,26 @@ function New-CcSwitchDiscoveryFailure {
     }
 }
 
+function Get-CcSwitchBuiltInBalanceScript {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()][string[]]$Endpoints
+    )
+    $baseUrl = $null
+    foreach ($endpoint in @($Endpoints)) {
+        $uri = $null
+        if ([Uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -and
+            $uri.Scheme -ieq 'https' -and $uri.Host -ieq 'api.deepseek.com') {
+            $baseUrl = ([string]$endpoint).TrimEnd('/')
+            break
+        }
+    }
+    if ($null -eq $baseUrl) {
+        return $null
+    }
+    return '({request:{url:"{{baseUrl}}/user/balance",method:"GET",headers:{Authorization:"Bearer {{apiKey}}"}},extractor:function(response){const info=Array.isArray(response&&response.balance_infos)?response.balance_infos[0]:null;return{isValid:(response&&response.is_available)!==false,remaining:info?Number(info.total_balance):null,unit:info?info.currency:null};}}})'
+}
+
 function ConvertTo-CcSwitchDiscoveryResponse {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowNull()][object]$InputObject)
@@ -208,7 +228,7 @@ function ConvertTo-CcSwitchDiscoveryResponse {
             -not (Test-CcSwitchImportInteger -Value $timeout -Minimum 2 -Maximum 30) -or
             -not (Test-CcSwitchImportInteger -Value $interval -Minimum 0 -Maximum 1440) -or
             $status -isnot [string] -or $status -cnotin @(
-                'ready', 'credentialDetected', 'unsupportedLanguage'
+                'ready', 'templateOnly', 'credentialDetected', 'unsupportedLanguage'
             ) -or -not (Test-CcSwitchImportCollection $rawEndpoints)) {
             throw $invalidMessage
         }
@@ -241,9 +261,19 @@ function ConvertTo-CcSwitchDiscoveryResponse {
             }
         }
         elseif ($null -ne $code -or
+            ($status -ceq 'templateOnly' -and -not $isJavaScript) -or
             ($status -ceq 'credentialDetected' -and -not $isJavaScript) -or
             ($status -ceq 'unsupportedLanguage' -and $isJavaScript)) {
             throw $invalidMessage
+        }
+
+        if ($status -ceq 'templateOnly' -and $isJavaScript -and
+            [string]$templateType -ceq 'balance') {
+            $builtInScript = Get-CcSwitchBuiltInBalanceScript -Endpoints $endpoints.ToArray()
+            if ($null -ne $builtInScript) {
+                $code = $builtInScript
+                $status = 'ready'
+            }
         }
 
         $providers.Add([pscustomobject][ordered]@{
@@ -258,6 +288,7 @@ function ConvertTo-CcSwitchDiscoveryResponse {
             AutoQueryIntervalMinutes = [int]$interval
             ImportStatus = switch ($status) {
                 'ready' { 'Ready' }
+                'templateOnly' { 'TemplateOnly' }
                 'credentialDetected' { 'CredentialDetected' }
                 'unsupportedLanguage' { 'UnsupportedLanguage' }
             }

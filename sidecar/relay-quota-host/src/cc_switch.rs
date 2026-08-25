@@ -48,6 +48,7 @@ ORDER BY provider_id, app_type, added_at, url
 #[serde(rename_all = "camelCase")]
 pub enum ImportStatus {
     Ready,
+    TemplateOnly,
     CredentialDetected,
     UnsupportedLanguage,
 }
@@ -121,8 +122,11 @@ pub fn classify_script(script: &str) -> ImportStatus {
         .filter_map(|captures| captures.get(1))
         .any(|value| !is_supported_placeholder(value.as_str()));
 
-    if script.trim().is_empty()
-        || script.len() > MAX_SCRIPT_BYTES
+    if script.trim().is_empty() {
+        return ImportStatus::TemplateOnly;
+    }
+
+    if script.len() > MAX_SCRIPT_BYTES
         || script
             .chars()
             .any(|value| value == '\u{7f}' || (value < ' ' && !matches!(value, '\r' | '\n' | '\t')))

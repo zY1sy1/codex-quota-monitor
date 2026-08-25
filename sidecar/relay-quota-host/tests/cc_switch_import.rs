@@ -104,8 +104,8 @@ fn create_cc_switch_fixture(path: &Path) {
 
 #[test]
 fn blocks_literal_credentials_without_blocking_placeholders() {
-    assert_eq!(classify_script(""), ImportStatus::CredentialDetected);
-    assert_eq!(classify_script("  \n\t"), ImportStatus::CredentialDetected);
+    assert_eq!(classify_script(""), ImportStatus::TemplateOnly);
+    assert_eq!(classify_script("  \n\t"), ImportStatus::TemplateOnly);
 
     let blocked = [
         r#"({request:{url:'{{baseUrl}}/usage',headers:{Authorization:'Bearer sk-live-1234567890abcdef'}},extractor:r=>r})"#,
@@ -125,6 +125,47 @@ fn blocks_literal_credentials_without_blocking_placeholders() {
     for script in allowed {
         assert_eq!(classify_script(script), ImportStatus::Ready);
     }
+}
+
+#[test]
+fn exposes_empty_builtin_balance_templates_as_template_only() {
+    let path = unique_fixture_path("template-only");
+    let connection = Connection::open(&path).expect("create template-only fixture");
+    create_schema(&connection);
+    let meta = serde_json::json!({
+        "usage_script": {
+            "enabled": true,
+            "language": "javascript",
+            "code": "",
+            "timeout": 10,
+            "templateType": "balance",
+            "autoQueryInterval": 5
+        }
+    })
+    .to_string();
+    insert_provider(&connection, "source-deepseek", "codex", "DeepSeek", &meta);
+    insert_endpoint(
+        &connection,
+        "source-deepseek",
+        "codex",
+        "https://api.deepseek.com",
+        1,
+    );
+    drop(connection);
+
+    let response = inspect_cc_switch_database(&path);
+    let serialized = serde_json::to_string(&response).expect("serialize response");
+
+    assert!(response.ok);
+    assert_eq!(response.providers.len(), 1);
+    assert_eq!(
+        response.providers[0].import_status,
+        ImportStatus::TemplateOnly
+    );
+    assert!(response.providers[0].code.is_none());
+    assert_eq!(response.providers[0].template_type, "balance");
+    assert!(serialized.contains("\"importStatus\":\"templateOnly\""));
+    fs::remove_file(path).expect("remove fixture");
 }
 
 #[test]
