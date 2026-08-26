@@ -38,20 +38,14 @@ Describe 'system tray composition' {
     It 'builds the exact ordered Chinese menu contract' {
         @($View.ContextMenu.Items | ForEach-Object Text) | Should -Be @(
             '显示/隐藏'
-            '显示模式'
-            '主题'
-            '完整窗口布局'
-            '管理中转站'
-            '始终置顶'
-            '立即刷新'
-            '开机启动'
+            '设置'
             '打开官方额度页面'
             '查看日志'
             '退出'
         )
 
         @($View.MenuItems.Keys) | Should -Be @(
-            'ToggleVisibility', 'DisplayMode', 'FullMode', 'CompactBarMode', 'OrbMode',
+            'ToggleVisibility', 'Settings', 'DisplayMode', 'FullMode', 'CompactBarMode', 'OrbMode',
             'Theme', 'LightTheme', 'DarkTheme', 'FullLayout', 'OverviewLayout', 'TabsLayout',
             'ManageRelays', 'Topmost', 'Refresh', 'Startup', 'Usage', 'Logs', 'Exit'
         )
@@ -85,6 +79,7 @@ Describe 'system tray composition' {
         $calls = [Collections.Generic.List[string]]::new()
         & $View.SetCallbacks `
             -OnToggleVisibility { $calls.Add('visibility') } `
+            -OnOpenSettings { $calls.Add('settings') } `
             -OnSetDisplayMode { param($value) $calls.Add("mode:$value") } `
             -OnSetTheme { param($value) $calls.Add("theme:$value") } `
             -OnSetFullLayout { param($value) $calls.Add("layout:$value") } `
@@ -97,7 +92,7 @@ Describe 'system tray composition' {
             -OnExit { $calls.Add('exit') }
 
         foreach ($key in @(
-            'ToggleVisibility', 'CompactBarMode', 'LightTheme', 'TabsLayout', 'ManageRelays',
+            'ToggleVisibility', 'Settings', 'CompactBarMode', 'LightTheme', 'TabsLayout', 'ManageRelays',
             'Topmost', 'Refresh', 'Startup', 'Usage', 'Logs', 'Exit'
         )) {
             $View.MenuItems[$key].PerformClick()
@@ -105,11 +100,11 @@ Describe 'system tray composition' {
         $View.State.Delegates.DoubleClick.Invoke($View.NotifyIcon, [EventArgs]::Empty)
 
         @($calls) | Should -Be @(
-            'visibility', 'mode:CompactBar', 'theme:Light', 'layout:Tabs', 'relays',
+            'visibility', 'settings', 'mode:CompactBar', 'theme:Light', 'layout:Tabs', 'relays',
             'topmost', 'refresh', 'startup', 'usage', 'logs', 'exit', 'visibility'
         )
         @($View.State.Callbacks.PSObject.Properties.Name) | Should -Be @(
-            'OnToggleVisibility', 'OnSetDisplayMode', 'OnSetTheme', 'OnSetFullLayout',
+            'OnToggleVisibility', 'OnOpenSettings', 'OnSetDisplayMode', 'OnSetTheme', 'OnSetFullLayout',
             'OnManageRelays', 'OnToggleTopmost', 'OnRefresh', 'OnToggleStartup',
             'OnOpenUsage', 'OnOpenLogs', 'OnExit'
         )

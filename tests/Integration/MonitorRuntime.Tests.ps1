@@ -68,7 +68,21 @@ Describe 'Codex quota monitor production composition' {
         }
         $interaction = [pscustomobject][ordered]@{
             ShowAndActivate = { }
+            ToggleTopmost = { }
+            SetDisplayMode = { param($Mode) }
+            SetTheme = { param($Theme) }
+            SetFullLayout = { param($Layout) }
+            ToggleStartup = { }
+            Refresh = { }
+            ManageRelays = { }
             Dispose = { }
+        }
+        $settingsView = [pscustomobject][ordered]@{
+            Dispose = { $calls.Add('dispose-settings-view') | Out-Null }
+        }
+        $settingsController = [pscustomobject][ordered]@{
+            Show = { $calls.Add('show-settings') | Out-Null }
+            Dispose = { $calls.Add('dispose-settings-controller') | Out-Null }
         }
         $relayManagerView = [pscustomobject][ordered]@{
             Dispose = { $calls.Add('dispose-relay-manager-view') | Out-Null }
@@ -202,13 +216,36 @@ Describe 'Codex quota monitor production composition' {
                     $ExitEvent,
                     $OpenTarget,
                     $LogDirectory,
-                    $OnManageRelays
+                    $OnManageRelays,
+                    $OnOpenSettings
                 )
                 $refreshCallbacks.Add($RequestRefresh) | Out-Null
                 $DisplayController | Should -Be $displayController
                 $OnManageRelays | Should -BeOfType ([scriptblock])
+                $OnOpenSettings | Should -BeOfType ([scriptblock])
                 & $OnManageRelays
                 Write-Output -NoEnumerate $interaction
+            }.GetNewClosure()
+            NewSettingsView = {
+                $calls.Add('new-settings-view') | Out-Null
+                Write-Output -NoEnumerate $settingsView
+            }.GetNewClosure()
+            NewSettingsController = {
+                param(
+                    $View, $GetSnapshot, $SetDisplayMode, $SetTheme, $SetFullLayout,
+                    $ToggleTopmost, $ToggleStartup, $RequestRefresh, $ManageRelays
+                )
+                $View | Should -Be $settingsView
+                $GetSnapshot | Should -BeOfType ([scriptblock])
+                $SetDisplayMode | Should -BeOfType ([scriptblock])
+                $SetTheme | Should -BeOfType ([scriptblock])
+                $SetFullLayout | Should -BeOfType ([scriptblock])
+                $ToggleTopmost | Should -BeOfType ([scriptblock])
+                $ToggleStartup | Should -BeOfType ([scriptblock])
+                $RequestRefresh | Should -BeOfType ([scriptblock])
+                $ManageRelays | Should -BeOfType ([scriptblock])
+                $calls.Add('new-settings-controller') | Out-Null
+                Write-Output -NoEnumerate $settingsController
             }.GetNewClosure()
             InitializeDesktop = {
                 param(
@@ -250,7 +287,9 @@ Describe 'Codex quota monitor production composition' {
                 'new-relay-manager-view', 'new-cc-switch-import-view',
                 'new-cc-switch-import-controller', 'show-cc-switch-import',
                 'new-relay-manager-controller', 'new-display', 'show-relay-manager',
-                'initialize-desktop', 'dispose-relay-manager-controller',
+                'new-settings-view', 'new-settings-controller',
+                'initialize-desktop', 'dispose-settings-controller',
+                'dispose-relay-manager-controller',
                 'dispose-cc-switch-import-controller', 'dispose-cc-switch-import-view'
             )
         @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0

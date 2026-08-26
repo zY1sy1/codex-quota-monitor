@@ -651,6 +651,10 @@ function New-MonitorInteractionController {
         [AllowNull()]
         [scriptblock]$OnManageRelays,
 
+        [Parameter()]
+        [AllowNull()]
+        [scriptblock]$OnOpenSettings,
+
         [ValidateNotNullOrEmpty()]
         [string]$UsageUri = 'https://chatgpt.com/codex/settings/usage'
     )
@@ -902,6 +906,9 @@ function New-MonitorInteractionController {
     $manageRelays = {
         if (-not $state.Disposed -and $null -ne $OnManageRelays) { & $OnManageRelays }
     }.GetNewClosure()
+    $openSettings = {
+        if (-not $state.Disposed -and $null -ne $OnOpenSettings) { & $OnOpenSettings }
+    }.GetNewClosure()
     $displayStateChanged = {
         param($displayState)
         if ($state.Disposed) { return }
@@ -969,7 +976,7 @@ function New-MonitorInteractionController {
         try {
             if ($usesDisplayController) {
                 & $TrayView.SetCallbacks `
-                    -OnToggleVisibility $null -OnSetDisplayMode $null -OnSetTheme $null `
+                    -OnToggleVisibility $null -OnOpenSettings $null -OnSetDisplayMode $null -OnSetTheme $null `
                     -OnSetFullLayout $null -OnManageRelays $null -OnToggleTopmost $null `
                     -OnRefresh $null -OnToggleStartup $null -OnOpenUsage $null `
                     -OnOpenLogs $null -OnExit $null
@@ -977,6 +984,7 @@ function New-MonitorInteractionController {
             else {
                 & $TrayView.SetCallbacks `
                     -OnToggleVisibility $null `
+                    -OnOpenSettings $null `
                     -OnToggleTopmost $null `
                     -OnRefresh $null `
                     -OnToggleStartup $null `
@@ -999,7 +1007,8 @@ function New-MonitorInteractionController {
     try {
         if ($usesDisplayController) {
             & $TrayView.SetCallbacks `
-                -OnToggleVisibility $toggleVisibility -OnSetDisplayMode $setDisplayMode `
+                -OnToggleVisibility $toggleVisibility -OnOpenSettings $openSettings `
+                -OnSetDisplayMode $setDisplayMode `
                 -OnSetTheme $setTheme -OnSetFullLayout $setFullLayout `
                 -OnManageRelays $manageRelays -OnToggleTopmost $toggleTopmost `
                 -OnRefresh $refresh -OnToggleStartup $toggleStartup `
@@ -1021,6 +1030,7 @@ function New-MonitorInteractionController {
 
             & $TrayView.SetCallbacks `
                 -OnToggleVisibility $toggleVisibility `
+                -OnOpenSettings $openSettings `
                 -OnToggleTopmost $toggleTopmost `
                 -OnRefresh $refresh `
                 -OnToggleStartup $toggleStartup `
@@ -1047,6 +1057,10 @@ function New-MonitorInteractionController {
         Hide = $hide
         ToggleVisibility = $toggleVisibility
         ToggleTopmost = $toggleTopmost
+        SetDisplayMode = $setDisplayMode
+        SetTheme = $setTheme
+        SetFullLayout = $setFullLayout
+        ManageRelays = $manageRelays
         PersistPlacement = $persistPlacement
         ToggleStartup = $toggleStartup
         Refresh = $refresh

@@ -169,6 +169,7 @@ function New-TrayView {
 
         $menuItems = [ordered]@{
             ToggleVisibility = [Windows.Forms.ToolStripMenuItem]::new('显示/隐藏')
+            Settings = [Windows.Forms.ToolStripMenuItem]::new('设置')
             DisplayMode = [Windows.Forms.ToolStripMenuItem]::new('显示模式')
             FullMode = [Windows.Forms.ToolStripMenuItem]::new('完整窗口')
             CompactBarMode = [Windows.Forms.ToolStripMenuItem]::new('迷你条')
@@ -206,10 +207,8 @@ function New-TrayView {
 
         $contextMenu = [Windows.Forms.ContextMenuStrip]::new()
         foreach ($item in @(
-            $menuItems.ToggleVisibility, $menuItems.DisplayMode, $menuItems.Theme,
-            $menuItems.FullLayout, $menuItems.ManageRelays, $menuItems.Topmost,
-            $menuItems.Refresh, $menuItems.Startup, $menuItems.Usage, $menuItems.Logs,
-            $menuItems.Exit
+            $menuItems.ToggleVisibility, $menuItems.Settings, $menuItems.Usage,
+            $menuItems.Logs, $menuItems.Exit
         )) {
             [void]$contextMenu.Items.Add($item)
         }
@@ -226,6 +225,7 @@ function New-TrayView {
             Severity = 'Gray'
             Callbacks = [pscustomobject][ordered]@{
                 OnToggleVisibility = $null
+                OnOpenSettings = $null
                 OnSetDisplayMode = $null
                 OnSetTheme = $null
                 OnSetFullLayout = $null
@@ -243,6 +243,13 @@ function New-TrayView {
         $toggleVisibilityHandler = [EventHandler]{
             param($Sender, $EventArgs)
             $callback = $state.Callbacks.OnToggleVisibility
+            if (-not $state.Disposed -and $callback -is [scriptblock]) {
+                & $callback
+            }
+        }.GetNewClosure()
+        $settingsHandler = [EventHandler]{
+            param($Sender, $EventArgs)
+            $callback = $state.Callbacks.OnOpenSettings
             if (-not $state.Disposed -and $callback -is [scriptblock]) {
                 & $callback
             }
@@ -325,6 +332,7 @@ function New-TrayView {
 
         $state.Delegates = [pscustomobject][ordered]@{
             ToggleVisibility = $toggleVisibilityHandler
+            Settings = $settingsHandler
             FullMode = $fullModeHandler
             CompactBarMode = $compactBarModeHandler
             OrbMode = $orbModeHandler
@@ -343,6 +351,7 @@ function New-TrayView {
         }
 
         $menuItems.ToggleVisibility.add_Click($toggleVisibilityHandler)
+        $menuItems.Settings.add_Click($settingsHandler)
         $menuItems.FullMode.add_Click($fullModeHandler)
         $menuItems.CompactBarMode.add_Click($compactBarModeHandler)
         $menuItems.OrbMode.add_Click($orbModeHandler)
@@ -362,6 +371,7 @@ function New-TrayView {
         $setCallbacks = {
             param(
                 [AllowNull()][scriptblock]$OnToggleVisibility,
+                [AllowNull()][scriptblock]$OnOpenSettings,
                 [AllowNull()][scriptblock]$OnSetDisplayMode,
                 [AllowNull()][scriptblock]$OnSetTheme,
                 [AllowNull()][scriptblock]$OnSetFullLayout,
@@ -381,6 +391,7 @@ function New-TrayView {
 
             $state.Callbacks = [pscustomobject][ordered]@{
                 OnToggleVisibility = $OnToggleVisibility
+                OnOpenSettings = $OnOpenSettings
                 OnSetDisplayMode = $OnSetDisplayMode
                 OnSetTheme = $OnSetTheme
                 OnSetFullLayout = $OnSetFullLayout
@@ -490,6 +501,7 @@ function New-TrayView {
 
                 foreach ($binding in @(
                     @($menuItems.ToggleVisibility, $state.Delegates.ToggleVisibility),
+                    @($menuItems.Settings, $state.Delegates.Settings),
                     @($menuItems.FullMode, $state.Delegates.FullMode),
                     @($menuItems.CompactBarMode, $state.Delegates.CompactBarMode),
                     @($menuItems.OrbMode, $state.Delegates.OrbMode),

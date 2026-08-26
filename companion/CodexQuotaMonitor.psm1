@@ -27,8 +27,11 @@ $privateFiles = @(
     'RelayImportLinkStore.ps1'
     'CcSwitchImportView.ps1'
     'CcSwitchImportController.ps1'
+    'WindowIcon.ps1'
     'TrayView.ps1'
     'InteractionController.ps1'
+    'SettingsView.ps1'
+    'SettingsController.ps1'
 )
 
 foreach ($privateFile in $privateFiles) {
@@ -171,6 +174,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         NewCcSwitchImportView = ${function:New-CcSwitchImportView}
         NewCcSwitchImportController = ${function:New-CcSwitchImportController}
         NewRelayManagerController = ${function:New-RelayManagerController}
+        NewSettingsView = ${function:New-SettingsView}
+        NewSettingsController = ${function:New-SettingsController}
         NewTray = ${function:New-TrayView}
         NewInteraction = ${function:New-MonitorInteractionController}
         WriteHealth = ${function:Write-MonitorRuntimeHealthFile}
@@ -248,6 +253,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         RelayManagerController = $null
         CcSwitchImportView = $null
         CcSwitchImportController = $null
+        SettingsView = $null
+        SettingsController = $null
         TrayView = $null
         Interaction = $null
         RefreshEvent = [Threading.AutoResetEvent]::new($false)
@@ -1252,6 +1259,11 @@ function Invoke-CodexQuotaMonitorRuntime {
                     & $runtime.RelayManagerController.Show
                 }
             }.GetNewClosure()
+            $openSettingsAction = {
+                if ($null -ne $runtime.SettingsController) {
+                    & $runtime.SettingsController.Show
+                }
+            }.GetNewClosure()
 
             $newDisplayFunction = $functions.NewDisplay
             $runtime.DisplayController = & $newDisplayFunction `
@@ -1275,7 +1287,31 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -ExitEvent $runtime.Instance.ExitEvent `
                 -OpenTarget $openTargetAction `
                 -LogDirectory $paths.Logs `
-                -OnManageRelays $manageRelaysAction
+                -OnManageRelays $manageRelaysAction `
+                -OnOpenSettings $openSettingsAction
+
+            $newSettingsViewFunction = $functions.NewSettingsView
+            $runtime.SettingsView = & $newSettingsViewFunction
+            $settingsSnapshotAction = {
+                [pscustomobject][ordered]@{
+                    Mode = [string]$runtime.DisplayController.State.Mode
+                    Theme = [string]$runtime.DisplayController.State.Theme
+                    FullLayout = [string]$runtime.DisplayController.State.FullLayout
+                    Topmost = [bool]$runtime.DisplayController.State.Topmost
+                    Startup = [bool]$runtime.Settings.Startup
+                }
+            }.GetNewClosure()
+            $newSettingsControllerFunction = $functions.NewSettingsController
+            $runtime.SettingsController = & $newSettingsControllerFunction `
+                -View $runtime.SettingsView `
+                -GetSnapshot $settingsSnapshotAction `
+                -SetDisplayMode $runtime.Interaction.SetDisplayMode `
+                -SetTheme $runtime.Interaction.SetTheme `
+                -SetFullLayout $runtime.Interaction.SetFullLayout `
+                -ToggleTopmost $runtime.Interaction.ToggleTopmost `
+                -ToggleStartup $runtime.Interaction.ToggleStartup `
+                -RequestRefresh $runtime.Interaction.Refresh `
+                -ManageRelays $manageRelaysAction
 
             $initializeDesktopFunction = $functions.InitializeDesktop
             & $initializeDesktopFunction `
@@ -1383,6 +1419,13 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
         if ($null -ne $runtime.Interaction) {
             try { & $runtime.Interaction.Dispose } catch { }
+        }
+        if ($null -ne $runtime.SettingsController) {
+            try { & $runtime.SettingsController.Dispose } catch { }
+            $runtime.SettingsView = $null
+        }
+        elseif ($null -ne $runtime.SettingsView) {
+            try { & $runtime.SettingsView.Dispose } catch { }
         }
         if ($null -ne $runtime.RelayManagerController) {
             try { & $runtime.RelayManagerController.Dispose } catch { }
