@@ -6,8 +6,8 @@
         MinWidth="700"
         MinHeight="480"
         WindowStartupLocation="CenterOwner"
-        Background="#FF202634"
-        Foreground="#FFF4F3F1"
+        Background="#FFFFFFFF"
+        Foreground="#FF1F2329"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         AutomationProperties.Name="从 CC Switch 导入余额查询规则">
@@ -22,10 +22,11 @@
             <Setter Property="Padding" Value="5,2" />
         </Style>
         <Style TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#FF1F2329" />
             <Setter Property="Margin" Value="0,5,0,0" />
         </Style>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#FFAFB8CB" />
+            <Setter Property="Foreground" Value="#FF5A6478" />
             <Setter Property="Margin" Value="0,0,0,4" />
         </Style>
     </Window.Resources>
@@ -65,9 +66,9 @@
                 <ListBox x:Name="SourceList"
                          Grid.Row="1"
                          DisplayMemberPath="DisplayName"
-                         Background="#FF2A3141"
-                         Foreground="#FFF4F3F1"
-                         BorderBrush="#FF596276"
+                         Background="#FFFFFFFF"
+                         Foreground="#FF1F2329"
+                         BorderBrush="#FFC9D1DC"
                          TabIndex="1"
                          AutomationProperties.Name="CC Switch 查询规则" />
             </Grid>
@@ -104,8 +105,8 @@
 
                 <Border Margin="0,16,0,0"
                         Padding="10"
-                        Background="#FF2A3141"
-                        BorderBrush="#FF596276"
+                        Background="#FFF7F8FA"
+                        BorderBrush="#FFC9D1DC"
                         BorderThickness="1">
                     <TextBlock x:Name="ConversionText"
                                TextWrapping="Wrap"

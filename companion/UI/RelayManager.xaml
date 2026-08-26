@@ -6,8 +6,8 @@
         MinWidth="800"
         MinHeight="620"
         WindowStartupLocation="CenterScreen"
-        Background="#FF202634"
-        Foreground="#FFF4F3F1"
+        Background="#FFFFFFFF"
+        Foreground="#FF1F2329"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True"
         AutomationProperties.Name="中转站额度管理器">
@@ -15,16 +15,16 @@
         <Style TargetType="TextBox">
             <Setter Property="MinHeight" Value="28" />
             <Setter Property="Padding" Value="6,3" />
-            <Setter Property="Background" Value="#FF323A4C" />
-            <Setter Property="Foreground" Value="#FFF4F3F1" />
-            <Setter Property="BorderBrush" Value="#FF596276" />
+            <Setter Property="Background" Value="#FFFFFFFF" />
+            <Setter Property="Foreground" Value="#FF1F2329" />
+            <Setter Property="BorderBrush" Value="#FFC9D1DC" />
         </Style>
         <Style TargetType="PasswordBox">
             <Setter Property="MinHeight" Value="28" />
             <Setter Property="Padding" Value="6,3" />
-            <Setter Property="Background" Value="#FF323A4C" />
-            <Setter Property="Foreground" Value="#FFF4F3F1" />
-            <Setter Property="BorderBrush" Value="#FF596276" />
+            <Setter Property="Background" Value="#FFFFFFFF" />
+            <Setter Property="Foreground" Value="#FF1F2329" />
+            <Setter Property="BorderBrush" Value="#FFC9D1DC" />
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="MinHeight" Value="28" />
@@ -36,7 +36,7 @@
             <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#FFAFB8CB" />
+            <Setter Property="Foreground" Value="#FF5A6478" />
             <Setter Property="Margin" Value="0,0,0,4" />
         </Style>
         <Style x:Key="EditorTextBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
@@ -67,9 +67,9 @@
             <ListBox x:Name="ProviderList"
                      Grid.Row="1"
                      DisplayMemberPath="DisplayName"
-                     Background="#FF2A3141"
-                     Foreground="#FFF4F3F1"
-                     BorderBrush="#FF596276"
+                     Background="#FFFFFFFF"
+                     Foreground="#FF1F2329"
+                     BorderBrush="#FFC9D1DC"
                      AutomationProperties.Name="中转站列表" />
             <UniformGrid Grid.Row="2" Columns="2" Margin="0,8,0,0">
                 <Button x:Name="AddButton" Content="新增" AutomationProperties.Name="新增中转站" />
@@ -185,7 +185,7 @@
                                  AutomationProperties.Name="中转站提取函数" />
                         <TextBlock x:Name="MigrationWarningText"
                                    Margin="0,6,0,0"
-                                   Foreground="#FFFFC857"
+                                   Foreground="#FF9A6700"
                                    TextWrapping="Wrap"
                                    Visibility="Collapsed"
                                    AutomationProperties.Name="迁移提示" />
@@ -240,15 +240,15 @@
                 <TextBlock x:Name="TestStateText"
                            Grid.Column="1"
                            VerticalAlignment="Center"
-                           Foreground="#FFAFB8CB"
+                           Foreground="#FF5A6478"
                            TextTrimming="CharacterEllipsis" />
             </Grid>
 
             <ListBox x:Name="PreviewList"
                      Grid.Row="2"
-                     Background="#FF2A3141"
-                     Foreground="#FFF4F3F1"
-                     BorderBrush="#FF596276"
+                     Background="#FFFFFFFF"
+                     Foreground="#FF1F2329"
+                     BorderBrush="#FFC9D1DC"
                      AutomationProperties.Name="脱敏测试预览" />
 
             <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
