@@ -84,17 +84,15 @@ function ConvertTo-QuotaOrbBrush {
 function ConvertTo-QuotaOrbCompactValueText {
     param([AllowEmptyString()][string]$Text)
 
-    # "$2.02 / $5.00 USD" -> "$2.02 USD": the full ratio belongs in the tooltip;
-    # the orb face shows the leading amount so the currency unit stays visible.
-    $match = [regex]::Match($Text, '^\s*(\S+)\s+/\s+\S+(?:\s+(.+?))?\s*$')
+    # "$2.02 / $5.00 USD" -> "$2.02" and "$2.02 USD" -> "$2.02": the orb face
+    # shows the amount only; the full ratio and currency unit stay in the tooltip.
+    $match = [regex]::Match($Text, '^\s*(\S+)\s+/\s+')
     if ($match.Success) {
-        $unit = $match.Groups[2].Value
-        if ([string]::IsNullOrWhiteSpace($unit)) {
-            return $match.Groups[1].Value
-        }
-        return "$($match.Groups[1].Value) $unit"
+        return $match.Groups[1].Value
     }
-    return $Text
+    $cleaned = $Text -replace '\s+[A-Z]{3,4}\s*$', ''
+    $cleaned = $cleaned -replace '\s+%$', '%'
+    return $cleaned.Trim()
 }
 
 function Select-QuotaOrbMetricFontSize {

@@ -143,24 +143,25 @@ Describe 'quota orb composition' {
             $data.RadiusY | Should -Be 35
         }
 
-        It 'compacts a relay ratio to the leading amount plus unit on the orb face' {
+        It 'compacts a relay ratio to the leading amount only on the orb face' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
             $row = New-TestOrbRow -Key 'relay:wakaka:plan' -Label 'standard' `
                 -SourceLabel 'Wakaka' -ValueText '$2.02 / $5.00 USD' -ProgressValue 40.4
 
             & $OrbView.RenderFocus -Row $row
 
-            $OrbView.Controls.MetricText.Text | Should -BeExactly '$2.02 USD'
+            $OrbView.Controls.MetricText.Text | Should -BeExactly '$2.02'
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Visible)
             [string]$OrbView.Controls.RootBorder.ToolTip |
                 Should -Match '\$2\.02 / \$5\.00 USD' -Because 'the tooltip keeps the full ratio'
         }
 
-        It 'leaves plain amounts and percentages untouched by compaction' {
-            @('74%', '$18.42 USD', '¥12.30 CNY', '--') | ForEach-Object {
-                ConvertTo-QuotaOrbCompactValueText -Text $_ | Should -BeExactly $_
-            }
+        It 'strips the currency unit but keeps plain amounts and percentages' {
+            ConvertTo-QuotaOrbCompactValueText -Text '74%' | Should -BeExactly '74%'
+            ConvertTo-QuotaOrbCompactValueText -Text '$18.42 USD' | Should -BeExactly '$18.42'
+            ConvertTo-QuotaOrbCompactValueText -Text '¥12.30 CNY' | Should -BeExactly '¥12.30'
+            ConvertTo-QuotaOrbCompactValueText -Text '--' | Should -BeExactly '--'
         }
 
         It 'renders a pinned absolute wallet without fabricating an arc' {
@@ -174,7 +175,7 @@ Describe 'quota orb composition' {
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Visible)
-            $OrbView.Controls.ValueText.Text | Should -BeExactly '$18.42 USD'
+            $OrbView.Controls.ValueText.Text | Should -BeExactly '$18.42'
             $OrbView.Controls.SourceText.Text | Should -BeExactly 'Wakaka · 账户余额'
         }
 
