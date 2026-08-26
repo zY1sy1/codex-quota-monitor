@@ -1017,6 +1017,7 @@ fn evaluate_request_with_quickjs(
     }
 
     let replaced = replace_tokens_for_evaluation(script, base_url, secrets)?;
+    let replaced = trim_legacy_expression_terminator(&replaced);
     let source_len = replaced
         .len()
         .checked_add("(\n\n).request".len())
@@ -1067,7 +1068,7 @@ fn evaluate_extractor_with_quickjs(
     }
 
     let replaced = replace_tokens_for_evaluation(script, base_url, secrets)?;
-    let wrapped = wrap_extractor_source(&replaced);
+    let wrapped = wrap_extractor_source(trim_legacy_expression_terminator(&replaced));
     let source_len = wrapped
         .len()
         .checked_add("(\n\n)".len())
@@ -1114,6 +1115,18 @@ fn wrap_extractor_source(source: &str) -> String {
         source.into()
     } else {
         format!("{{extractor: ({source})}}")
+    }
+}
+
+/// Legacy CC Switch scripts often end with a statement terminator, but the
+/// evaluator wraps them in parentheses and needs a pure expression.
+fn trim_legacy_expression_terminator(mut source: &str) -> &str {
+    loop {
+        source = source.trim_end_matches(|character: char| character.is_whitespace());
+        let Some(stripped) = source.strip_suffix(';') else {
+            return source;
+        };
+        source = stripped;
     }
 }
 
@@ -2007,5 +2020,42 @@ mod wire_result_validation_tests {
                 .category,
             "SidecarLifecycle"
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_expression_tests {
+    use super::*;
+
+    #[test]
+    fn strips_trailing_semicolons_and_whitespace_only() {
+        assert_eq!(trim_legacy_expression_terminator("({x: 1});"), "({x: 1})");
+        assert_eq!(trim_legacy_expression_terminator("({x: 1});   \n"), "({x: 1})");
+        assert_eq!(trim_legacy_expression_terminator("({x: 1});;;"), "({x: 1})");
+    }
+
+    #[test]
+    fn leaves_internal_semicolons_and_non_terminated_scripts_untouched() {
+        assert_eq!(trim_legacy_expression_terminator("({x: 1; y: 2})"), "({x: 1; y: 2})");
+        assert_eq!(trim_legacy_expression_terminator("({x: 1});\n  ({y: 2})"), "({x: 1});\n  ({y: 2})");
+        assert_eq!(trim_legacy_expression_terminator("function (r) { return r; }"), "function (r) { return r; }");
+    }
+
+    #[test]
+    fn legacy_object_with_terminator_wraps_to_a_pure_expression() {
+        let script = "({ request: { url: \"{{baseUrl}}/v1/usage\", method: \"GET\", headers: {} }, extractor: function (r) { return { isValid: true }; } });";
+        let replaced = replace_tokens_for_evaluation(script, "https://example.com", &SecretSet::default()).unwrap();
+        let wrapped = wrap_extractor_source(trim_legacy_expression_terminator(&replaced));
+        assert!(!wrapped.trim_end().ends_with(';'));
+        assert!(wrapped.trim_start().starts_with("({"));
+    }
+
+    #[test]
+    fn function_style_script_with_terminator_still_wraps() {
+        let script = "function (r) { return { isValid: true, remaining: 1, unit: \"%\" }; };";
+        let replaced = replace_tokens_for_evaluation(script, "", &SecretSet::default()).unwrap();
+        let wrapped = wrap_extractor_source(trim_legacy_expression_terminator(&replaced));
+        assert!(wrapped.starts_with("{extractor: (function"));
+        assert!(!wrapped.trim_end().ends_with(';'));
     }
 }
