@@ -150,7 +150,8 @@ function Get-CcSwitchBuiltInBalanceScript {
     if ($null -eq $baseUrl) {
         return $null
     }
-    return '({request:{url:"{{baseUrl}}/user/balance",method:"GET",headers:{Authorization:"Bearer {{apiKey}}"}},extractor:function(response){const info=Array.isArray(response&&response.balance_infos)?response.balance_infos[0]:null;return{isValid:(response&&response.is_available)!==false,remaining:info?Number(info.total_balance):null,unit:info?info.currency:null};}}})'
+    return '({request:{url:"{{baseUrl}}/user/balance",method:"GET",headers:{Authorization:"Bearer {{apiKey}}"}},extractor:function(response){const info=Array.isArray(response&&response.balance_infos)?response.balance_infos[0]:null;return{isValid:(response&&response.is_available)!==false,remaining:info?Number(info.total_balance):null,unit:info?info.currency:null};
+}})'
 }
 
 function ConvertTo-CcSwitchDiscoveryResponse {

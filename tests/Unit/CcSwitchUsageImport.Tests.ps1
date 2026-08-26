@@ -265,6 +265,8 @@ Describe 'CC Switch usage rule conversion' {
         $candidate.Draft.RequestDefinition.Path | Should -BeExactly '/user/balance'
         $candidate.Draft.RequestDefinition.Headers.Authorization |
             Should -BeExactly 'Bearer {{apiKey}}'
+        $candidate.Draft.ExtractorScript | Should -Match '(?s)^function\(response\)\{.*\}$'
+        $candidate.Draft.ExtractorScript | Should -Not -Match '\}\}$'
     }
 
     It 'requires Custom when any request syntax is not fully understood' -ForEach @(
