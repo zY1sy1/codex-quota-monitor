@@ -130,7 +130,7 @@ Describe 'session handshake' {
         $actions[0].id | Should -Be 1
         $actions[0].params.clientInfo.name | Should -BeExactly 'codex_quota_monitor'
         $actions[0].params.clientInfo.title | Should -BeExactly 'Codex Quota Monitor'
-        $actions[0].params.clientInfo.version | Should -BeExactly '0.1.2'
+        $actions[0].params.clientInfo.version | Should -BeExactly '0.1.3'
         ($actions[0].params.clientInfo.Keys -join ',') | Should -BeExactly 'name,title,version'
         $actions[0].PSObject.Properties.Name | Should -Not -Contain 'jsonrpc'
         $state.NextId | Should -Be 2

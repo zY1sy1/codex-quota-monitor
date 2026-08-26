@@ -11,7 +11,7 @@ Describe 'Codex quota monitor production composition' {
         $manifest = Import-PowerShellDataFile -Path $ManifestPath
 
         $manifest.RootModule | Should -BeExactly 'CodexQuotaMonitor.psm1'
-        $manifest.ModuleVersion | Should -BeExactly '0.1.2'
+        $manifest.ModuleVersion | Should -BeExactly '0.1.3'
         $manifest.PowerShellVersion | Should -BeExactly '7.4'
         [guid]$manifest.GUID | Should -Not -Be ([guid]::Empty)
         @($manifest.FunctionsToExport) | Should -Be @(

@@ -98,7 +98,7 @@ function Start-SessionHandshake {
         clientInfo = [ordered]@{
             name = 'codex_quota_monitor'
             title = 'Codex Quota Monitor'
-            version = '0.1.2'
+            version = '0.1.3'
         }
     }
     New-SessionRequest -State $State -Method 'initialize' -Params $params -Now $Now

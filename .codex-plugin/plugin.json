@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-monitor",
-  "version": "0.1.2+codex.20260826181506",
+  "version": "0.1.3+codex.20260826191715",
   "description": "Install and manage a Windows companion that displays official Codex quota windows.",
   "author": {
     "name": "Local developer"
