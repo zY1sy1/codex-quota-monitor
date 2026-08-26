@@ -1027,7 +1027,7 @@ fn evaluate_request_with_quickjs(
         .try_reserve_exact(source_len)
         .map_err(|_| script_memory_error())?;
     source.push_str("(\n");
-    source.push_str(&replaced);
+    source.push_str(replaced);
     source.push_str("\n).request");
 
     let interrupted = Arc::new(AtomicBool::new(false));
