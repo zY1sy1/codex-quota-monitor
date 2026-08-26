@@ -925,6 +925,18 @@ function New-MonitorInteractionController {
 
     $exit = {
         if (-not $state.Disposed) {
+            try {
+                if ($usesDisplayController) {
+                    if ($null -ne $DisplayController.PSObject.Properties['PersistCurrentPlacement']) {
+                        & $DisplayController.PersistCurrentPlacement
+                    }
+                }
+                elseif ($null -ne $WindowView.PSObject.Properties['GetPlacement']) {
+                    $placement = & $WindowView.GetPlacement
+                    & $persistPlacement -Placement $placement
+                }
+            }
+            catch { }
             $ExitEvent.Set() | Out-Null
         }
     }.GetNewClosure()

@@ -266,6 +266,20 @@ function New-MonitorDisplayModeController {
         if ($changed) { & $persist }
     }.GetNewClosure()
 
+    $persistCurrentPlacement = {
+        if ($state.Disposed) { return }
+        $mode = [string]$state.Mode
+        $view = $views[$mode]
+        if ($null -eq $view -or $null -eq $view.PSObject.Properties['GetPlacement']) { return }
+        try {
+            $placement = & $view.GetPlacement
+            if ($null -ne $placement) {
+                & $persistPlacement -Mode $mode -Placement $placement
+            }
+        }
+        catch { }
+    }.GetNewClosure()
+
     $cycleMode = {
         $next = switch ($state.Mode) { 'Full' { 'CompactBar' }; 'CompactBar' { 'Orb' }; default { 'Full' } }
         & $setMode $next
@@ -339,6 +353,7 @@ function New-MonitorDisplayModeController {
         ShowCurrent = $showCurrent
         OpenFull = $openFull
         PersistPlacement = $persistPlacement
+        PersistCurrentPlacement = $persistCurrentPlacement
         ApplyVisibility = $applyVisibility
         SetStateChangedCallback = $setStateChangedCallback
         Dispose = $dispose
