@@ -1,3 +1,7 @@
+if (-not (Get-Command Get-MonitorAppIconPath -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'WindowIcon.ps1')
+}
+
 function Get-RelayManagerField {
     param([AllowNull()][object]$InputObject, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $InputObject) { return $null }
@@ -144,6 +148,11 @@ function New-RelayManagerView {
         if ($null -ne $stream) { $stream.Dispose() }
     }
     if ($window -isnot [Windows.Window]) { throw 'Relay manager XAML root must be a Window.' }
+
+    $windowIcon = ConvertTo-MonitorWindowIconSource (Get-MonitorAppIconPath)
+    if ($null -ne $windowIcon) {
+        $window.Icon = $windowIcon
+    }
 
     $controlNames = @(
         'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton', 'ImportButton',

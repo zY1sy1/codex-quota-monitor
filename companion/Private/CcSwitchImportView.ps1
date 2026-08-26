@@ -1,3 +1,7 @@
+if (-not (Get-Command Get-MonitorAppIconPath -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'WindowIcon.ps1')
+}
+
 function Get-CcSwitchImportViewField {
     param([AllowNull()][object]$InputObject, [Parameter(Mandatory)][string]$Name)
     if ($null -eq $InputObject) {
@@ -64,6 +68,11 @@ function New-CcSwitchImportView {
     }
     if ($window -isnot [Windows.Window]) {
         throw 'CC Switch import XAML root must be a Window.'
+    }
+
+    $windowIcon = ConvertTo-MonitorWindowIconSource (Get-MonitorAppIconPath)
+    if ($null -ne $windowIcon) {
+        $window.Icon = $windowIcon
     }
 
     $controlNames = @(
