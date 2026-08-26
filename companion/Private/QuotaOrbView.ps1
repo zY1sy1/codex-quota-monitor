@@ -81,6 +81,38 @@ function ConvertTo-QuotaOrbBrush {
     return [Windows.Media.BrushConverter]::new().ConvertFromString($Color)
 }
 
+function ConvertTo-QuotaOrbCompactValueText {
+    param([AllowEmptyString()][string]$Text)
+
+    # "$2.02 / $5.00 USD" -> "$2.02 USD": the full ratio belongs in the tooltip;
+    # the orb face shows the leading amount so the currency unit stays visible.
+    $match = [regex]::Match($Text, '^\s*(\S+)\s+/\s+\S+(?:\s+(.+?))?\s*$')
+    if ($match.Success) {
+        $unit = $match.Groups[2].Value
+        if ([string]::IsNullOrWhiteSpace($unit)) {
+            return $match.Groups[1].Value
+        }
+        return "$($match.Groups[1].Value) $unit"
+    }
+    return $Text
+}
+
+function Select-QuotaOrbMetricFontSize {
+    param([AllowEmptyString()][string]$Text)
+
+    $typeface = [Windows.Media.Typeface]::new(
+        'Segoe UI', [Windows.FontStyles]::Normal,
+        [Windows.FontWeights]::Bold, [Windows.FontStretches]::Normal)
+    for ($size = 20; $size -ge 12; $size--) {
+        $formatted = [Windows.Media.FormattedText]::new(
+            $Text, [Globalization.CultureInfo]::CurrentUICulture,
+            [Windows.FlowDirection]::LeftToRight, $typeface, $size,
+            [Windows.Media.Brushes]::White, 1.0)
+        if ($formatted.Width -le 68) { return $size }
+    }
+    return 12
+}
+
 function Set-QuotaOrbThemeVisuals {
     param(
         [Parameter(Mandatory)][object]$Window,
@@ -91,7 +123,6 @@ function Set-QuotaOrbThemeVisuals {
     $palette = Get-MonitorThemePalette -Theme $Theme
     $Controls.RootBorder.Background = ConvertTo-QuotaOrbBrush $palette.Surface
     $Controls.RootBorder.BorderBrush = ConvertTo-QuotaOrbBrush $palette.Separator
-    $Controls.RingTrack.Stroke = ConvertTo-QuotaOrbBrush $palette.Track
     $Controls.RingValue.Stroke = ConvertTo-QuotaOrbBrush $palette.Accent
     $Controls.MetricText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
     $Controls.ValueText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
@@ -185,7 +216,7 @@ function New-QuotaOrbView {
 
     $controls = [ordered]@{}
     foreach ($name in @(
-        'RootBorder', 'HeaderDragArea', 'RingTrack', 'RingValue', 'MetricText',
+        'RootBorder', 'HeaderDragArea', 'RingValue', 'MetricText',
         'ValueText', 'SourceText', 'ModeButton', 'CloseButton'
     )) {
         $control = $window.FindName($name)
@@ -223,6 +254,8 @@ function New-QuotaOrbView {
         GetPresentationField = ${function:Get-QuotaOrbPresentationField}
         GetPresentationText = ${function:Get-QuotaOrbPresentationText}
         ConvertProgress = ${function:ConvertTo-QuotaOrbProgressValue}
+        CompactValueText = ${function:ConvertTo-QuotaOrbCompactValueText}
+        SelectFontSize = ${function:Select-QuotaOrbMetricFontSize}
         GetArcGeometry = ${function:Get-QuotaOrbArcGeometry}
         GetPlacementModel = ${function:Get-QuotaOrbPlacement}
         TestEventFromButton = ${function:Test-QuotaOrbEventFromButton}
@@ -306,6 +339,7 @@ function New-QuotaOrbView {
         if ($null -eq $Row) {
             $state.ProgressValue = $null
             $state.Controls.MetricText.Text = '—'
+            $state.Controls.MetricText.FontSize = 20
             $state.Controls.ValueText.Text = ''
             $state.Controls.SourceText.Text = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
                 ''
@@ -335,14 +369,16 @@ function New-QuotaOrbView {
             $sourceLabel
         }
         $valueText = & $state.GetPresentationText $Row @('ValueText', 'RemainingText')
+        $compactValue = & $state.CompactValueText $valueText
         $state.Controls.SourceText.Text = $displayLabel
-        $state.Controls.ValueText.Text = $valueText
+        $state.Controls.ValueText.Text = $compactValue
         $state.ProgressValue = & $state.ConvertProgress (
             & $state.GetPresentationField -Row $Row -Name 'ProgressValue'
         )
 
         if ($null -ne $state.ProgressValue) {
-            $state.Controls.MetricText.Text = $valueText
+            $state.Controls.MetricText.Text = $compactValue
+            $state.Controls.MetricText.FontSize = & $state.SelectFontSize $compactValue
             if ($state.ProgressValue -ge 100) {
                 # A genuine closed circle avoids the degenerate near-360 arc that
                 # left a hairline gap and an inset radius at exactly 100 percent.
@@ -382,6 +418,7 @@ function New-QuotaOrbView {
             }
             else {
                 $state.Controls.MetricText.Text = '—'
+                $state.Controls.MetricText.FontSize = 20
             }
         }
 

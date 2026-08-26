@@ -82,20 +82,15 @@ Describe 'quota orb composition' {
             $OrbView.Window.Height | Should -Be 112
             $OrbView.Window.ShowInTaskbar | Should -BeFalse
             foreach ($name in @(
-                'RootBorder', 'HeaderDragArea', 'RingTrack', 'RingValue', 'MetricText',
+                'RootBorder', 'HeaderDragArea', 'RingValue', 'MetricText',
                 'ValueText', 'SourceText', 'ModeButton', 'CloseButton'
             )) {
                 $OrbView.Controls.Contains($name) | Should -BeTrue
                 $OrbView.Controls[$name] | Should -Not -BeNullOrEmpty
             }
+            $OrbView.Controls.Contains('RingTrack') | Should -BeFalse -Because 'the quota arc stands alone without a track ring'
             $OrbView.Controls.RootBorder.CornerRadius.TopLeft | Should -Be 56
             $OrbView.Controls.RootBorder.BorderBrush.ToString() | Should -Not -BeExactly '#FFFFFFFF'
-            $OrbView.Controls.RingTrack.Width | Should -Be 76
-            $OrbView.Controls.RingTrack.Height | Should -Be 76
-            $OrbView.Controls.RingTrack.StrokeThickness |
-                Should -Be $OrbView.Controls.RingValue.StrokeThickness
-            (($OrbView.Controls.RingTrack.Width - $OrbView.Controls.RingTrack.StrokeThickness) / 2) |
-                Should -Be 35
             $OrbView.Controls.RingValue.Width | Should -Be 70
             $OrbView.Controls.RingValue.Height | Should -Be 70
             $OrbView.Controls.RingValue.StrokeStartLineCap |
@@ -122,7 +117,7 @@ Describe 'quota orb composition' {
             $segment.IsLargeArc | Should -BeTrue
         }
 
-        It 'renders no value arc at zero percent so the empty track alone shows' {
+        It 'renders no value arc at zero percent' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
             $row = New-TestOrbRow -ValueText '0%' -ProgressValue 0
 
@@ -146,6 +141,26 @@ Describe 'quota orb composition' {
             $data.Center.Y | Should -Be 35
             $data.RadiusX | Should -Be 35
             $data.RadiusY | Should -Be 35
+        }
+
+        It 'compacts a relay ratio to the leading amount plus unit on the orb face' {
+            $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
+            $row = New-TestOrbRow -Key 'relay:wakaka:plan' -Label 'standard' `
+                -SourceLabel 'Wakaka' -ValueText '$2.02 / $5.00 USD' -ProgressValue 40.4
+
+            & $OrbView.RenderFocus -Row $row
+
+            $OrbView.Controls.MetricText.Text | Should -BeExactly '$2.02 USD'
+            $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Visible)
+            $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Visible)
+            [string]$OrbView.Controls.RootBorder.ToolTip |
+                Should -Match '\$2\.02 / \$5\.00 USD' -Because 'the tooltip keeps the full ratio'
+        }
+
+        It 'leaves plain amounts and percentages untouched by compaction' {
+            @('74%', '$18.42 USD', '¥12.30 CNY', '--') | ForEach-Object {
+                ConvertTo-QuotaOrbCompactValueText -Text $_ | Should -BeExactly $_
+            }
         }
 
         It 'renders a pinned absolute wallet without fabricating an arc' {

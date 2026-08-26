@@ -42,12 +42,6 @@
                     Panel.ZIndex="2"
                     AutomationProperties.Name="拖动额度球" />
 
-            <Ellipse x:Name="RingTrack"
-                     Width="76"
-                     Height="76"
-                     Stroke="#664D566A"
-                     StrokeThickness="6"
-                     IsHitTestVisible="False" />
             <Path x:Name="RingValue"
                   Width="70"
                   Height="70"
@@ -63,7 +57,7 @@
                         VerticalAlignment="Center"
                         IsHitTestVisible="False">
                 <TextBlock x:Name="MetricText"
-                           MaxWidth="62"
+                           MaxWidth="70"
                            Foreground="#FFF4F3F1"
                            FontSize="20"
                            FontWeight="Bold"
