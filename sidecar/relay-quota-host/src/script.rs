@@ -2030,21 +2030,35 @@ mod legacy_expression_tests {
     #[test]
     fn strips_trailing_semicolons_and_whitespace_only() {
         assert_eq!(trim_legacy_expression_terminator("({x: 1});"), "({x: 1})");
-        assert_eq!(trim_legacy_expression_terminator("({x: 1});   \n"), "({x: 1})");
+        assert_eq!(
+            trim_legacy_expression_terminator("({x: 1});   \n"),
+            "({x: 1})"
+        );
         assert_eq!(trim_legacy_expression_terminator("({x: 1});;;"), "({x: 1})");
     }
 
     #[test]
     fn leaves_internal_semicolons_and_non_terminated_scripts_untouched() {
-        assert_eq!(trim_legacy_expression_terminator("({x: 1; y: 2})"), "({x: 1; y: 2})");
-        assert_eq!(trim_legacy_expression_terminator("({x: 1});\n  ({y: 2})"), "({x: 1});\n  ({y: 2})");
-        assert_eq!(trim_legacy_expression_terminator("function (r) { return r; }"), "function (r) { return r; }");
+        assert_eq!(
+            trim_legacy_expression_terminator("({x: 1; y: 2})"),
+            "({x: 1; y: 2})"
+        );
+        assert_eq!(
+            trim_legacy_expression_terminator("({x: 1});\n  ({y: 2})"),
+            "({x: 1});\n  ({y: 2})"
+        );
+        assert_eq!(
+            trim_legacy_expression_terminator("function (r) { return r; }"),
+            "function (r) { return r; }"
+        );
     }
 
     #[test]
     fn legacy_object_with_terminator_wraps_to_a_pure_expression() {
         let script = "({ request: { url: \"{{baseUrl}}/v1/usage\", method: \"GET\", headers: {} }, extractor: function (r) { return { isValid: true }; } });";
-        let replaced = replace_tokens_for_evaluation(script, "https://example.com", &SecretSet::default()).unwrap();
+        let replaced =
+            replace_tokens_for_evaluation(script, "https://example.com", &SecretSet::default())
+                .unwrap();
         let wrapped = wrap_extractor_source(trim_legacy_expression_terminator(&replaced));
         assert!(!wrapped.trim_end().ends_with(';'));
         assert!(wrapped.trim_start().starts_with("({"));
