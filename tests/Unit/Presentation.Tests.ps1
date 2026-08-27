@@ -282,3 +282,23 @@ Describe 'ConvertTo-OfficialMonitorPresentationRow' {
         $row.ResetTime | Should -BeExactly '重置时间：2026-08-01 13:00'
     }
 }
+
+Describe 'ConvertTo-QuotaDisplayValueText' {
+    It 'strips a trailing currency unit from an amount' {
+        ConvertTo-QuotaDisplayValueText '$2.02 USD' | Should -BeExactly '$2.02'
+        ConvertTo-QuotaDisplayValueText '¥12.30 CNY' | Should -BeExactly '¥12.30'
+    }
+
+    It 'strips the currency unit but keeps a ratio and the used suffix' {
+        ConvertTo-QuotaDisplayValueText '$150.00 / $100.00 USD' | Should -BeExactly '$150.00 / $100.00'
+        ConvertTo-QuotaDisplayValueText '$150.00 / $100.00 USD used' | Should -BeExactly '$150.00 / $100.00 used'
+    }
+
+    It 'leaves percentages, plain amounts, and placeholders untouched' {
+        ConvertTo-QuotaDisplayValueText '83 / 100 %' | Should -BeExactly '83 / 100 %'
+        ConvertTo-QuotaDisplayValueText '74%' | Should -BeExactly '74%'
+        ConvertTo-QuotaDisplayValueText '$5.00' | Should -BeExactly '$5.00'
+        ConvertTo-QuotaDisplayValueText '--' | Should -BeExactly '--'
+        ConvertTo-QuotaDisplayValueText '' | Should -BeExactly ''
+    }
+}

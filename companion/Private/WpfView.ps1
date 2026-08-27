@@ -2,6 +2,9 @@ if (-not (Get-Command -Name Get-MonitorThemePalette -CommandType Function -Error
     -not (Get-Command -Name Set-MonitorWindowTheme -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'Theme.ps1')
 }
+if (-not (Get-Command -Name ConvertTo-QuotaDisplayValueText -CommandType Function -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'Presentation.ps1')
+}
 
 function Get-WpfPresentationField {
     [CmdletBinding()]
@@ -134,7 +137,7 @@ function New-WpfQuotaCard {
         $remainingText = Get-WpfPresentationField $PresentationRow 'RemainingText'
     }
     $remaining = [Windows.Controls.TextBlock]::new()
-    $remaining.Text = [string]$remainingText
+    $remaining.Text = ConvertTo-QuotaDisplayValueText ([string]$remainingText)
     $remaining.Foreground = & $brush $Palette.TextPrimary
     $remaining.FontSize = 24
     $remaining.FontWeight = [Windows.FontWeights]::Bold

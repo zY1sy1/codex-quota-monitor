@@ -559,7 +559,7 @@ function Resolve-MonitorModePlacement {
             if ($null -eq $savedWidth -or $savedWidth -le 0) { 420.0 } else { $savedWidth }
         }
         'CompactBar' { 280.0 }
-        'Orb' { 112.0 }
+        'Orb' { 84.0 }
     }
     $height = switch ($Mode) {
         'Full' {
@@ -569,7 +569,7 @@ function Resolve-MonitorModePlacement {
             if ($null -eq $savedHeight -or $savedHeight -le 0) { 560.0 } else { $savedHeight }
         }
         'CompactBar' { 64.0 }
-        'Orb' { 112.0 }
+        'Orb' { 84.0 }
     }
     $placement = Resolve-WindowPlacement `
         -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `

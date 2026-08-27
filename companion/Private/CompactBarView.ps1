@@ -1,6 +1,9 @@
 if (-not (Get-Command -Name Get-MonitorThemePalette -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'Theme.ps1')
 }
+if (-not (Get-Command -Name ConvertTo-QuotaDisplayValueText -CommandType Function -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'Presentation.ps1')
+}
 
 function Get-CompactPresentationField {
     param(
@@ -201,6 +204,7 @@ function New-CompactBarView {
         }
         DragAction = $DragAction
         CreateBrush = ${function:ConvertTo-CompactBrush}
+        ConvertDisplayText = ${function:ConvertTo-QuotaDisplayValueText}
         GetPresentationField = ${function:Get-CompactPresentationField}
         GetPresentationText = ${function:Get-CompactPresentationText}
         ConvertProgress = ${function:ConvertTo-CompactProgressValue}
@@ -336,7 +340,7 @@ function New-CompactBarView {
         $countdownText = & $state.GetPresentationText $Row @('Countdown', 'CountdownText')
         $resetTimeText = & $state.GetPresentationText $Row @('ResetTime', 'ResetTimeText')
         $state.Controls.MetricLabel.Text = $displayLabel
-        $state.Controls.MetricValue.Text = $valueText
+        $state.Controls.MetricValue.Text = & $state.ConvertDisplayText $valueText
         $state.Controls.CountdownText.Text = $countdownText
         $state.Controls.ResetTimeText.Text = $resetTimeText
         $state.ProgressValue = & $state.ConvertProgress (
@@ -425,6 +429,7 @@ function New-CompactBarView {
         $state.CreateBrush = $null
         $state.GetPresentationField = $null
         $state.GetPresentationText = $null
+        $state.ConvertDisplayText = $null
         $state.ConvertProgress = $null
         $state.GetPlacementModel = $null
         $state.TestEventFromButton = $null

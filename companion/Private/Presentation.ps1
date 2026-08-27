@@ -1,3 +1,16 @@
+function ConvertTo-QuotaDisplayValueText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    # Views show the amount without the trailing currency unit; the unit stays
+    # in the hover tooltip, which renders the raw presentation text.
+    return [regex]::Replace($Text, '\s+[A-Z]{3,4}(\s+used)?\s*$', '$1').Trim()
+}
+
 function Get-QuotaLabel {
     [CmdletBinding()]
     param(

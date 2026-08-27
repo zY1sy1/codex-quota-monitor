@@ -123,9 +123,11 @@ Describe 'compact quota bar composition' {
             & $CompactView.RenderFocus $wallet
 
             $CompactView.Controls.MetricLabel.Text | Should -BeExactly 'Wakaka · 账户余额'
-            $CompactView.Controls.MetricValue.Text | Should -BeExactly '$18.42 USD'
+            $CompactView.Controls.MetricValue.Text | Should -BeExactly '$18.42'
             $CompactView.Controls.ProgressTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $CompactView.Controls.ProgressFill.Width | Should -Be 0
+            [string]$CompactView.Controls.RootBorder.ToolTip |
+                Should -Match 'USD' -Because 'the compact bar tooltip keeps the currency unit'
         }
 
         It 'shows a stable unavailable state for a missing manually pinned row' {

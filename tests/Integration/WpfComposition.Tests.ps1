@@ -274,7 +274,8 @@ Describe 'WPF floating window composition' {
         foreach ($name in @('RelayRows', 'RelayTabRows')) {
             $texts = @(Get-TestDescendant -Root $View.Controls[$name] -Type ([Windows.Controls.TextBlock]))
             @($texts.Text) | Should -Contain 'Wakaka 账户余额'
-            @($texts.Text) | Should -Contain '$18.42 USD'
+            @($texts.Text) | Should -Contain '$18.42'
+            @($texts.Text) | Should -Not -Contain '$18.42 USD' -Because 'the panel shows the amount without the currency unit'
             @($texts.Text) | Should -Contain '最近查询成功'
             @($texts.Text) | Should -Contain '18:26:40'
             @($texts.Text) | Should -Contain '重置时间：明天 00:00'

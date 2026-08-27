@@ -63,14 +63,21 @@ Describe 'quota orb composition' {
 
     Context 'when orb composition files exist' -Skip:(-not $script:QuotaOrbFilesExist) {
         It 'computes deterministic geometry for a 74 percent arc' {
-            $geometry = Get-QuotaOrbArcGeometry -Percent 74 -Radius 35
+            $geometry = Get-QuotaOrbArcGeometry -Percent 74 -Radius 36 -CenterX 40 -CenterY 40
             $angle = 360 * 74 / 100
             $radians = ($angle - 90) * [Math]::PI / 180
 
-            $geometry.EndX | Should -Be (35 + (35 * [Math]::Cos($radians))) -Because 'arc X is deterministic'
-            $geometry.EndY | Should -Be (35 + (35 * [Math]::Sin($radians))) -Because 'arc Y is deterministic'
+            $geometry.EndX | Should -Be (40 + (36 * [Math]::Cos($radians))) -Because 'arc X is deterministic'
+            $geometry.EndY | Should -Be (40 + (36 * [Math]::Sin($radians))) -Because 'arc Y is deterministic'
             $geometry.IsLargeArc | Should -BeTrue
             @($geometry.PSObject.Properties.Name) | Should -Be @('EndX', 'EndY', 'IsLargeArc')
+        }
+
+        It 'defaults arc geometry to the shared ring cell spec' {
+            $geometry = Get-QuotaOrbArcGeometry -Percent 25
+            $geometry.EndX | Should -Be 76 -Because '25 percent ends on the right edge of the ring'
+            $geometry.EndY | Should -Be 40
+            $geometry.IsLargeArc | Should -BeFalse
         }
 
         It 'loads the fixed circular visual contract' {
@@ -78,28 +85,33 @@ Describe 'quota orb composition' {
 
             $OrbView.Window.WindowStyle | Should -Be ([Windows.WindowStyle]::None)
             $OrbView.Window.AllowsTransparency | Should -BeTrue
-            $OrbView.Window.Width | Should -Be 112
-            $OrbView.Window.Height | Should -Be 112
+            $OrbView.Window.Width | Should -Be 84
+            $OrbView.Window.Height | Should -Be 84
             $OrbView.Window.ShowInTaskbar | Should -BeFalse
             foreach ($name in @(
-                'RootBorder', 'HeaderDragArea', 'RingValue', 'MetricText',
+                'RootBorder', 'HeaderDragArea', 'RingTrack', 'RingValue', 'MetricText',
                 'ValueText', 'SourceText', 'ModeButton', 'CloseButton'
             )) {
                 $OrbView.Controls.Contains($name) | Should -BeTrue
                 $OrbView.Controls[$name] | Should -Not -BeNullOrEmpty
             }
-            $OrbView.Controls.Contains('RingTrack') | Should -BeFalse -Because 'the quota arc stands alone without a track ring'
-            $OrbView.Controls.RootBorder.CornerRadius.TopLeft | Should -Be 56
-            $OrbView.Controls.RootBorder.BorderBrush.ToString() | Should -Not -BeExactly '#FFFFFFFF'
-            $OrbView.Controls.RingValue.Width | Should -Be 70
-            $OrbView.Controls.RingValue.Height | Should -Be 70
+            $OrbView.Controls.RootBorder.CornerRadius.TopLeft | Should -Be 42
+            $OrbView.Controls.RootBorder.BorderThickness.Top | Should -Be 0 -Because 'the quota ring itself forms the orb edge'
+            $OrbView.Controls.RingTrack.Width | Should -Be 80
+            $OrbView.Controls.RingTrack.Height | Should -Be 80
+            $OrbView.Controls.RingTrack.StrokeThickness | Should -Be 8
+            $OrbView.Controls.RingTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $OrbView.Controls.RingValue.Width | Should -Be 80
+            $OrbView.Controls.RingValue.Height | Should -Be 80
+            $OrbView.Controls.RingValue.StrokeThickness | Should -Be 8
+            $OrbView.Controls.RingValue.Stretch | Should -Be ([Windows.Media.Stretch]::None) -Because 'raw ring coordinates keep the ink inscribed inside the cell'
             $OrbView.Controls.RingValue.StrokeStartLineCap |
                 Should -Be ([Windows.Media.PenLineCap]::Round)
             $OrbView.Controls.RingValue.StrokeEndLineCap |
                 Should -Be ([Windows.Media.PenLineCap]::Round)
         }
 
-        It 'renders percentage text and the matching 74 percent arc' {
+        It 'renders percentage text and the matching 74 percent arc over a full track' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
             $row = New-TestOrbRow
 
@@ -108,16 +120,27 @@ Describe 'quota orb composition' {
             $OrbView.Controls.MetricText.Text | Should -BeExactly '74%'
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $trackData = $OrbView.Controls.RingTrack.Data
+            $trackData | Should -BeOfType ([Windows.Media.EllipseGeometry])
+            $trackData.Center.X | Should -Be 40
+            $trackData.Center.Y | Should -Be 40
+            $trackData.RadiusX | Should -Be 36
+            $trackData.RadiusY | Should -Be 36
+            $OrbView.Controls.RingTrack.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $figure = $OrbView.Controls.RingValue.Data.Figures[0]
+            $figure.StartPoint.X | Should -Be 40
+            $figure.StartPoint.Y | Should -Be 4 -Because 'the arc starts at the top of the shared radius-36 circle'
             $segment = $figure.Segments[0]
-            $expected = Get-QuotaOrbArcGeometry -Percent 74 -Radius 35
+            $expected = Get-QuotaOrbArcGeometry -Percent 74 -Radius 36 -CenterX 40 -CenterY 40
             $segment.Point.X | Should -Be $expected.EndX
             $segment.Point.Y | Should -Be $expected.EndY
+            $segment.Size.Width | Should -Be 36
+            $segment.Size.Height | Should -Be 36
             $segment.IsLargeArc | Should -BeTrue
         }
 
-        It 'renders no value arc at zero percent' {
+        It 'renders no value arc at zero percent but keeps the empty track' {
             $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
             $row = New-TestOrbRow -ValueText '0%' -ProgressValue 0
 
@@ -126,6 +149,7 @@ Describe 'quota orb composition' {
             $OrbView.Controls.MetricText.Text | Should -BeExactly '0%'
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.RingValue.Data | Should -BeNullOrEmpty
+            $OrbView.Controls.RingTrack.Visibility | Should -Be ([Windows.Visibility]::Visible) -Because 'a numeric percentage still reads as a ring'
         }
 
         It 'renders a genuine closed circle at one hundred percent' {
@@ -137,10 +161,13 @@ Describe 'quota orb composition' {
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $data = $OrbView.Controls.RingValue.Data
             $data | Should -BeOfType ([Windows.Media.EllipseGeometry])
-            $data.Center.X | Should -Be 35
-            $data.Center.Y | Should -Be 35
-            $data.RadiusX | Should -Be 35
-            $data.RadiusY | Should -Be 35
+            $data.Center.X | Should -Be 40
+            $data.Center.Y | Should -Be 40
+            $data.RadiusX | Should -Be 36
+            $data.RadiusY | Should -Be 36
+            $track = $OrbView.Controls.RingTrack.Data
+            $track.Center | Should -Be $data.Center -Because 'track and value share one circle spec'
+            $track.RadiusX | Should -Be $data.RadiusX
         }
 
         It 'compacts a relay ratio to the leading amount only on the orb face' {
@@ -173,6 +200,7 @@ Describe 'quota orb composition' {
             & $OrbView.RenderFocus -Row $wallet -PinnedKey 'relay:wakaka:wallet'
 
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $OrbView.Controls.RingTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed) -Because 'a wallet without a percentage must not fake a ring'
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.ValueText.Text | Should -BeExactly '$18.42'
@@ -187,6 +215,7 @@ Describe 'quota orb composition' {
             & $OrbView.RenderFocus -Row $wallet
 
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $OrbView.Controls.RingTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.MetricText.Text | Should -BeExactly '—'
@@ -200,6 +229,7 @@ Describe 'quota orb composition' {
             $OrbView.Controls.MetricText.Text | Should -BeExactly '—'
             $OrbView.Controls.SourceText.Text | Should -BeExactly '所选额度暂不可用'
             $OrbView.Controls.RingValue.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $OrbView.Controls.RingTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
         }
 
         It 'builds a safe hover tooltip with source value freshness and reset' {
@@ -223,10 +253,13 @@ Describe 'quota orb composition' {
             & $OrbView.SetTheme Light
             $OrbView.State.Theme | Should -BeExactly 'Light'
             $OrbView.Controls.RootBorder.Background.ToString() | Should -BeExactly '#E6F4EFEA'
+            $OrbView.Controls.RingTrack.Stroke.ToString() | Should -BeExactly '#40716D68'
             [object]::ReferenceEquals($OrbView.State.FocusRow, $row) | Should -BeTrue
 
             & $OrbView.SetTheme Dark
             $OrbView.Controls.RootBorder.Background.ToString() | Should -BeExactly '#E6323A4C'
+            $OrbView.Controls.RingTrack.Stroke.ToString() | Should -BeExactly '#4D707A90'
+            $OrbView.Controls.RingValue.Stroke.ToString() | Should -BeExactly '#FF58C2C7'
         }
 
         It 'routes body mode close and finite drag callbacks exactly once' {

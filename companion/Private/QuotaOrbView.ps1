@@ -5,16 +5,20 @@ if (-not (Get-Command -Name Get-MonitorThemePalette -CommandType Function -Error
 function Get-QuotaOrbArcGeometry {
     param(
         [ValidateRange(0, 100)][double]$Percent,
-        [double]$Radius = 35
+        [double]$Radius = 36,
+        [double]$CenterX = 40,
+        [double]$CenterY = 40
     )
 
     # Only 0 < Percent < 100 reaches here; 0 and 100 are handled by the caller
     # with a degenerate-arc-free path so the ring closes and empties cleanly.
+    # Endpoints are absolute in the 80x80 ring cell whose ink is exactly
+    # inscribed: stroke 8 centered on radius 36 spans the full cell.
     $angle = 360 * $Percent / 100
     $radians = ($angle - 90) * [Math]::PI / 180
     [pscustomobject][ordered]@{
-        EndX = $Radius + ($Radius * [Math]::Cos($radians))
-        EndY = $Radius + ($Radius * [Math]::Sin($radians))
+        EndX = $CenterX + ($Radius * [Math]::Cos($radians))
+        EndY = $CenterY + ($Radius * [Math]::Sin($radians))
         IsLargeArc = $angle -gt 180
     }
 }
@@ -101,14 +105,14 @@ function Select-QuotaOrbMetricFontSize {
     $typeface = [Windows.Media.Typeface]::new(
         'Segoe UI', [Windows.FontStyles]::Normal,
         [Windows.FontWeights]::Bold, [Windows.FontStretches]::Normal)
-    for ($size = 20; $size -ge 12; $size--) {
+    for ($size = 19; $size -ge 11; $size--) {
         $formatted = [Windows.Media.FormattedText]::new(
             $Text, [Globalization.CultureInfo]::CurrentUICulture,
             [Windows.FlowDirection]::LeftToRight, $typeface, $size,
             [Windows.Media.Brushes]::White, 1.0)
-        if ($formatted.Width -le 68) { return $size }
+        if ($formatted.Width -le 54) { return $size }
     }
-    return 12
+    return 11
 }
 
 function Set-QuotaOrbThemeVisuals {
@@ -120,7 +124,7 @@ function Set-QuotaOrbThemeVisuals {
 
     $palette = Get-MonitorThemePalette -Theme $Theme
     $Controls.RootBorder.Background = ConvertTo-QuotaOrbBrush $palette.Surface
-    $Controls.RootBorder.BorderBrush = ConvertTo-QuotaOrbBrush $palette.Separator
+    $Controls.RingTrack.Stroke = ConvertTo-QuotaOrbBrush $palette.Separator
     $Controls.RingValue.Stroke = ConvertTo-QuotaOrbBrush $palette.Accent
     $Controls.MetricText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
     $Controls.ValueText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
@@ -214,7 +218,7 @@ function New-QuotaOrbView {
 
     $controls = [ordered]@{}
     foreach ($name in @(
-        'RootBorder', 'HeaderDragArea', 'RingValue', 'MetricText',
+        'RootBorder', 'HeaderDragArea', 'RingTrack', 'RingValue', 'MetricText',
         'ValueText', 'SourceText', 'ModeButton', 'CloseButton'
     )) {
         $control = $window.FindName($name)
@@ -331,6 +335,8 @@ function New-QuotaOrbView {
         $state.FocusRow = $Row
         $state.Controls.RingValue.Data = $null
         $state.Controls.RingValue.Visibility = [Windows.Visibility]::Collapsed
+        $state.Controls.RingTrack.Data = $null
+        $state.Controls.RingTrack.Visibility = [Windows.Visibility]::Collapsed
         $state.Controls.ValueText.Visibility = [Windows.Visibility]::Collapsed
         $state.Controls.MetricText.Visibility = [Windows.Visibility]::Visible
 
@@ -375,13 +381,17 @@ function New-QuotaOrbView {
         )
 
         if ($null -ne $state.ProgressValue) {
+            $state.Controls.RingTrack.Data = [Windows.Media.EllipseGeometry]::new(
+                [Windows.Point]::new(40, 40), 36, 36)
+            $state.Controls.RingTrack.Visibility = [Windows.Visibility]::Visible
             $state.Controls.MetricText.Text = $compactValue
             $state.Controls.MetricText.FontSize = & $state.SelectFontSize $compactValue
             if ($state.ProgressValue -ge 100) {
                 # A genuine closed circle avoids the degenerate near-360 arc that
                 # left a hairline gap and an inset radius at exactly 100 percent.
+                # Same circle as the track: center (40, 40), radius 36.
                 $state.Controls.RingValue.Data = [Windows.Media.EllipseGeometry]::new(
-                    [Windows.Point]::new(35, 35), 35, 35)
+                    [Windows.Point]::new(40, 40), 36, 36)
                 $state.Controls.RingValue.Visibility = [Windows.Visibility]::Visible
             }
             elseif ($state.ProgressValue -le 0) {
@@ -391,14 +401,14 @@ function New-QuotaOrbView {
                 $state.Controls.RingValue.Visibility = [Windows.Visibility]::Collapsed
             }
             else {
-                $arc = & $state.GetArcGeometry -Percent $state.ProgressValue -Radius 35
+                $arc = & $state.GetArcGeometry -Percent $state.ProgressValue -Radius 36 -CenterX 40 -CenterY 40
                 $figure = [Windows.Media.PathFigure]::new()
-                $figure.StartPoint = [Windows.Point]::new(35, 0)
+                $figure.StartPoint = [Windows.Point]::new(40, 4)
                 $figure.IsClosed = $false
                 $figure.IsFilled = $false
                 $segment = [Windows.Media.ArcSegment]::new()
                 $segment.Point = [Windows.Point]::new($arc.EndX, $arc.EndY)
-                $segment.Size = [Windows.Size]::new(35, 35)
+                $segment.Size = [Windows.Size]::new(36, 36)
                 $segment.IsLargeArc = [bool]$arc.IsLargeArc
                 $segment.SweepDirection = [Windows.Media.SweepDirection]::Clockwise
                 $figure.Segments.Add($segment)
