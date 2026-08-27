@@ -103,7 +103,7 @@
                            TextTrimming="CharacterEllipsis"
                            AutomationProperties.Name="剩余额度" />
                 <TextBlock x:Name="ValueText"
-                           MaxWidth="56"
+                           MaxWidth="64"
                            Foreground="#FFF4F3F1"
                            FontSize="13"
                            FontWeight="SemiBold"
