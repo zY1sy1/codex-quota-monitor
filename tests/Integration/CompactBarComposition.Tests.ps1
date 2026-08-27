@@ -75,13 +75,13 @@ Describe 'compact quota bar composition' {
             $window.AllowsTransparency | Should -BeTrue
             $window.Background.ToString() | Should -BeExactly '#00FFFFFF'
             $window.Width | Should -Be 280
-            $window.Height | Should -Be 64
+            $window.SizeToContent | Should -Be ([Windows.SizeToContent]::Height) -Because 'the bar shrinks when a focus has no countdown or reset line'
             $window.ResizeMode | Should -Be ([Windows.ResizeMode]::NoResize)
             $window.ShowInTaskbar | Should -BeFalse
 
             foreach ($name in @(
                 'RootBorder', 'HeaderDragArea', 'MetricLabel', 'MetricValue',
-                'ProgressTrack', 'ProgressFill', 'CountdownText', 'ResetTimeText',
+                'ProgressTrack', 'ProgressFill', 'FooterRow', 'CountdownText', 'ResetTimeText',
                 'ModeButton', 'CloseButton'
             )) {
                 $CompactView.Controls.Contains($name) | Should -BeTrue
@@ -126,8 +126,21 @@ Describe 'compact quota bar composition' {
             $CompactView.Controls.MetricValue.Text | Should -BeExactly '$18.42'
             $CompactView.Controls.ProgressTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $CompactView.Controls.ProgressFill.Width | Should -Be 0
+            $CompactView.Controls.FooterRow.Visibility | Should -Be ([Windows.Visibility]::Visible) -Because 'a reset line keeps the footer'
             [string]$CompactView.Controls.RootBorder.ToolTip |
                 Should -Match 'USD' -Because 'the compact bar tooltip keeps the currency unit'
+        }
+
+        It 'collapses the footer row for a bare wallet with neither countdown nor reset' {
+            $script:CompactView = New-CompactBarView -XamlPath $script:CompactBarXamlPath
+            $bare = New-TestCompactRow -Key 'relay:wakaka:wallet' -Label '账户余额' `
+                -SourceLabel 'Wakaka' -ValueText '$18.42 USD' -ProgressValue $null `
+                -Countdown '' -ResetTime ''
+
+            & $CompactView.RenderFocus $bare
+
+            $CompactView.Controls.FooterRow.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $CompactView.Controls.ProgressTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
         }
 
         It 'shows a stable unavailable state for a missing manually pinned row' {
@@ -148,6 +161,7 @@ Describe 'compact quota bar composition' {
             $CompactView.Controls.MetricLabel.Text | Should -BeExactly '暂无可比较额度'
             $CompactView.Controls.MetricValue.Text | Should -BeExactly '—'
             $CompactView.Controls.ProgressTrack.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+            $CompactView.Controls.FooterRow.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
         }
 
         It 'switches both themes without changing the named structure or snapshot' {

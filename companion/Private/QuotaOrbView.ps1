@@ -339,6 +339,11 @@ function New-QuotaOrbView {
         $state.Controls.RingTrack.Visibility = [Windows.Visibility]::Collapsed
         $state.Controls.ValueText.Visibility = [Windows.Visibility]::Collapsed
         $state.Controls.MetricText.Visibility = [Windows.Visibility]::Visible
+        # Reset per-render typography so a previous wallet face cannot leak its
+        # enlarged amounts into percentage focuses.
+        $state.Controls.ValueText.FontSize = 13
+        $state.Controls.ValueText.FontWeight = [Windows.FontWeights]::SemiBold
+        $state.Controls.SourceText.FontSize = 9
 
         if ($null -eq $Row) {
             $state.ProgressValue = $null
@@ -420,8 +425,13 @@ function New-QuotaOrbView {
         else {
             $rowKey = [string](& $state.GetPresentationField -Row $Row -Name 'Key')
             if (-not [string]::IsNullOrWhiteSpace($PinnedKey) -and $rowKey -ceq $PinnedKey) {
+                # No ring to frame the disc here, so the amount becomes the hero
+                # and fills the circle instead of leaving it looking hollow.
                 $state.Controls.MetricText.Visibility = [Windows.Visibility]::Collapsed
                 $state.Controls.ValueText.Visibility = [Windows.Visibility]::Visible
+                $state.Controls.ValueText.FontSize = 19
+                $state.Controls.ValueText.FontWeight = [Windows.FontWeights]::Bold
+                $state.Controls.SourceText.FontSize = 10
             }
             else {
                 $state.Controls.MetricText.Text = '—'

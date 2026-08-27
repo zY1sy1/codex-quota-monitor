@@ -168,7 +168,7 @@ function New-CompactBarView {
     $controls = [ordered]@{}
     foreach ($name in @(
         'RootBorder', 'HeaderDragArea', 'MetricLabel', 'MetricValue',
-        'ProgressTrack', 'ProgressFill', 'CountdownText', 'ResetTimeText',
+        'ProgressTrack', 'ProgressFill', 'FooterRow', 'CountdownText', 'ResetTimeText',
         'ModeButton', 'CloseButton'
     )) {
         $control = $window.FindName($name)
@@ -312,6 +312,7 @@ function New-CompactBarView {
             $state.Controls.MetricValue.Text = '—'
             $state.Controls.CountdownText.Text = ''
             $state.Controls.ResetTimeText.Text = ''
+            $state.Controls.FooterRow.Visibility = [Windows.Visibility]::Collapsed
             $state.Controls.RootBorder.ToolTip = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
                 $null
             }
@@ -343,6 +344,16 @@ function New-CompactBarView {
         $state.Controls.MetricValue.Text = & $state.ConvertDisplayText $valueText
         $state.Controls.CountdownText.Text = $countdownText
         $state.Controls.ResetTimeText.Text = $resetTimeText
+        # The window is SizeToContent so collapsing the footer row (wallet
+        # focuses have neither countdown nor reset time) shrinks the bar to
+        # just its text line instead of reserving a blank band.
+        if ([string]::IsNullOrWhiteSpace($countdownText) -and
+            [string]::IsNullOrWhiteSpace($resetTimeText)) {
+            $state.Controls.FooterRow.Visibility = [Windows.Visibility]::Collapsed
+        }
+        else {
+            $state.Controls.FooterRow.Visibility = [Windows.Visibility]::Visible
+        }
         $state.ProgressValue = & $state.ConvertProgress (
             & $state.GetPresentationField -Row $Row -Name 'ProgressValue'
         )
