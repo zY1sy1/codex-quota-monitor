@@ -20,6 +20,7 @@ BeforeAll {
                 Arguments = [string]$shortcut.Arguments
                 WorkingDirectory = [string]$shortcut.WorkingDirectory
                 Description = [string]$shortcut.Description
+                IconLocation = [string]$shortcut.IconLocation
             }
         }
         finally {
@@ -122,6 +123,73 @@ exit 0
     }
 }
 
+Describe 'console-free launcher' {
+    It 'detaches a hidden PowerShell monitor from the GUI launcher' {
+        $wscriptPath = Join-Path ([Environment]::SystemDirectory) 'wscript.exe'
+        $pwshPath = (Get-Process -Id $PID).Path
+        $directory = Join-Path $TestDrive '启动 项目 & quota monitor'
+        $launcherPath = Join-Path $PSScriptRoot '..\..\companion\Start-CodexQuotaMonitor.vbs'
+        $entryPath = Join-Path $directory '启动 Codex & monitor.ps1'
+        $markerPath = Join-Path $directory '子进程 pid.txt'
+        $escapedMarkerPath = $markerPath.Replace("'", "''")
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        $entryContent = @"
+[IO.File]::WriteAllText('$escapedMarkerPath', `$PID.ToString([Globalization.CultureInfo]::InvariantCulture), [Text.UTF8Encoding]::new(`$false))
+Start-Sleep -Seconds 30
+"@
+        [IO.File]::WriteAllText($entryPath, $entryContent, [Text.UTF8Encoding]::new($false))
+
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $wscriptPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        foreach ($argument in @(
+                '//B'
+                '//NoLogo'
+                $launcherPath
+                $pwshPath
+                $entryPath
+            )) {
+            $startInfo.ArgumentList.Add([string]$argument)
+        }
+
+        $launcher = $null
+        $childPid = $null
+        $waiter = [Threading.ManualResetEventSlim]::new($false)
+        try {
+            $launcher = [Diagnostics.Process]::Start($startInfo)
+            $launcher.WaitForExit(5000) | Should -BeTrue
+
+            $deadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
+            while (-not (Test-Path -LiteralPath $markerPath -PathType Leaf) -and
+                [DateTimeOffset]::UtcNow -lt $deadline) {
+                $null = $waiter.Wait(20)
+            }
+
+            Test-Path -LiteralPath $markerPath -PathType Leaf | Should -BeTrue
+            $childPid = [int][IO.File]::ReadAllText($markerPath)
+            $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+            $child | Should -Not -BeNullOrEmpty
+            try {
+                $child.MainWindowHandle | Should -Be 0
+            }
+            finally {
+                $child.Dispose()
+            }
+        }
+        finally {
+            $waiter.Dispose()
+            if ($null -ne $launcher) {
+                $launcher.Dispose()
+            }
+            if ($null -ne $childPid) {
+                Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 Describe 'current-user Startup shortcut' {
     It 'creates, reopens, overwrites, and removes a real shortcut without retaining COM locks' {
         $pwshPath = Resolve-MonitorPwshPath -ProbeTimeoutMilliseconds 5000
@@ -130,9 +198,13 @@ Describe 'current-user Startup shortcut' {
         $shortcutPath = Join-Path $directory 'Codex 额度监视器.lnk'
         $firstEntry = Join-Path $entryDirectory '启动 Codex & monitor.ps1'
         $secondEntry = Join-Path $entryDirectory '修复 Codex & monitor.ps1'
+        $launcherScript = Join-Path $entryDirectory 'Start-CodexQuotaMonitor.vbs'
+        $wscriptPath = [IO.Path]::GetFullPath((Join-Path ([Environment]::SystemDirectory) 'wscript.exe'))
         $null = New-Item -ItemType Directory -Path $entryDirectory -Force
         [IO.File]::WriteAllText($firstEntry, '# first', [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText($secondEntry, '# second', [Text.UTF8Encoding]::new($false))
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\companion\Start-CodexQuotaMonitor.vbs') `
+            -Destination $launcherScript
 
         $created = New-MonitorStartupShortcut `
             -ShortcutPath $shortcutPath `
@@ -141,11 +213,13 @@ Describe 'current-user Startup shortcut' {
 
         $created.ShortcutPath | Should -BeExactly ([IO.Path]::GetFullPath($shortcutPath))
         $created.PwshPath | Should -BeExactly ([IO.Path]::GetFullPath($pwshPath))
+        $created.WscriptPath | Should -BeExactly $wscriptPath
+        $created.LauncherScript | Should -BeExactly ([IO.Path]::GetFullPath($launcherScript))
         Test-Path -LiteralPath $shortcutPath -PathType Leaf | Should -BeTrue
 
         $first = Read-TestShortcut -Path $shortcutPath
-        $first.TargetPath | Should -BeExactly ([IO.Path]::GetFullPath($pwshPath))
-        $first.Arguments | Should -BeExactly "-NoLogo -NoProfile -NonInteractive -Sta -WindowStyle Hidden -File `"$([IO.Path]::GetFullPath($firstEntry))`""
+        $first.TargetPath | Should -Be $wscriptPath
+        $first.Arguments | Should -BeExactly "//B //NoLogo `"$([IO.Path]::GetFullPath($launcherScript))`" `"$([IO.Path]::GetFullPath($pwshPath))`" `"$([IO.Path]::GetFullPath($firstEntry))`""
         $first.Arguments | Should -Not -Match '(?i)ExecutionPolicy'
         $first.WorkingDirectory | Should -BeExactly ([IO.Path]::GetFullPath($entryDirectory))
         $first.Description | Should -BeExactly 'Codex quota monitor'
@@ -155,13 +229,39 @@ Describe 'current-user Startup shortcut' {
             -EntryScript $secondEntry `
             -PwshPath $pwshPath
         $updated.ShortcutPath | Should -BeExactly ([IO.Path]::GetFullPath($shortcutPath))
+        $updated.WscriptPath | Should -BeExactly $wscriptPath
+        $updated.LauncherScript | Should -BeExactly ([IO.Path]::GetFullPath($launcherScript))
 
         $second = Read-TestShortcut -Path $shortcutPath
-        $second.Arguments | Should -BeExactly "-NoLogo -NoProfile -NonInteractive -Sta -WindowStyle Hidden -File `"$([IO.Path]::GetFullPath($secondEntry))`""
+        $second.TargetPath | Should -Be $wscriptPath
+        $second.Arguments | Should -BeExactly "//B //NoLogo `"$([IO.Path]::GetFullPath($launcherScript))`" `"$([IO.Path]::GetFullPath($pwshPath))`" `"$([IO.Path]::GetFullPath($secondEntry))`""
         $second.WorkingDirectory | Should -BeExactly ([IO.Path]::GetFullPath($entryDirectory))
 
         Remove-MonitorStartupShortcut -ShortcutPath $shortcutPath
         Test-Path -LiteralPath $shortcutPath | Should -BeFalse
         Remove-MonitorStartupShortcut -ShortcutPath $shortcutPath
+    }
+
+    It 'assigns an explicit application icon when requested' {
+        $pwshPath = Resolve-MonitorPwshPath -ProbeTimeoutMilliseconds 5000
+        $directory = Join-Path $TestDrive 'Icon Shortcut'
+        $entryPath = Join-Path $directory 'Start.ps1'
+        $launcherPath = Join-Path $directory 'Start-CodexQuotaMonitor.vbs'
+        $shortcutPath = Join-Path $directory 'Codex Quota Monitor.lnk'
+        $iconPath = Join-Path $directory 'CodexQuotaMonitor.ico'
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        [IO.File]::WriteAllText($entryPath, '# entry')
+        Copy-Item (Join-Path $PSScriptRoot '..\..\companion\Start-CodexQuotaMonitor.vbs') $launcherPath
+        Copy-Item (Join-Path $PSScriptRoot '..\..\assets\codex-quota-monitor-white-blue.ico') $iconPath
+
+        $null = New-MonitorStartupShortcut `
+            -ShortcutPath $shortcutPath `
+            -EntryScript $entryPath `
+            -PwshPath $pwshPath `
+            -LauncherScript $launcherPath `
+            -IconPath $iconPath
+
+        (Read-TestShortcut -Path $shortcutPath).IconLocation |
+            Should -BeExactly ([IO.Path]::GetFullPath($iconPath) + ',0')
     }
 }

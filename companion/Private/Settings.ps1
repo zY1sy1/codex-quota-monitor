@@ -3,17 +3,44 @@ function Get-MonitorPaths {
     param(
         [string]$LocalAppData = $env:LOCALAPPDATA,
 
-        [string]$Startup = [Environment]::GetFolderPath('Startup')
+        [string]$Startup = [Environment]::GetFolderPath('Startup'),
+
+        [AllowNull()]
+        [string]$ProgramRoot
     )
 
     $root = Join-Path $LocalAppData 'CodexQuotaMonitor'
+    $legacyApp = Join-Path $root 'app'
+    $resolvedProgramRoot = if ([string]::IsNullOrWhiteSpace($ProgramRoot)) {
+        $root
+    }
+    else {
+        [IO.Path]::GetFullPath($ProgramRoot)
+    }
+    $app = if ($resolvedProgramRoot.Equals($root, [StringComparison]::OrdinalIgnoreCase)) {
+        $legacyApp
+    }
+    else {
+        Join-Path $resolvedProgramRoot 'app'
+    }
+
     [pscustomobject][ordered]@{
         Root = $root
-        App = Join-Path $root 'app'
+        ProgramRoot = $resolvedProgramRoot
+        App = $app
+        LegacyApp = $legacyApp
+        Payload = Join-Path $resolvedProgramRoot 'payload'
+        Runtime = Join-Path $resolvedProgramRoot 'runtime\pwsh'
+        PrivatePwsh = Join-Path $resolvedProgramRoot 'runtime\pwsh\pwsh.exe'
         Data = Join-Path $root 'data'
         Logs = Join-Path $root 'logs'
         Settings = Join-Path $root 'data\settings.json'
         Health = Join-Path $root 'data\health.json'
+        RelayProviders = Join-Path $root 'data\relay-providers.json'
+        RelayImportLinks = Join-Path $root 'data\relay-import-links.json'
+        RelayCache = Join-Path $root 'data\relay-cache.json'
+        RelayHost = Join-Path $app 'Bin\relay-quota-host.exe'
+        RelayPresets = Join-Path $app 'Presets\relay-usage.json'
         StartupShortcut = Join-Path $Startup 'Codex Quota Monitor.lnk'
     }
 }
@@ -23,12 +50,33 @@ function New-DefaultSettings {
     param()
 
     [ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
+        Appearance = [ordered]@{
+            Theme = 'Dark'
+            DisplayMode = 'Full'
+            FullLayout = 'Overview'
+            RememberLastMode = $true
+        }
         Window = [ordered]@{
-            Left = $null
-            Top = $null
-            Topmost = $true
-            Visible = $true
+            Full = [ordered]@{
+                Left = $null
+                Top = $null
+                Width = [double]420
+                Height = [double]560
+                Topmost = $true
+                Visible = $true
+            }
+            CompactBar = [ordered]@{
+                Left = $null
+                Top = $null
+            }
+            Orb = [ordered]@{
+                Left = $null
+                Top = $null
+            }
+        }
+        Compact = [ordered]@{
+            FocusMetric = 'Auto'
         }
         Startup = $true
     }
@@ -139,7 +187,7 @@ function Test-MonitorSettingsFiniteNumber {
     return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
 }
 
-function Test-MonitorSettingsSchemaVersion {
+function Get-MonitorSettingsSchemaVersion {
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)]
@@ -149,7 +197,7 @@ function Test-MonitorSettingsSchemaVersion {
 
     if ($null -eq $Value -or $Value.GetType().IsEnum -or
         (Test-MonitorSettingsCollection -Value $Value)) {
-        return $false
+        return $null
     }
 
     if ([Type]::GetTypeCode($Value.GetType()) -notin @(
@@ -162,18 +210,48 @@ function Test-MonitorSettingsSchemaVersion {
         [TypeCode]::Int64,
         [TypeCode]::UInt64
     )) {
-        return $false
+        return $null
     }
 
     try {
-        return [Convert]::ToDecimal(
+        $version = [Convert]::ToDecimal(
             $Value,
             [Globalization.CultureInfo]::InvariantCulture
-        ) -eq 1
+        )
+        if ($version -in @(1, 2)) {
+            return [int]$version
+        }
+        return $null
     }
     catch {
-        return $false
+        return $null
     }
+}
+
+function ConvertTo-MonitorSettingsCoordinate {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if (-not (Test-MonitorSettingsFiniteNumber -Value $Value)) {
+        throw [ArgumentException]::new('Monitor settings coordinate is invalid.')
+    }
+    return [double]$Value
+}
+
+function Test-MonitorSettingsRequiredFields {
+    param(
+        [Parameter(Mandatory)][object]$InputObject,
+        [Parameter(Mandatory)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        if (-not (Test-MonitorSettingsHasField -InputObject $InputObject -Name $name)) {
+            return $false
+        }
+    }
+    return $true
 }
 
 function ConvertTo-CanonicalMonitorSettings {
@@ -187,14 +265,12 @@ function ConvertTo-CanonicalMonitorSettings {
     if (-not (Test-MonitorSettingsObject -Value $Settings)) {
         return $null
     }
-    foreach ($name in @('SchemaVersion', 'Window', 'Startup')) {
-        if (-not (Test-MonitorSettingsHasField -InputObject $Settings -Name $name)) {
-            return $null
-        }
-    }
+    if (-not (Test-MonitorSettingsRequiredFields -InputObject $Settings `
+        -Names @('SchemaVersion', 'Window', 'Startup'))) { return $null }
 
     $schemaVersion = Get-MonitorSettingsField -InputObject $Settings -Name 'SchemaVersion'
-    if (-not (Test-MonitorSettingsSchemaVersion -Value $schemaVersion)) {
+    $version = Get-MonitorSettingsSchemaVersion -Value $schemaVersion
+    if ($null -eq $version) {
         return $null
     }
 
@@ -202,39 +278,129 @@ function ConvertTo-CanonicalMonitorSettings {
     if (-not (Test-MonitorSettingsObject -Value $window)) {
         return $null
     }
-    foreach ($name in @('Left', 'Top', 'Topmost', 'Visible')) {
-        if (-not (Test-MonitorSettingsHasField -InputObject $window -Name $name)) {
+    $startup = Get-MonitorSettingsField -InputObject $Settings -Name 'Startup'
+    if ($startup -isnot [bool]) {
+        return $null
+    }
+
+    try {
+        if ($version -eq 1) {
+            if (-not (Test-MonitorSettingsRequiredFields -InputObject $window `
+                -Names @('Left', 'Top', 'Topmost', 'Visible'))) { return $null }
+            $topmost = Get-MonitorSettingsField -InputObject $window -Name 'Topmost'
+            $visible = Get-MonitorSettingsField -InputObject $window -Name 'Visible'
+            if ($topmost -isnot [bool] -or $visible -isnot [bool]) { return $null }
+
+            $migrated = New-DefaultSettings
+            $migrated.Window.Full.Left = ConvertTo-MonitorSettingsCoordinate (
+                Get-MonitorSettingsField -InputObject $window -Name 'Left'
+            )
+            $migrated.Window.Full.Top = ConvertTo-MonitorSettingsCoordinate (
+                Get-MonitorSettingsField -InputObject $window -Name 'Top'
+            )
+            $migrated.Window.Full.Topmost = [bool]$topmost
+            $migrated.Window.Full.Visible = [bool]$visible
+            $migrated.Startup = [bool]$startup
+            Write-Output -NoEnumerate -InputObject $migrated
+            return
+        }
+
+        if (-not (Test-MonitorSettingsRequiredFields -InputObject $Settings `
+            -Names @('Appearance', 'Compact'))) { return $null }
+        if (-not (Test-MonitorSettingsRequiredFields -InputObject $window `
+            -Names @('Full', 'CompactBar', 'Orb'))) { return $null }
+
+        $appearance = Get-MonitorSettingsField -InputObject $Settings -Name 'Appearance'
+        $compact = Get-MonitorSettingsField -InputObject $Settings -Name 'Compact'
+        $full = Get-MonitorSettingsField -InputObject $window -Name 'Full'
+        $compactBar = Get-MonitorSettingsField -InputObject $window -Name 'CompactBar'
+        $orb = Get-MonitorSettingsField -InputObject $window -Name 'Orb'
+        foreach ($node in @($appearance, $compact, $full, $compactBar, $orb)) {
+            if (-not (Test-MonitorSettingsObject -Value $node)) { return $null }
+        }
+        if (-not (Test-MonitorSettingsRequiredFields -InputObject $appearance `
+            -Names @('Theme', 'DisplayMode', 'FullLayout', 'RememberLastMode')) -or
+            -not (Test-MonitorSettingsRequiredFields -InputObject $full `
+            -Names @('Left', 'Top', 'Width', 'Height', 'Topmost', 'Visible')) -or
+            -not (Test-MonitorSettingsRequiredFields -InputObject $compactBar `
+            -Names @('Left', 'Top')) -or
+            -not (Test-MonitorSettingsRequiredFields -InputObject $orb `
+            -Names @('Left', 'Top')) -or
+            -not (Test-MonitorSettingsRequiredFields -InputObject $compact `
+            -Names @('FocusMetric'))) { return $null }
+
+        $theme = Get-MonitorSettingsField -InputObject $appearance -Name 'Theme'
+        $displayMode = Get-MonitorSettingsField -InputObject $appearance -Name 'DisplayMode'
+        $fullLayout = Get-MonitorSettingsField -InputObject $appearance -Name 'FullLayout'
+        $rememberLastMode = Get-MonitorSettingsField -InputObject $appearance -Name 'RememberLastMode'
+        $topmost = Get-MonitorSettingsField -InputObject $full -Name 'Topmost'
+        $visible = Get-MonitorSettingsField -InputObject $full -Name 'Visible'
+        $focusMetric = Get-MonitorSettingsField -InputObject $compact -Name 'FocusMetric'
+        if ($theme -isnot [string] -or $theme -notin @('Light', 'Dark') -or
+            $displayMode -isnot [string] -or $displayMode -notin @('Full', 'CompactBar', 'Orb') -or
+            $fullLayout -isnot [string] -or $fullLayout -notin @('Overview', 'Tabs') -or
+            $rememberLastMode -isnot [bool] -or $topmost -isnot [bool] -or
+            $visible -isnot [bool] -or $focusMetric -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($focusMetric) -or $focusMetric.Length -gt 4096) {
             return $null
         }
-    }
 
-    $left = Get-MonitorSettingsField -InputObject $window -Name 'Left'
-    $top = Get-MonitorSettingsField -InputObject $window -Name 'Top'
-    if ($null -ne $left -and -not (Test-MonitorSettingsFiniteNumber -Value $left)) {
-        return $null
-    }
-    if ($null -ne $top -and -not (Test-MonitorSettingsFiniteNumber -Value $top)) {
-        return $null
-    }
-
-    $topmost = Get-MonitorSettingsField -InputObject $window -Name 'Topmost'
-    $visible = Get-MonitorSettingsField -InputObject $window -Name 'Visible'
-    $startup = Get-MonitorSettingsField -InputObject $Settings -Name 'Startup'
-    if ($topmost -isnot [bool] -or $visible -isnot [bool] -or $startup -isnot [bool]) {
-        return $null
-    }
-
-    $canonical = [ordered]@{
-        SchemaVersion = [int]1
-        Window = [ordered]@{
-            Left = $left
-            Top = $top
-            Topmost = [bool]$topmost
-            Visible = [bool]$visible
+        $width = ConvertTo-MonitorSettingsCoordinate (
+            Get-MonitorSettingsField -InputObject $full -Name 'Width'
+        )
+        $height = ConvertTo-MonitorSettingsCoordinate (
+            Get-MonitorSettingsField -InputObject $full -Name 'Height'
+        )
+        if ($null -eq $width -or $null -eq $height -or $width -le 0 -or $height -le 0) {
+            return $null
         }
-        Startup = [bool]$startup
+
+        $canonical = [ordered]@{
+            SchemaVersion = 2
+            Appearance = [ordered]@{
+                Theme = $theme
+                DisplayMode = $displayMode
+                FullLayout = $fullLayout
+                RememberLastMode = [bool]$rememberLastMode
+            }
+            Window = [ordered]@{
+                Full = [ordered]@{
+                    Left = ConvertTo-MonitorSettingsCoordinate (
+                        Get-MonitorSettingsField -InputObject $full -Name 'Left'
+                    )
+                    Top = ConvertTo-MonitorSettingsCoordinate (
+                        Get-MonitorSettingsField -InputObject $full -Name 'Top'
+                    )
+                    Width = [double]$width
+                    Height = [double]$height
+                    Topmost = [bool]$topmost
+                    Visible = [bool]$visible
+                }
+                CompactBar = [ordered]@{
+                    Left = ConvertTo-MonitorSettingsCoordinate (
+                        Get-MonitorSettingsField -InputObject $compactBar -Name 'Left'
+                    )
+                    Top = ConvertTo-MonitorSettingsCoordinate (
+                        Get-MonitorSettingsField -InputObject $compactBar -Name 'Top'
+                    )
+                }
+                Orb = [ordered]@{
+                    Left = ConvertTo-MonitorSettingsCoordinate (
+                        Get-MonitorSettingsField -InputObject $orb -Name 'Left'
+                    )
+                    Top = ConvertTo-MonitorSettingsCoordinate (
+                        Get-MonitorSettingsField -InputObject $orb -Name 'Top'
+                    )
+                }
+            }
+            Compact = [ordered]@{ FocusMetric = $focusMetric }
+            Startup = [bool]$startup
+        }
+        Write-Output -NoEnumerate -InputObject $canonical
     }
-    Write-Output -NoEnumerate -InputObject $canonical
+    catch {
+        return $null
+    }
 }
 
 function Test-MonitorSettingsDocument {

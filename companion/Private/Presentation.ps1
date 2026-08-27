@@ -1,3 +1,16 @@
+function ConvertTo-QuotaDisplayValueText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    # Views show the amount without the trailing currency unit; the unit stays
+    # in the hover tooltip, which renders the raw presentation text.
+    return [regex]::Replace($Text, '\s+[A-Z]{3,4}(\s+used)?\s*$', '$1').Trim()
+}
+
 function Get-QuotaLabel {
     [CmdletBinding()]
     param(
@@ -308,4 +321,50 @@ function Get-TrayTooltip {
 
     $tooltip = $entries -join ' | '
     return Limit-TextElementLength -Text $tooltip -MaximumLength 63
+}
+
+function ConvertTo-OfficialMonitorPresentationRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)][object]$Row
+    )
+    process {
+        $progress = ConvertTo-InvariantFiniteDouble -Value (
+            Get-ObjectField -InputObject $Row -Name 'ProgressValue'
+        )
+        if ($null -ne $progress -and ($progress -lt 0 -or $progress -gt 100)) {
+            $progress = $null
+        }
+        $updatedAtValue = Get-ObjectField -InputObject $Row -Name 'UpdatedAt'
+        $updatedAt = if ($null -eq $updatedAtValue) {
+            $null
+        }
+        else {
+            try { ([DateTimeOffset]$updatedAtValue).ToUniversalTime() } catch { $null }
+        }
+        $state = [string](Get-ObjectField -InputObject $Row -Name 'State')
+        if ([string]::IsNullOrWhiteSpace($state)) {
+            $state = 'Live'
+        }
+        $sourceId = [string](Get-ObjectField -InputObject $Row -Name 'SourceId')
+        if ([string]::IsNullOrWhiteSpace($sourceId)) {
+            $sourceId = 'codex'
+        }
+        [pscustomobject][ordered]@{
+            Key = [string](Get-ObjectField -InputObject $Row -Name 'Key')
+            SourceKind = 'Official'
+            SourceId = $sourceId
+            SourceLabel = 'Codex 官方'
+            GroupLabel = 'Codex 官方额度'
+            Label = [string](Get-ObjectField -InputObject $Row -Name 'Label')
+            ValueText = [string](Get-ObjectField -InputObject $Row -Name 'RemainingText')
+            SecondaryText = ''
+            ProgressValue = $progress
+            Countdown = [string](Get-ObjectField -InputObject $Row -Name 'CountdownText')
+            ResetTime = [string](Get-ObjectField -InputObject $Row -Name 'ResetTimeText')
+            IsStale = [bool](Get-ObjectField -InputObject $Row -Name 'IsStale')
+            UpdatedAt = $updatedAt
+            State = $state
+        }
+    }
 }

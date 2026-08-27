@@ -1,0 +1,9 @@
+{
+  "SchemaVersion": 1,
+  "Version": "7.6.4",
+  "Architecture": "x64",
+  "ArchiveName": "PowerShell-7.6.4-win-x64.zip",
+  "AssetUrl": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/PowerShell-7.6.4-win-x64.zip",
+  "ArchiveSha256": "80832551C52809301E6071C8BAC977BEB5A2F1EC953EB4DB9F94DEB953333793",
+  "LicenseFile": "LICENSE.txt"
+}

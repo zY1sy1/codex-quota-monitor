@@ -169,6 +169,18 @@ function New-TrayView {
 
         $menuItems = [ordered]@{
             ToggleVisibility = [Windows.Forms.ToolStripMenuItem]::new('显示/隐藏')
+            Settings = [Windows.Forms.ToolStripMenuItem]::new('设置')
+            DisplayMode = [Windows.Forms.ToolStripMenuItem]::new('显示模式')
+            FullMode = [Windows.Forms.ToolStripMenuItem]::new('完整窗口')
+            CompactBarMode = [Windows.Forms.ToolStripMenuItem]::new('迷你条')
+            OrbMode = [Windows.Forms.ToolStripMenuItem]::new('额度球')
+            Theme = [Windows.Forms.ToolStripMenuItem]::new('主题')
+            LightTheme = [Windows.Forms.ToolStripMenuItem]::new('浅色透明')
+            DarkTheme = [Windows.Forms.ToolStripMenuItem]::new('深色透明')
+            FullLayout = [Windows.Forms.ToolStripMenuItem]::new('完整窗口布局')
+            OverviewLayout = [Windows.Forms.ToolStripMenuItem]::new('总览折叠')
+            TabsLayout = [Windows.Forms.ToolStripMenuItem]::new('标签切换')
+            ManageRelays = [Windows.Forms.ToolStripMenuItem]::new('管理中转站')
             Topmost = [Windows.Forms.ToolStripMenuItem]::new('始终置顶')
             Refresh = [Windows.Forms.ToolStripMenuItem]::new('立即刷新')
             Startup = [Windows.Forms.ToolStripMenuItem]::new('开机启动')
@@ -178,9 +190,26 @@ function New-TrayView {
         }
         $menuItems.Topmost.CheckOnClick = $false
         $menuItems.Startup.CheckOnClick = $false
+        foreach ($item in @(
+            $menuItems.FullMode, $menuItems.CompactBarMode, $menuItems.OrbMode,
+            $menuItems.LightTheme, $menuItems.DarkTheme,
+            $menuItems.OverviewLayout, $menuItems.TabsLayout
+        )) { $item.CheckOnClick = $false }
+        foreach ($item in @($menuItems.FullMode, $menuItems.CompactBarMode, $menuItems.OrbMode)) {
+            [void]$menuItems.DisplayMode.DropDownItems.Add($item)
+        }
+        foreach ($item in @($menuItems.LightTheme, $menuItems.DarkTheme)) {
+            [void]$menuItems.Theme.DropDownItems.Add($item)
+        }
+        foreach ($item in @($menuItems.OverviewLayout, $menuItems.TabsLayout)) {
+            [void]$menuItems.FullLayout.DropDownItems.Add($item)
+        }
 
         $contextMenu = [Windows.Forms.ContextMenuStrip]::new()
-        foreach ($item in $menuItems.Values) {
+        foreach ($item in @(
+            $menuItems.ToggleVisibility, $menuItems.Settings, $menuItems.Usage,
+            $menuItems.Logs, $menuItems.Exit
+        )) {
             [void]$contextMenu.Items.Add($item)
         }
 
@@ -196,6 +225,11 @@ function New-TrayView {
             Severity = 'Gray'
             Callbacks = [pscustomobject][ordered]@{
                 OnToggleVisibility = $null
+                OnOpenSettings = $null
+                OnSetDisplayMode = $null
+                OnSetTheme = $null
+                OnSetFullLayout = $null
+                OnManageRelays = $null
                 OnToggleTopmost = $null
                 OnRefresh = $null
                 OnToggleStartup = $null
@@ -213,12 +247,52 @@ function New-TrayView {
                 & $callback
             }
         }.GetNewClosure()
+        $settingsHandler = [EventHandler]{
+            param($Sender, $EventArgs)
+            $callback = $state.Callbacks.OnOpenSettings
+            if (-not $state.Disposed -and $callback -is [scriptblock]) {
+                & $callback
+            }
+        }.GetNewClosure()
         $toggleTopmostHandler = [EventHandler]{
             param($Sender, $EventArgs)
             $callback = $state.Callbacks.OnToggleTopmost
             if (-not $state.Disposed -and $callback -is [scriptblock]) {
                 & $callback
             }
+        }.GetNewClosure()
+        foreach ($definition in @(
+            @($menuItems.FullMode, 'OnSetDisplayMode', 'Full'),
+            @($menuItems.CompactBarMode, 'OnSetDisplayMode', 'CompactBar'),
+            @($menuItems.OrbMode, 'OnSetDisplayMode', 'Orb'),
+            @($menuItems.LightTheme, 'OnSetTheme', 'Light'),
+            @($menuItems.DarkTheme, 'OnSetTheme', 'Dark'),
+            @($menuItems.OverviewLayout, 'OnSetFullLayout', 'Overview'),
+            @($menuItems.TabsLayout, 'OnSetFullLayout', 'Tabs')
+        )) {
+            $definition[0].Tag = [object[]]@($definition[1], $definition[2])
+        }
+        $selectionHandler = [EventHandler]{
+            param($Sender, $EventArgs)
+            $selection = [object[]]$Sender.Tag
+            if ($state.Disposed -or $null -eq $state.Callbacks -or $selection.Count -ne 2) {
+                return
+            }
+            $property = $state.Callbacks.PSObject.Properties[[string]$selection[0]]
+            $callback = if ($null -eq $property) { $null } else { $property.Value }
+            if ($callback -is [scriptblock]) { & $callback ([string]$selection[1]) }
+        }.GetNewClosure()
+        $fullModeHandler = $selectionHandler
+        $compactBarModeHandler = $selectionHandler
+        $orbModeHandler = $selectionHandler
+        $lightThemeHandler = $selectionHandler
+        $darkThemeHandler = $selectionHandler
+        $overviewLayoutHandler = $selectionHandler
+        $tabsLayoutHandler = $selectionHandler
+        $manageRelaysHandler = [EventHandler]{
+            param($Sender, $EventArgs)
+            $callback = $state.Callbacks.OnManageRelays
+            if (-not $state.Disposed -and $callback -is [scriptblock]) { & $callback }
         }.GetNewClosure()
         $refreshHandler = [EventHandler]{
             param($Sender, $EventArgs)
@@ -258,6 +332,15 @@ function New-TrayView {
 
         $state.Delegates = [pscustomobject][ordered]@{
             ToggleVisibility = $toggleVisibilityHandler
+            Settings = $settingsHandler
+            FullMode = $fullModeHandler
+            CompactBarMode = $compactBarModeHandler
+            OrbMode = $orbModeHandler
+            LightTheme = $lightThemeHandler
+            DarkTheme = $darkThemeHandler
+            OverviewLayout = $overviewLayoutHandler
+            TabsLayout = $tabsLayoutHandler
+            ManageRelays = $manageRelaysHandler
             Topmost = $toggleTopmostHandler
             Refresh = $refreshHandler
             Startup = $toggleStartupHandler
@@ -268,6 +351,15 @@ function New-TrayView {
         }
 
         $menuItems.ToggleVisibility.add_Click($toggleVisibilityHandler)
+        $menuItems.Settings.add_Click($settingsHandler)
+        $menuItems.FullMode.add_Click($fullModeHandler)
+        $menuItems.CompactBarMode.add_Click($compactBarModeHandler)
+        $menuItems.OrbMode.add_Click($orbModeHandler)
+        $menuItems.LightTheme.add_Click($lightThemeHandler)
+        $menuItems.DarkTheme.add_Click($darkThemeHandler)
+        $menuItems.OverviewLayout.add_Click($overviewLayoutHandler)
+        $menuItems.TabsLayout.add_Click($tabsLayoutHandler)
+        $menuItems.ManageRelays.add_Click($manageRelaysHandler)
         $menuItems.Topmost.add_Click($toggleTopmostHandler)
         $menuItems.Refresh.add_Click($refreshHandler)
         $menuItems.Startup.add_Click($toggleStartupHandler)
@@ -279,6 +371,11 @@ function New-TrayView {
         $setCallbacks = {
             param(
                 [AllowNull()][scriptblock]$OnToggleVisibility,
+                [AllowNull()][scriptblock]$OnOpenSettings,
+                [AllowNull()][scriptblock]$OnSetDisplayMode,
+                [AllowNull()][scriptblock]$OnSetTheme,
+                [AllowNull()][scriptblock]$OnSetFullLayout,
+                [AllowNull()][scriptblock]$OnManageRelays,
                 [AllowNull()][scriptblock]$OnToggleTopmost,
                 [AllowNull()][scriptblock]$OnRefresh,
                 [AllowNull()][scriptblock]$OnToggleStartup,
@@ -294,6 +391,11 @@ function New-TrayView {
 
             $state.Callbacks = [pscustomobject][ordered]@{
                 OnToggleVisibility = $OnToggleVisibility
+                OnOpenSettings = $OnOpenSettings
+                OnSetDisplayMode = $OnSetDisplayMode
+                OnSetTheme = $OnSetTheme
+                OnSetFullLayout = $OnSetFullLayout
+                OnManageRelays = $OnManageRelays
                 OnToggleTopmost = $OnToggleTopmost
                 OnRefresh = $OnRefresh
                 OnToggleStartup = $OnToggleStartup
@@ -346,6 +448,29 @@ function New-TrayView {
             }
         }.GetNewClosure()
 
+        $setDisplayModeChecked = {
+            param([Parameter(Mandatory, Position = 0)][ValidateSet('Full', 'CompactBar', 'Orb')][string]$Mode)
+            & $assertOwnerThread -State $state
+            if ($state.Disposed) { return }
+            $menuItems.FullMode.Checked = $Mode -eq 'Full'
+            $menuItems.CompactBarMode.Checked = $Mode -eq 'CompactBar'
+            $menuItems.OrbMode.Checked = $Mode -eq 'Orb'
+        }.GetNewClosure()
+        $setThemeChecked = {
+            param([Parameter(Mandatory, Position = 0)][ValidateSet('Light', 'Dark')][string]$Theme)
+            & $assertOwnerThread -State $state
+            if ($state.Disposed) { return }
+            $menuItems.LightTheme.Checked = $Theme -eq 'Light'
+            $menuItems.DarkTheme.Checked = $Theme -eq 'Dark'
+        }.GetNewClosure()
+        $setFullLayoutChecked = {
+            param([Parameter(Mandatory, Position = 0)][ValidateSet('Overview', 'Tabs')][string]$Layout)
+            & $assertOwnerThread -State $state
+            if ($state.Disposed) { return }
+            $menuItems.OverviewLayout.Checked = $Layout -eq 'Overview'
+            $menuItems.TabsLayout.Checked = $Layout -eq 'Tabs'
+        }.GetNewClosure()
+
         $setStartupChecked = {
             param([Parameter(Mandatory, Position = 0)][bool]$Checked)
             & $assertOwnerThread -State $state
@@ -376,6 +501,15 @@ function New-TrayView {
 
                 foreach ($binding in @(
                     @($menuItems.ToggleVisibility, $state.Delegates.ToggleVisibility),
+                    @($menuItems.Settings, $state.Delegates.Settings),
+                    @($menuItems.FullMode, $state.Delegates.FullMode),
+                    @($menuItems.CompactBarMode, $state.Delegates.CompactBarMode),
+                    @($menuItems.OrbMode, $state.Delegates.OrbMode),
+                    @($menuItems.LightTheme, $state.Delegates.LightTheme),
+                    @($menuItems.DarkTheme, $state.Delegates.DarkTheme),
+                    @($menuItems.OverviewLayout, $state.Delegates.OverviewLayout),
+                    @($menuItems.TabsLayout, $state.Delegates.TabsLayout),
+                    @($menuItems.ManageRelays, $state.Delegates.ManageRelays),
                     @($menuItems.Topmost, $state.Delegates.Topmost),
                     @($menuItems.Refresh, $state.Delegates.Refresh),
                     @($menuItems.Startup, $state.Delegates.Startup),
@@ -462,6 +596,9 @@ function New-TrayView {
             SetSeverity = $setSeverity
             SetTooltip = $setTooltip
             SetTopmostChecked = $setTopmostChecked
+            SetDisplayModeChecked = $setDisplayModeChecked
+            SetThemeChecked = $setThemeChecked
+            SetFullLayoutChecked = $setFullLayoutChecked
             SetStartupChecked = $setStartupChecked
             SetVisible = $setVisible
             Dispose = $dispose

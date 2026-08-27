@@ -1,0 +1,575 @@
+if (-not (Get-Command -Name Get-MonitorThemePalette -CommandType Function -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'Theme.ps1')
+}
+
+function Get-QuotaOrbArcGeometry {
+    param(
+        [ValidateRange(0, 100)][double]$Percent,
+        [double]$Radius = 36,
+        [double]$CenterX = 40,
+        [double]$CenterY = 40
+    )
+
+    # Only 0 < Percent < 100 reaches here; 0 and 100 are handled by the caller
+    # with a degenerate-arc-free path so the ring closes and empties cleanly.
+    # Endpoints are absolute in the 80x80 ring cell whose ink is exactly
+    # inscribed: stroke 8 centered on radius 36 spans the full cell.
+    $angle = 360 * $Percent / 100
+    $radians = ($angle - 90) * [Math]::PI / 180
+    [pscustomobject][ordered]@{
+        EndX = $CenterX + ($Radius * [Math]::Cos($radians))
+        EndY = $CenterY + ($Radius * [Math]::Sin($radians))
+        IsLargeArc = $angle -gt 180
+    }
+}
+
+function Get-QuotaOrbPresentationField {
+    param(
+        [AllowNull()][object]$Row,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($null -eq $Row) { return $null }
+    if ($Row -is [Collections.IDictionary]) {
+        if (([Collections.IDictionary]$Row).Contains($Name)) {
+            return ([Collections.IDictionary]$Row)[$Name]
+        }
+        return $null
+    }
+    $property = $Row.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
+function Get-QuotaOrbPresentationText {
+    param(
+        [Parameter(Mandatory)][object]$Row,
+        [Parameter(Mandatory)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        $value = Get-QuotaOrbPresentationField -Row $Row -Name $name
+        if ($null -ne $value) { return [string]$value }
+    }
+    return ''
+}
+
+function ConvertTo-QuotaOrbProgressValue {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value -or $Value -is [bool] -or $Value -is [string] -or $Value.GetType().IsEnum) {
+        return $null
+    }
+    if ([Type]::GetTypeCode($Value.GetType()) -notin @(
+        [TypeCode]::SByte, [TypeCode]::Byte, [TypeCode]::Int16, [TypeCode]::UInt16,
+        [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64,
+        [TypeCode]::Single, [TypeCode]::Double, [TypeCode]::Decimal
+    )) {
+        return $null
+    }
+    try {
+        $number = [Convert]::ToDouble($Value, [Globalization.CultureInfo]::InvariantCulture)
+        if ([double]::IsNaN($number) -or [double]::IsInfinity($number) -or
+            $number -lt 0 -or $number -gt 100) {
+            return $null
+        }
+        return [double]$number
+    }
+    catch {
+        return $null
+    }
+}
+
+function ConvertTo-QuotaOrbBrush {
+    param([Parameter(Mandatory)][string]$Color)
+    return [Windows.Media.BrushConverter]::new().ConvertFromString($Color)
+}
+
+function ConvertTo-QuotaOrbCompactValueText {
+    param([AllowEmptyString()][string]$Text)
+
+    # "$2.02 / $5.00 USD" -> "$2.02" and "$2.02 USD" -> "$2.02": the orb face
+    # shows the amount only; the full ratio and currency unit stay in the tooltip.
+    $match = [regex]::Match($Text, '^\s*(\S+)\s+/\s+')
+    if ($match.Success) {
+        return $match.Groups[1].Value
+    }
+    $cleaned = $Text -replace '\s+[A-Z]{3,4}\s*$', ''
+    $cleaned = $cleaned -replace '\s+%$', '%'
+    return $cleaned.Trim()
+}
+
+function Select-QuotaOrbMetricFontSize {
+    param([AllowEmptyString()][string]$Text)
+
+    $typeface = [Windows.Media.Typeface]::new(
+        'Segoe UI', [Windows.FontStyles]::Normal,
+        [Windows.FontWeights]::Bold, [Windows.FontStretches]::Normal)
+    for ($size = 19; $size -ge 11; $size--) {
+        $formatted = [Windows.Media.FormattedText]::new(
+            $Text, [Globalization.CultureInfo]::CurrentUICulture,
+            [Windows.FlowDirection]::LeftToRight, $typeface, $size,
+            [Windows.Media.Brushes]::White, 1.0)
+        if ($formatted.Width -le 54) { return $size }
+    }
+    return 11
+}
+
+function Select-QuotaOrbFitFontSize {
+    # TextBlocks inherit the OS-locale default family (Microsoft YaHei UI on
+    # zh-CN systems, not Segoe UI), whose digits are wider, so any fixed size
+    # can blow the MaxWidth by a fraction of a pixel and CharacterEllipsis
+    # turns "$50.37" into "$50.…". Measure with the control's own family.
+    # Family/Weight stay untyped: WPF assemblies may load after this file is
+    # parsed, and eagerly resolving [Windows.Media.*] in a signature position
+    # poisons the lookup cache ("Unable to find type" even once loaded).
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][object]$Family,
+        [Parameter(Mandatory)][object]$Weight,
+        [Parameter(Mandatory)][double]$Budget,
+        [Parameter(Mandatory)][ValidateRange(6, 40)][int]$MaxSize,
+        [Parameter(Mandatory)][ValidateRange(6, 40)][int]$MinSize
+    )
+
+    $typeface = [Windows.Media.Typeface]::new(
+        $Family, [Windows.FontStyles]::Normal, $Weight, [Windows.FontStretches]::Normal)
+    for ($size = $MaxSize; $size -ge $MinSize; $size--) {
+        $formatted = [Windows.Media.FormattedText]::new(
+            $Text, [Globalization.CultureInfo]::CurrentUICulture,
+            [Windows.FlowDirection]::LeftToRight, $typeface, $size,
+            [Windows.Media.Brushes]::White, 1.0)
+        if ($formatted.Width -le $Budget) { return $size }
+    }
+    return $MinSize
+}
+
+function Set-QuotaOrbThemeVisuals {
+    param(
+        [Parameter(Mandatory)][object]$Window,
+        [Parameter(Mandatory)][Collections.IDictionary]$Controls,
+        [Parameter(Mandatory)][ValidateSet('Light', 'Dark')][string]$Theme
+    )
+
+    $palette = Get-MonitorThemePalette -Theme $Theme
+    $Controls.RootBorder.Background = ConvertTo-QuotaOrbBrush $palette.Surface
+    $Controls.RingTrack.Stroke = ConvertTo-QuotaOrbBrush $palette.Separator
+    $Controls.RingValue.Stroke = ConvertTo-QuotaOrbBrush $palette.Accent
+    $Controls.MetricText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
+    $Controls.ValueText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
+    $Controls.SourceText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextSecondary
+    foreach ($name in @('ModeButton', 'CloseButton')) {
+        $Controls[$name].Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary
+        $Controls[$name].Background = [Windows.Media.Brushes]::Transparent
+        $Controls[$name].BorderBrush = [Windows.Media.Brushes]::Transparent
+    }
+    $Window.Tag = $Theme
+    return $palette
+}
+
+function Get-QuotaOrbPlacement {
+    param([Parameter(Mandatory)][Windows.Window]$Window)
+
+    $left = [double]$Window.Left
+    $top = [double]$Window.Top
+    if ([double]::IsNaN($left) -or [double]::IsInfinity($left)) { $left = 0 }
+    if ([double]::IsNaN($top) -or [double]::IsInfinity($top)) { $top = 0 }
+    return [pscustomobject][ordered]@{
+        Left = $left
+        Top = $top
+        Topmost = [bool]$Window.Topmost
+        Visible = [bool]$Window.IsVisible
+    }
+}
+
+function Test-QuotaOrbEventFromButton {
+    param(
+        [AllowNull()][object]$OriginalSource,
+        [Parameter(Mandatory)][Windows.DependencyObject]$Root
+    )
+
+    $current = $OriginalSource
+    while ($null -ne $current -and $current -is [Windows.DependencyObject]) {
+        if ($current -is [Windows.Controls.Button]) { return $true }
+        if ([object]::ReferenceEquals($current, $Root)) { break }
+        try { $current = [Windows.Media.VisualTreeHelper]::GetParent($current) }
+        catch { break }
+    }
+    return $false
+}
+
+function New-QuotaOrbView {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$XamlPath = (Join-Path $PSScriptRoot '..\UI\QuotaOrb.xaml'),
+        [Parameter()][ValidateSet('Light', 'Dark')][string]$Theme = 'Dark',
+        [Parameter()][AllowNull()][scriptblock]$OnDrag,
+        [Parameter()][AllowNull()][scriptblock]$OnOpenFull,
+        [Parameter()][AllowNull()][scriptblock]$OnModeRequested,
+        [Parameter()][AllowNull()][scriptblock]$OnCloseRequested,
+        [Parameter()][AllowNull()][scriptblock]$DragAction
+    )
+
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne [Threading.ApartmentState]::STA) {
+        throw 'Codex quota orb requires an STA thread.'
+    }
+
+    Add-Type -AssemblyName PresentationFramework
+    Add-Type -AssemblyName PresentationCore
+    Add-Type -AssemblyName WindowsBase
+    if (-not (Test-Path -LiteralPath $XamlPath -PathType Leaf)) {
+        throw "Codex quota orb XAML was not found: $XamlPath"
+    }
+
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.FileStream]::new(
+            [IO.Path]::GetFullPath($XamlPath),
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.CloseInput = $false
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $reader = [Xml.XmlReader]::Create($stream, $settings)
+        $window = [Windows.Markup.XamlReader]::Load($reader)
+    }
+    finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    if ($window -isnot [Windows.Window]) {
+        throw 'The Codex quota orb XAML root must be a Window.'
+    }
+
+    $controls = [ordered]@{}
+    foreach ($name in @(
+        'RootBorder', 'HeaderDragArea', 'RingTrack', 'RingValue', 'MetricText',
+        'ValueText', 'SourceText', 'ModeButton', 'CloseButton'
+    )) {
+        $control = $window.FindName($name)
+        if ($null -eq $control) {
+            $window.Close()
+            throw "The Codex quota orb XAML is missing named control '$name'."
+        }
+        $controls[$name] = $control
+    }
+
+    if ($null -eq $DragAction) {
+        $DragAction = {
+            param([Windows.Window]$TargetWindow)
+            $TargetWindow.DragMove()
+        }
+    }
+
+    $state = [pscustomobject][ordered]@{
+        Window = $window
+        Controls = $controls
+        Theme = $Theme
+        Palette = $null
+        FocusRow = $null
+        ProgressValue = $null
+        AllowExit = $false
+        Disposed = $false
+        SuppressNextOpen = $false
+        Callbacks = [pscustomobject][ordered]@{
+            OnDrag = $OnDrag
+            OnOpenFull = $OnOpenFull
+            OnModeRequested = $OnModeRequested
+            OnCloseRequested = $OnCloseRequested
+        }
+        DragAction = $DragAction
+        GetPresentationField = ${function:Get-QuotaOrbPresentationField}
+        GetPresentationText = ${function:Get-QuotaOrbPresentationText}
+        ConvertProgress = ${function:ConvertTo-QuotaOrbProgressValue}
+        CompactValueText = ${function:ConvertTo-QuotaOrbCompactValueText}
+        SelectFontSize = ${function:Select-QuotaOrbMetricFontSize}
+        SelectFitFontSize = ${function:Select-QuotaOrbFitFontSize}
+        GetArcGeometry = ${function:Get-QuotaOrbArcGeometry}
+        GetPlacementModel = ${function:Get-QuotaOrbPlacement}
+        TestEventFromButton = ${function:Test-QuotaOrbEventFromButton}
+        ApplyTheme = ${function:Set-QuotaOrbThemeVisuals}
+        Delegates = [ordered]@{}
+    }
+    $state.Palette = & $state.ApplyTheme -Window $window -Controls $controls -Theme $Theme
+
+    $invokeCallback = {
+        param([string]$Name, [object[]]$Arguments)
+        if ($state.Disposed -or $null -eq $state.Callbacks) { return }
+        $property = $state.Callbacks.PSObject.Properties[$Name]
+        if ($null -ne $property -and $null -ne $property.Value) {
+            & $property.Value @Arguments
+        }
+    }.GetNewClosure()
+
+    $bodyUpScript = {
+        param($sender, $eventArgs)
+        if ($state.Disposed) { return }
+        if ($state.SuppressNextOpen) {
+            $state.SuppressNextOpen = $false
+            return
+        }
+        if (& $state.TestEventFromButton -OriginalSource $eventArgs.OriginalSource -Root $state.Controls.RootBorder) {
+            return
+        }
+        & $invokeCallback 'OnOpenFull' @()
+    }.GetNewClosure()
+    $state.Delegates.BodyMouseLeftButtonUp = [Windows.Input.MouseButtonEventHandler]$bodyUpScript
+
+    $headerDownScript = {
+        param($sender, $eventArgs)
+        if ($state.Disposed -or $eventArgs.ChangedButton -ne [Windows.Input.MouseButton]::Left) { return }
+        $state.SuppressNextOpen = $true
+        & $state.DragAction $state.Window
+        $placement = & $state.GetPlacementModel -Window $state.Window
+        & $invokeCallback 'OnDrag' @($placement)
+    }.GetNewClosure()
+    $state.Delegates.HeaderMouseLeftButtonDown = [Windows.Input.MouseButtonEventHandler]$headerDownScript
+
+    foreach ($definition in @(
+        @{ Name = 'ModeClick'; Callback = 'OnModeRequested' },
+        @{ Name = 'CloseClick'; Callback = 'OnCloseRequested' }
+    )) {
+        $callbackName = $definition.Callback
+        $handlerScript = {
+            param($sender, $eventArgs)
+            $eventArgs.Handled = $true
+            & $invokeCallback $callbackName @()
+        }.GetNewClosure()
+        $state.Delegates[$definition.Name] = [Windows.RoutedEventHandler]$handlerScript
+    }
+
+    $closingScript = {
+        param($sender, [ComponentModel.CancelEventArgs]$eventArgs)
+        if ($state.AllowExit -or $state.Disposed) { return }
+        $eventArgs.Cancel = $true
+        & $invokeCallback 'OnCloseRequested' @()
+    }.GetNewClosure()
+    $state.Delegates.Closing = [ComponentModel.CancelEventHandler]$closingScript
+
+    $controls.RootBorder.Add_MouseLeftButtonUp($state.Delegates.BodyMouseLeftButtonUp)
+    $controls.HeaderDragArea.Add_MouseLeftButtonDown($state.Delegates.HeaderMouseLeftButtonDown)
+    $controls.ModeButton.Add_Click($state.Delegates.ModeClick)
+    $controls.CloseButton.Add_Click($state.Delegates.CloseClick)
+    $window.Add_Closing($state.Delegates.Closing)
+
+    $renderFocus = {
+        param(
+            [Parameter(Position = 0)][AllowNull()][object]$Row,
+            [Parameter()][AllowNull()][string]$PinnedKey
+        )
+        if ($state.Disposed) { return }
+        $state.FocusRow = $Row
+        $state.Controls.RingValue.Data = $null
+        $state.Controls.RingValue.Visibility = [Windows.Visibility]::Collapsed
+        $state.Controls.RingTrack.Data = $null
+        $state.Controls.RingTrack.Visibility = [Windows.Visibility]::Collapsed
+        $state.Controls.ValueText.Visibility = [Windows.Visibility]::Collapsed
+        $state.Controls.MetricText.Visibility = [Windows.Visibility]::Visible
+        # Reset per-render typography so a previous wallet face cannot leak its
+        # enlarged amounts into percentage focuses.
+        $state.Controls.ValueText.FontSize = 13
+        $state.Controls.ValueText.FontWeight = [Windows.FontWeights]::SemiBold
+        $state.Controls.SourceText.FontSize = 9
+
+        if ($null -eq $Row) {
+            $state.ProgressValue = $null
+            $state.Controls.MetricText.Text = '—'
+            $state.Controls.MetricText.FontSize = 20
+            $state.Controls.ValueText.Text = ''
+            $state.Controls.SourceText.Text = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
+                ''
+            }
+            else {
+                '所选额度暂不可用'
+            }
+            $state.Controls.RootBorder.ToolTip = if ([string]::IsNullOrWhiteSpace($PinnedKey)) {
+                $null
+            }
+            else {
+                '所选额度暂不可用'
+            }
+            return
+        }
+
+        $sourceLabel = & $state.GetPresentationText $Row @('SourceLabel')
+        $label = & $state.GetPresentationText $Row @('Label')
+        # The orb face only fits one short secondary line, so prefer the bare
+        # label (周额度 / 账户余额) over the long "source · label" concat that
+        # always ellipsized. Full context stays on RootBorder tooltip.
+        $displayLabel = if (-not [string]::IsNullOrWhiteSpace($label)) {
+            $label
+        }
+        else {
+            $sourceLabel
+        }
+        $valueText = & $state.GetPresentationText $Row @('ValueText', 'RemainingText')
+        $compactValue = & $state.CompactValueText $valueText
+        $state.Controls.SourceText.Text = $displayLabel
+        $state.Controls.ValueText.Text = $compactValue
+        $state.ProgressValue = & $state.ConvertProgress (
+            & $state.GetPresentationField -Row $Row -Name 'ProgressValue'
+        )
+
+        if ($null -ne $state.ProgressValue) {
+            $state.Controls.RingTrack.Data = [Windows.Media.EllipseGeometry]::new(
+                [Windows.Point]::new(40, 40), 36, 36)
+            $state.Controls.RingTrack.Visibility = [Windows.Visibility]::Visible
+            $state.Controls.MetricText.Text = $compactValue
+            $state.Controls.MetricText.FontSize = & $state.SelectFontSize $compactValue
+            if ($state.ProgressValue -ge 100) {
+                # A genuine closed circle avoids the degenerate near-360 arc that
+                # left a hairline gap and an inset radius at exactly 100 percent.
+                # Same circle as the track: center (40, 40), radius 36.
+                $state.Controls.RingValue.Data = [Windows.Media.EllipseGeometry]::new(
+                    [Windows.Point]::new(40, 40), 36, 36)
+                $state.Controls.RingValue.Visibility = [Windows.Visibility]::Visible
+            }
+            elseif ($state.ProgressValue -le 0) {
+                # Zero remaining renders no value arc; the empty track alone shows,
+                # instead of the round-cap dot the zero-length arc used to paint.
+                $state.Controls.RingValue.Data = $null
+                $state.Controls.RingValue.Visibility = [Windows.Visibility]::Collapsed
+            }
+            else {
+                $arc = & $state.GetArcGeometry -Percent $state.ProgressValue -Radius 36 -CenterX 40 -CenterY 40
+                $figure = [Windows.Media.PathFigure]::new()
+                $figure.StartPoint = [Windows.Point]::new(40, 4)
+                $figure.IsClosed = $false
+                $figure.IsFilled = $false
+                $segment = [Windows.Media.ArcSegment]::new()
+                $segment.Point = [Windows.Point]::new($arc.EndX, $arc.EndY)
+                $segment.Size = [Windows.Size]::new(36, 36)
+                $segment.IsLargeArc = [bool]$arc.IsLargeArc
+                $segment.SweepDirection = [Windows.Media.SweepDirection]::Clockwise
+                $figure.Segments.Add($segment)
+                $pathGeometry = [Windows.Media.PathGeometry]::new()
+                $pathGeometry.Figures.Add($figure)
+                $state.Controls.RingValue.Data = $pathGeometry
+                $state.Controls.RingValue.Visibility = [Windows.Visibility]::Visible
+            }
+        }
+        else {
+            $rowKey = [string](& $state.GetPresentationField -Row $Row -Name 'Key')
+            if (-not [string]::IsNullOrWhiteSpace($PinnedKey) -and $rowKey -ceq $PinnedKey) {
+                # No ring to frame the disc here, so the amount becomes the hero
+                # and fills the circle instead of leaving it looking hollow.
+                $state.Controls.MetricText.Visibility = [Windows.Visibility]::Collapsed
+                $valueBlock = $state.Controls.ValueText
+                $valueBlock.Visibility = [Windows.Visibility]::Visible
+                $valueBlock.FontWeight = [Windows.FontWeights]::Bold
+                $valueBlock.FontSize = & $state.SelectFitFontSize `
+                    -Text $compactValue -Family $valueBlock.FontFamily `
+                    -Weight ([Windows.FontWeights]::Bold) -Budget $valueBlock.MaxWidth `
+                    -MaxSize 19 -MinSize 13
+                $state.Controls.SourceText.FontSize = 10
+            }
+            else {
+                $state.Controls.MetricText.Text = '—'
+                $state.Controls.MetricText.FontSize = 20
+            }
+        }
+
+        $isStale = [bool](& $state.GetPresentationField -Row $Row -Name 'IsStale')
+        $freshness = if ($isStale) { '数据已过期' } else { '数据正常' }
+        $resetTime = & $state.GetPresentationText $Row @('ResetTime', 'ResetTimeText')
+        $tooltipTitle = if (-not [string]::IsNullOrWhiteSpace($sourceLabel) -and
+            $sourceLabel -ne $displayLabel) { "$sourceLabel · $displayLabel" } else { $displayLabel }
+        $state.Controls.RootBorder.ToolTip = "${tooltipTitle}`n${valueText}`n${freshness}`n${resetTime}"
+    }.GetNewClosure()
+
+    $setTheme = {
+        param([Parameter(Mandatory, Position = 0)][ValidateSet('Light', 'Dark')][string]$Theme)
+        if ($state.Disposed) { return }
+        $state.Theme = $Theme
+        $state.Palette = & $state.ApplyTheme -Window $state.Window -Controls $state.Controls -Theme $Theme
+    }.GetNewClosure()
+
+    $show = { if (-not $state.Disposed) { $state.Window.Show() } }.GetNewClosure()
+    $hide = { if (-not $state.Disposed) { $state.Window.Hide() } }.GetNewClosure()
+    $activate = {
+        if ($state.Disposed) { return }
+        if (-not $state.Window.IsVisible) { $state.Window.Show() }
+        if ($state.Window.WindowState -eq [Windows.WindowState]::Minimized) {
+            $state.Window.WindowState = [Windows.WindowState]::Normal
+        }
+        $state.Window.Activate() | Out-Null
+    }.GetNewClosure()
+    $setTopmost = {
+        param([Parameter(Mandatory, Position = 0)][bool]$Topmost)
+        if (-not $state.Disposed) { $state.Window.Topmost = $Topmost }
+    }.GetNewClosure()
+    $getPlacement = {
+        if ($state.Disposed -or $null -eq $state.Window) { return $null }
+        return & $state.GetPlacementModel -Window $state.Window
+    }.GetNewClosure()
+    $setCallbacks = {
+        param(
+            [Parameter()][AllowNull()][scriptblock]$OnDrag,
+            [Parameter()][AllowNull()][scriptblock]$OnOpenFull,
+            [Parameter()][AllowNull()][scriptblock]$OnModeRequested,
+            [Parameter()][AllowNull()][scriptblock]$OnCloseRequested
+        )
+        if ($state.Disposed) { return }
+        $state.Callbacks = [pscustomobject][ordered]@{
+            OnDrag = $OnDrag
+            OnOpenFull = $OnOpenFull
+            OnModeRequested = $OnModeRequested
+            OnCloseRequested = $OnCloseRequested
+        }
+    }.GetNewClosure()
+
+    $dispose = {
+        if ($state.Disposed) { return }
+        $state.Disposed = $true
+        $state.AllowExit = $true
+        $targetWindow = $state.Window
+        $targetControls = $state.Controls
+        $delegates = $state.Delegates
+
+        if ($null -ne $targetControls -and $null -ne $delegates) {
+            $targetControls.RootBorder.Remove_MouseLeftButtonUp($delegates.BodyMouseLeftButtonUp)
+            $targetControls.HeaderDragArea.Remove_MouseLeftButtonDown($delegates.HeaderMouseLeftButtonDown)
+            $targetControls.ModeButton.Remove_Click($delegates.ModeClick)
+            $targetControls.CloseButton.Remove_Click($delegates.CloseClick)
+        }
+        if ($null -ne $targetWindow -and $null -ne $delegates) {
+            $targetWindow.Remove_Closing($delegates.Closing)
+        }
+        $state.Callbacks = $null
+        $state.DragAction = $null
+        $state.GetPresentationField = $null
+        $state.GetPresentationText = $null
+        $state.ConvertProgress = $null
+        $state.GetArcGeometry = $null
+        $state.GetPlacementModel = $null
+        $state.TestEventFromButton = $null
+        $state.ApplyTheme = $null
+        if ($null -ne $delegates) { $delegates.Clear() }
+        if ($null -ne $targetWindow) {
+            try { $targetWindow.Close() }
+            catch [InvalidOperationException] {}
+        }
+        $state.Window = $null
+        $state.Controls = $null
+    }.GetNewClosure()
+
+    & $renderFocus $null
+    return [pscustomobject][ordered]@{
+        Window = $window
+        Controls = $controls
+        State = $state
+        Show = $show
+        Hide = $hide
+        Activate = $activate
+        RenderFocus = $renderFocus
+        SetTheme = $setTheme
+        SetTopmost = $setTopmost
+        GetPlacement = $getPlacement
+        SetCallbacks = $setCallbacks
+        Dispose = $dispose
+    }
+}

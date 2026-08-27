@@ -19,67 +19,130 @@ Describe 'Get-MonitorPaths' {
         $paths.Logs | Should -BeExactly (Join-Path $root 'logs')
         $paths.Settings | Should -BeExactly (Join-Path $root 'data\settings.json')
         $paths.Health | Should -BeExactly (Join-Path $root 'data\health.json')
+        $paths.RelayImportLinks | Should -BeExactly (Join-Path $root 'data\relay-import-links.json')
+        $paths.StartupShortcut | Should -BeExactly (Join-Path $startup 'Codex Quota Monitor.lnk')
+    }
+
+    It 'separates packaged program files from mutable current-user data' {
+        $localAppData = Join-Path $TestDrive 'Packaged Local App Data'
+        $startup = Join-Path $TestDrive 'Packaged Startup Folder'
+        $programRoot = Join-Path $localAppData 'Programs\CodexQuotaMonitor'
+
+        $paths = Get-MonitorPaths `
+            -LocalAppData $localAppData `
+            -Startup $startup `
+            -ProgramRoot $programRoot
+
+        $dataRoot = Join-Path $localAppData 'CodexQuotaMonitor'
+        $paths.Root | Should -BeExactly $dataRoot
+        $paths.ProgramRoot | Should -BeExactly $programRoot
+        $paths.App | Should -BeExactly (Join-Path $programRoot 'app')
+        $paths.LegacyApp | Should -BeExactly (Join-Path $dataRoot 'app')
+        $paths.Payload | Should -BeExactly (Join-Path $programRoot 'payload')
+        $paths.Runtime | Should -BeExactly (Join-Path $programRoot 'runtime\pwsh')
+        $paths.PrivatePwsh | Should -BeExactly (Join-Path $programRoot 'runtime\pwsh\pwsh.exe')
+        $paths.RelayHost | Should -BeExactly (Join-Path $programRoot 'app\Bin\relay-quota-host.exe')
+        $paths.RelayPresets | Should -BeExactly (Join-Path $programRoot 'app\Presets\relay-usage.json')
+        $paths.Data | Should -BeExactly (Join-Path $dataRoot 'data')
+        $paths.Logs | Should -BeExactly (Join-Path $dataRoot 'logs')
         $paths.StartupShortcut | Should -BeExactly (Join-Path $startup 'Codex Quota Monitor.lnk')
     }
 }
 
 Describe 'New-DefaultSettings' {
+    It 'returns fresh schema-2 appearance and per-mode positions' {
+        $settings = New-DefaultSettings
+
+        $settings.SchemaVersion | Should -Be 2
+        $settings.Appearance.Theme | Should -BeExactly 'Dark'
+        $settings.Appearance.DisplayMode | Should -BeExactly 'Full'
+        $settings.Appearance.FullLayout | Should -BeExactly 'Overview'
+        $settings.Appearance.RememberLastMode | Should -BeTrue
+        $settings.Window.Full.Topmost | Should -BeTrue
+        $settings.Window.Full.Visible | Should -BeTrue
+        $settings.Window.Full.Width | Should -Be 420
+        $settings.Window.Full.Height | Should -Be 560
+        $settings.Window.CompactBar.Left | Should -BeNullOrEmpty
+        $settings.Window.Orb.Top | Should -BeNullOrEmpty
+        $settings.Compact.FocusMetric | Should -BeExactly 'Auto'
+    }
+
     It 'returns the versioned visible topmost startup defaults' {
         $settings = New-DefaultSettings
 
-        $settings.SchemaVersion | Should -Be 1
-        $settings.Window.Left | Should -BeNullOrEmpty
-        $settings.Window.Top | Should -BeNullOrEmpty
-        $settings.Window.Topmost | Should -BeTrue
-        $settings.Window.Visible | Should -BeTrue
+        $settings.SchemaVersion | Should -Be 2
+        $settings.Window.Full.Left | Should -BeNullOrEmpty
+        $settings.Window.Full.Top | Should -BeNullOrEmpty
+        $settings.Window.Full.Topmost | Should -BeTrue
+        $settings.Window.Full.Visible | Should -BeTrue
         $settings.Startup | Should -BeTrue
     }
 
     It 'returns a fresh independent settings graph on every call' {
         $first = New-DefaultSettings
-        $first.Window['Topmost'] = $false
+        $first.Window.Full['Topmost'] = $false
         $first['Startup'] = $false
 
         $second = New-DefaultSettings
 
-        $second.Window.Topmost | Should -BeTrue
+        $second.Window.Full.Topmost | Should -BeTrue
         $second.Startup | Should -BeTrue
     }
 }
 
 Describe 'monitor settings persistence' {
+    It 'migrates schema 1 without losing the existing window preference' {
+        $path = Join-Path $TestDrive 'migration\settings.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        [IO.File]::WriteAllText(
+            $path,
+            '{"SchemaVersion":1,"Window":{"Left":12.5,"Top":-8,"Topmost":false,"Visible":false},"Startup":false}',
+            [Text.UTF8Encoding]::new($false)
+        )
+
+        $settings = Read-MonitorSettings -Path $path
+
+        $settings.SchemaVersion | Should -Be 2
+        $settings.Window.Full.Left | Should -Be 12.5
+        $settings.Window.Full.Top | Should -Be -8
+        $settings.Window.Full.Topmost | Should -BeFalse
+        $settings.Window.Full.Visible | Should -BeFalse
+        $settings.Startup | Should -BeFalse
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).SchemaVersion | Should -Be 2
+    }
+
     It 'returns fresh defaults when the settings file is missing' {
         $path = Join-Path $TestDrive 'missing\settings.json'
 
         $first = Read-MonitorSettings -Path $path
-        $first.Window['Visible'] = $false
+        $first.Window.Full['Visible'] = $false
         $second = Read-MonitorSettings -Path $path
 
-        $second.Window.Visible | Should -BeTrue
+        $second.Window.Full.Visible | Should -BeTrue
         Test-Path -LiteralPath $path | Should -BeFalse
     }
 
     It 'atomically round-trips settings types and leaves no sibling temp file' {
         $path = Join-Path $TestDrive 'round-trip\data\settings.json'
         $settings = New-DefaultSettings
-        $settings.Window['Left'] = [double]-123.5
-        $settings.Window['Top'] = [long]72
-        $settings.Window['Topmost'] = $false
-        $settings.Window['Visible'] = $false
+        $settings.Window.Full['Left'] = [double]-123.5
+        $settings.Window.Full['Top'] = [long]72
+        $settings.Window.Full['Topmost'] = $false
+        $settings.Window.Full['Visible'] = $false
         $settings['Startup'] = $false
 
         Write-MonitorSettings -Path $path -Settings $settings
 
         Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
         $loaded = Read-MonitorSettings -Path $path
-        $loaded.Window.Left | Should -Be -123.5
-        $loaded.Window.Left | Should -BeOfType ([double])
-        $loaded.Window.Top | Should -Be 72
-        $loaded.Window.Top | Should -BeOfType ([long])
-        $loaded.Window.Topmost | Should -BeFalse
-        $loaded.Window.Topmost | Should -BeOfType ([bool])
-        $loaded.Window.Visible | Should -BeFalse
-        $loaded.Window.Visible | Should -BeOfType ([bool])
+        $loaded.Window.Full.Left | Should -Be -123.5
+        $loaded.Window.Full.Left | Should -BeOfType ([double])
+        $loaded.Window.Full.Top | Should -Be 72
+        $loaded.Window.Full.Top | Should -BeOfType ([double])
+        $loaded.Window.Full.Topmost | Should -BeFalse
+        $loaded.Window.Full.Topmost | Should -BeOfType ([bool])
+        $loaded.Window.Full.Visible | Should -BeFalse
+        $loaded.Window.Full.Visible | Should -BeOfType ([bool])
         $loaded.Startup | Should -BeFalse
         $loaded.Startup | Should -BeOfType ([bool])
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
@@ -88,20 +151,20 @@ Describe 'monitor settings persistence' {
     It 'replaces an existing settings file with the complete new document' {
         $path = Join-Path $TestDrive 'replace\data\settings.json'
         $first = New-DefaultSettings
-        $first.Window['Left'] = [long]10
+        $first.Window.Full['Left'] = [long]10
         Write-MonitorSettings -Path $path -Settings $first
 
         $second = New-DefaultSettings
-        $second.Window['Left'] = [long]900
-        $second.Window['Top'] = [long]-40
-        $second.Window['Topmost'] = $false
+        $second.Window.Full['Left'] = [long]900
+        $second.Window.Full['Top'] = [long]-40
+        $second.Window.Full['Topmost'] = $false
         Write-MonitorSettings -Path $path -Settings $second
 
         $loaded = Read-MonitorSettings -Path $path
-        $loaded.Window.Left | Should -Be 900
-        $loaded.Window.Top | Should -Be -40
-        $loaded.Window.Topmost | Should -BeFalse
-        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Left | Should -Be 900
+        $loaded.Window.Full.Left | Should -Be 900
+        $loaded.Window.Full.Top | Should -Be -40
+        $loaded.Window.Full.Topmost | Should -BeFalse
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Full.Left | Should -Be 900
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
     }
 
@@ -130,8 +193,8 @@ Describe 'monitor settings persistence' {
         Test-Path -LiteralPath $path | Should -BeFalse
         Test-Path -LiteralPath $renamed -PathType Leaf | Should -BeTrue
         [IO.File]::ReadAllText($renamed) | Should -BeExactly $evidence
-        $settings.Window.Topmost | Should -BeTrue
-        $settings.Window.Visible | Should -BeTrue
+        $settings.Window.Full.Topmost | Should -BeTrue
+        $settings.Window.Full.Visible | Should -BeTrue
         $settings.Startup | Should -BeTrue
     }
 
@@ -151,8 +214,8 @@ Describe 'monitor settings persistence' {
 
         Test-Path -LiteralPath $path | Should -BeFalse
         Test-Path -LiteralPath "$path.corrupt-20260714T000000000Z" -PathType Leaf | Should -BeTrue
-        $settings.Window.Topmost | Should -BeTrue
-        $settings.Window.Visible | Should -BeTrue
+        $settings.Window.Full.Topmost | Should -BeTrue
+        $settings.Window.Full.Visible | Should -BeTrue
     }
 
     It 'never overwrites earlier corrupt evidence when timestamps collide' {
@@ -198,7 +261,7 @@ Describe 'monitor settings persistence' {
 
         Test-Path -LiteralPath $path | Should -BeFalse
         Test-Path -LiteralPath "$path.corrupt-20260714T000000000Z" -PathType Leaf | Should -BeTrue
-        $settings.Window.Topmost | Should -BeTrue
+        $settings.Window.Full.Topmost | Should -BeTrue
     }
 
     It 'rejects Boolean, string, and nonintegral schema coercions' -ForEach @(
@@ -235,7 +298,7 @@ Describe 'monitor settings persistence' {
             $settings[$Field] = $Value
         }
         else {
-            $settings.Window[$Field] = $Value
+            $settings.Window.Full[$Field] = $Value
         }
 
         { Write-MonitorSettings -Path $path -Settings $settings } |
@@ -256,8 +319,10 @@ Describe 'monitor settings persistence' {
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
 
-        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Window,Startup'
-        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Left,Top,Topmost,Visible'
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Startup'
+        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
+        ($fileObject.Window.Full.PSObject.Properties.Name -join ',') |
+            Should -BeExactly 'Left,Top,Width,Height,Topmost,Visible'
         $returned | Should -Not -Match ([regex]::Escape($tokenSentinel))
         $returned | Should -Not -Match ([regex]::Escape($emailSentinel))
         $persisted | Should -Not -Match ([regex]::Escape($tokenSentinel))
@@ -276,8 +341,10 @@ Describe 'monitor settings persistence' {
 
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
-        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Window,Startup'
-        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Left,Top,Topmost,Visible'
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Startup'
+        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
+        ($fileObject.Window.Full.PSObject.Properties.Name -join ',') |
+            Should -BeExactly 'Left,Top,Width,Height,Topmost,Visible'
         $persisted | Should -Not -Match 'caller-token-sentinel|caller-email-sentinel'
     }
 
@@ -306,7 +373,7 @@ Describe 'monitor settings persistence' {
                 param($ScriptPath, $SettingsPath, $StartedEvent)
                 . $ScriptPath
                 $settings = New-DefaultSettings
-                $settings.Window['Left'] = [long]123
+                $settings.Window.Full['Left'] = [long]123
                 $StartedEvent.Set()
                 Write-MonitorSettings -Path $SettingsPath -Settings $settings
             }
@@ -328,7 +395,7 @@ Describe 'monitor settings persistence' {
         $job.State | Should -Be 'Completed'
         Receive-Job -Job $job -ErrorAction Stop | Out-Null
         Remove-Job -Job $job -Force
-        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Left | Should -Be 123
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Full.Left | Should -Be 123
     }
 
     It 'times out with a constant sanitized error while another thread owns the mutex' {
@@ -406,8 +473,8 @@ $null = $mutex.WaitOne()
                         param($ScriptPath, $SettingsPath, $Wave, $Index, $ReadyEvent, $GateEvent)
                         . $ScriptPath
                         $settings = New-DefaultSettings
-                        $settings.Window['Left'] = [long](($Wave * 100) + $Index)
-                        $settings.Window['Top'] = [long](-$Index)
+                        $settings.Window.Full['Left'] = [long](($Wave * 100) + $Index)
+                        $settings.Window.Full['Top'] = [long](-$Index)
                         $settings['Future'] = 'must-not-persist'
                         $ReadyEvent.Signal()
                         if (-not $GateEvent.Wait(5000)) {
@@ -437,9 +504,9 @@ $null = $mutex.WaitOne()
 
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
-        $fileObject.Window.Left | Should -BeIn (100..103)
-        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Window,Startup'
-        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Left,Top,Topmost,Visible'
+        $fileObject.Window.Full.Left | Should -BeIn (100..103)
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Startup'
+        ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         $persisted | Should -Not -Match 'must-not-persist'
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
     }
@@ -462,7 +529,7 @@ $null = $mutex.WaitOne()
             $null = $GateEvent.Wait(5000)
             try {
                 $settings = New-DefaultSettings
-                $settings.Window['Left'] = [long]777
+                $settings.Window.Full['Left'] = [long]777
                 Write-MonitorSettings -Path $SettingsPath -Settings $settings
             }
             finally {
@@ -482,7 +549,7 @@ $null = $mutex.WaitOne()
             Receive-Job -Job $job -ErrorAction Stop | Out-Null
 
             $script:WriterFinishedDuringParse | Should -BeFalse
-            $settings.Window.Topmost | Should -BeTrue
+            $settings.Window.Full.Topmost | Should -BeTrue
             Test-Path -LiteralPath $path -PathType Leaf | Should -BeTrue
             [IO.File]::ReadAllText($path) | Should -Match '"Left":777'
             [IO.File]::ReadAllText("$path.corrupt-20260714T000000000Z") | Should -BeExactly $corruptEvidence
@@ -506,12 +573,12 @@ $null = $mutex.WaitOne()
         $oldDocument = '{"SchemaVersion":1,"accessToken":"' + $sentinel + '","Window":{"Left":1,"Top":2,"Topmost":true,"Visible":true},"Startup":true}'
         [IO.File]::WriteAllText($path, $oldDocument, [Text.UTF8Encoding]::new($false))
         $replacement = New-DefaultSettings
-        $replacement.Window['Left'] = [long]2
+        $replacement.Window.Full['Left'] = [long]2
         Mock Remove-MonitorSettingsArtifactFile { throw [IO.IOException]::new('Synthetic cleanup failure.') }
 
         { Write-MonitorSettings -Path $path -Settings $replacement } | Should -Not -Throw
 
-        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Left | Should -Be 2
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).Window.Full.Left | Should -Be 2
         Should -Invoke Remove-MonitorSettingsArtifactFile -Times 0 -Exactly
         $files = @(Get-ChildItem -LiteralPath $directory -File)
         $files.Name | Should -Be @('settings.json')
@@ -522,11 +589,11 @@ $null = $mutex.WaitOne()
     It 'keeps existing bytes and removes staged artifacts when overwrite is blocked by a real file lock' {
         $path = Join-Path $TestDrive 'locked-overwrite\settings.json'
         $first = New-DefaultSettings
-        $first.Window['Left'] = [long]11
+        $first.Window.Full['Left'] = [long]11
         Write-MonitorSettings -Path $path -Settings $first
         $before = [IO.File]::ReadAllBytes($path)
         $second = New-DefaultSettings
-        $second.Window['Left'] = [long]22
+        $second.Window.Full['Left'] = [long]22
         $lock = [IO.FileStream]::new(
             $path,
             [IO.FileMode]::Open,
@@ -569,7 +636,7 @@ $null = $mutex.WaitOne()
         }
 
         $second = New-DefaultSettings
-        $second.Window['Left'] = [long]55
+        $second.Window.Full['Left'] = [long]55
         Write-MonitorSettings -Path $path -Settings $second
 
         (Get-Acl -LiteralPath $path).Sddl | Should -BeExactly $before

@@ -23,6 +23,7 @@ BeforeAll {
             LocalAppData = $localAppData
             Startup = $startup
             Root = Join-Path $localAppData 'CodexQuotaMonitor'
+            ProgramRoot = Join-Path $localAppData 'Programs\CodexQuotaMonitor'
             App = Join-Path $localAppData 'CodexQuotaMonitor\app'
             Data = Join-Path $localAppData 'CodexQuotaMonitor\data'
             Logs = Join-Path $localAppData 'CodexQuotaMonitor\logs'
@@ -124,11 +125,84 @@ Describe 'Codex quota monitor installation lifecycle' {
         $second.Operation | Should -BeExactly 'Install'
         $firstFiles.Count | Should -BeGreaterThan 10
         $secondFiles | Should -Be $firstFiles
+        foreach ($relativePath in @(
+                'Bin\relay-quota-host.exe'
+                'Bin\relay-quota-host.sha256'
+                'Presets\relay-usage.json'
+                'ThirdPartyNotices.txt'
+                'UI\CcSwitchImport.xaml'
+                'Private\CcSwitchUsageImport.ps1'
+                'Private\RelayImportLinkStore.ps1'
+                'Private\CcSwitchImportView.ps1'
+                'Private\CcSwitchImportController.ps1'
+            )) {
+            Test-Path -LiteralPath (Join-Path $context.App $relativePath) -PathType Leaf |
+                Should -BeTrue
+        }
         Test-Path -LiteralPath $context.Settings -PathType Leaf | Should -BeTrue
         Test-Path -LiteralPath $context.Shortcut -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $context.App 'Start-CodexQuotaMonitor.vbs') -PathType Leaf |
+            Should -BeTrue
         @(Get-ChildItem -LiteralPath $context.Startup -Filter '*.lnk' -File).Count | Should -Be 1
         Test-Path -LiteralPath (Join-Path $context.Root 'app.new') | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $context.Root 'app.old') | Should -BeFalse
+    }
+
+    It 'rejects a source directory without the GUI launcher before changing the installation' {
+        $context = New-InstallationTestContext -Name 'Missing GUI Launcher'
+        $source = Join-Path $TestDrive 'incomplete companion'
+        Copy-Item -LiteralPath $CompanionRoot -Destination $source -Recurse
+        Remove-Item -LiteralPath (Join-Path $source 'Start-CodexQuotaMonitor.vbs') -Force
+
+        {
+            & $MonitorModule {
+                param($sourcePath, $targetRoot)
+                Assert-MonitorSourceLayout -SourcePath $sourcePath -TargetRoot $targetRoot
+            } $source $context.Root
+        } | Should -Throw '*source directory is incomplete*'
+
+        {
+            Install-CodexQuotaMonitor `
+                -SourcePath $source `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -InstancePrefix $context.Prefix `
+                -SkipStart
+        } | Should -Throw '*source directory is incomplete*'
+
+        Test-Path -LiteralPath $context.Root | Should -BeFalse
+    }
+
+    It 'rejects missing or mismatched packaged relay host artifacts before publishing' {
+        $context = New-InstallationTestContext -Name 'Source Integrity'
+        $source = Join-Path $TestDrive 'Incomplete Source'
+        Copy-Item -LiteralPath $CompanionRoot -Destination $source -Recurse -Force
+        Remove-Item -LiteralPath (Join-Path $source 'Bin\relay-quota-host.sha256') -Force
+
+        {
+            Install-CodexQuotaMonitor `
+                -SourcePath $source `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -InstancePrefix $context.Prefix `
+                -SkipStart
+        } | Should -Throw '*source directory is incomplete*'
+
+        Copy-Item -LiteralPath $CompanionRoot -Destination $source -Recurse -Force
+        [IO.File]::WriteAllText(
+            (Join-Path $source 'Bin\relay-quota-host.sha256'),
+            ('0' * 64) + "`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+
+        {
+            Install-CodexQuotaMonitor `
+                -SourcePath $source `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -InstancePrefix $context.Prefix `
+                -SkipStart
+        } | Should -Throw '*integrity check failed*'
     }
 
     It 'repairs app files while preserving canonical settings and log bytes' {
@@ -152,8 +226,18 @@ Describe 'Codex quota monitor installation lifecycle' {
         } $context.Settings
         $logPath = Join-Path $context.Logs 'monitor.log'
         [IO.File]::WriteAllText($logPath, "preserve-log`n", [Text.UTF8Encoding]::new($false))
+        $providerPath = Join-Path $context.Data 'relay-providers.json'
+        $cachePath = Join-Path $context.Data 'relay-cache.json'
+        [IO.File]::WriteAllText($providerPath, '{"SchemaVersion":1,"Providers":[]}', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($cachePath, '{"SchemaVersion":1,"Providers":[]}', [Text.UTF8Encoding]::new($false))
         $settingsBefore = [IO.File]::ReadAllBytes($context.Settings)
         $logBefore = [IO.File]::ReadAllBytes($logPath)
+        $providerBefore = [IO.File]::ReadAllBytes($providerPath)
+        $cacheBefore = [IO.File]::ReadAllBytes($cachePath)
+        [IO.File]::WriteAllBytes(
+            (Join-Path $context.App 'Bin\relay-quota-host.exe'),
+            [byte[]](0x4d, 0x5a, 0x00)
+        )
         [IO.File]::WriteAllText(
             (Join-Path $context.App 'Start-CodexQuotaMonitor.ps1'),
             'broken',
@@ -170,9 +254,41 @@ Describe 'Codex quota monitor installation lifecycle' {
         $result.Operation | Should -BeExactly 'Repair'
         [IO.File]::ReadAllBytes($context.Settings) | Should -Be $settingsBefore
         [IO.File]::ReadAllBytes($logPath) | Should -Be $logBefore
+        [IO.File]::ReadAllBytes($providerPath) | Should -Be $providerBefore
+        [IO.File]::ReadAllBytes($cachePath) | Should -Be $cacheBefore
+        (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $context.App 'Bin\relay-quota-host.exe')).Hash |
+            Should -BeExactly ([IO.File]::ReadAllText((Join-Path $context.App 'Bin\relay-quota-host.sha256')).Trim())
         [IO.File]::ReadAllText((Join-Path $context.App 'Start-CodexQuotaMonitor.ps1')) |
             Should -Not -BeExactly 'broken'
         Test-Path -LiteralPath $context.Shortcut | Should -BeFalse
+    }
+
+    It 'rejects a corrupted installed relay host before starting' {
+        $context = New-InstallationTestContext -Name 'Start Integrity'
+        $null = Install-CodexQuotaMonitor `
+            -SourcePath $CompanionRoot `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -InstancePrefix $context.Prefix `
+            -SkipStart
+        [IO.File]::WriteAllBytes(
+            (Join-Path $context.App 'Bin\relay-quota-host.exe'),
+            [byte[]](0x4d, 0x5a, 0x00)
+        )
+
+        {
+            Start-CodexQuotaMonitor `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -InstancePrefix $context.Prefix `
+                -PwshPath (Get-Process -Id $PID).Path
+        } | Should -Throw '*integrity check failed*'
+
+        $running = & $MonitorModule {
+            param($Prefix)
+            Test-MonitorInstanceRunning -InstancePrefix $Prefix
+        } $context.Prefix
+        $running | Should -BeFalse
     }
 
     It 'rolls the previous app and shortcut back when the replacement cannot start' {
@@ -473,7 +589,7 @@ Describe 'Codex quota monitor installation lifecycle' {
         } $context.Prefix
 
         try {
-            $health = [ordered]@{
+            $schemaOneHealth = [ordered]@{
                 SchemaVersion = 1
                 Status = 'Live'
                 PlanType = 'plus'
@@ -486,7 +602,7 @@ Describe 'Codex quota monitor installation lifecycle' {
             }
             [IO.File]::WriteAllText(
                 $context.Health,
-                ($health | ConvertTo-Json),
+                ($schemaOneHealth | ConvertTo-Json),
                 [Text.UTF8Encoding]::new($false)
             )
 
@@ -495,6 +611,56 @@ Describe 'Codex quota monitor installation lifecycle' {
                 Read-MonitorHealthSnapshot -Path $HealthPath -Verbose
             } $context.Health
             $parsedHealth.Valid | Should -BeTrue
+            $parsedHealth.SchemaVersion | Should -Be 1
+            $parsedHealth.RelayProviderCount | Should -Be 0
+            $parsedHealth.RelayHostState | Should -BeExactly 'Disabled'
+
+            $schemaTwoHealth = [ordered]@{
+                SchemaVersion = 2
+                Status = 'Live'
+                PlanType = 'plus'
+                QuotaWindowCount = 2
+                LastSuccessAt = [DateTimeOffset]::UtcNow.ToString('o')
+                LastErrorCategory = $null
+                LastErrorMessage = $null
+                ProcessId = $PID
+                UpdatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+                RelayProviderCount = 3
+                RelayLiveCount = 1
+                RelayStaleCount = 1
+                RelayInvalidCount = 1
+                RelayHostState = 'Live'
+                DisplayMode = 'CompactBar'
+                Theme = 'Light'
+                UnknownField = 'discard-me'
+            }
+            [IO.File]::WriteAllText(
+                $context.Health,
+                ($schemaTwoHealth | ConvertTo-Json),
+                [Text.UTF8Encoding]::new($false)
+            )
+            $parsedSchemaTwo = & $MonitorModule {
+                param($HealthPath)
+                Read-MonitorHealthSnapshot -Path $HealthPath
+            } $context.Health
+            $parsedSchemaTwo.Valid | Should -BeTrue
+            $parsedSchemaTwo.SchemaVersion | Should -Be 2
+            $parsedSchemaTwo.RelayProviderCount | Should -Be 3
+            $parsedSchemaTwo.RelayLiveCount | Should -Be 1
+            $parsedSchemaTwo.RelayStaleCount | Should -Be 1
+            $parsedSchemaTwo.RelayInvalidCount | Should -Be 1
+            $parsedSchemaTwo.RelayHostState | Should -BeExactly 'Live'
+            $parsedSchemaTwo.DisplayMode | Should -BeExactly 'CompactBar'
+            $parsedSchemaTwo.Theme | Should -BeExactly 'Light'
+            @($parsedSchemaTwo.PSObject.Properties.Name) | Should -Be @(
+                'Present', 'Valid', 'InvalidReason', 'SchemaVersion', 'Status',
+                'PlanType', 'QuotaWindowCount', 'LastSuccessAt', 'LastErrorCategory',
+                'LastErrorMessage', 'ProcessId', 'UpdatedAt', 'UpdatedAtValue',
+                'RelayProviderCount', 'RelayLiveCount', 'RelayStaleCount',
+                'RelayInvalidCount', 'RelayHostState', 'DisplayMode', 'Theme'
+            )
+            ($parsedSchemaTwo | ConvertTo-Json -Depth 5) |
+                Should -Not -Match 'discard-me|UnknownField'
 
             $status = Get-CodexQuotaMonitorStatus `
                 -LocalAppData $context.LocalAppData `
@@ -507,18 +673,28 @@ Describe 'Codex quota monitor installation lifecycle' {
                 -Live
 
             @($status.PSObject.Properties.Name) | Should -Be @(
-                'Installed', 'Running', 'StartupEnabled', 'Status', 'PlanType',
+                'Installed', 'Running', 'StartupEnabled', 'Status', 'SchemaVersion', 'PlanType',
                 'QuotaWindowCount', 'LastSuccessAt', 'LastErrorCategory',
-                'LastErrorMessage', 'ProcessId', 'UpdatedAt', 'Root', 'AppPath',
+                'LastErrorMessage', 'ProcessId', 'UpdatedAt', 'RelayProviderCount',
+                'RelayLiveCount', 'RelayStaleCount', 'RelayInvalidCount', 'RelayHostState',
+                'DisplayMode', 'Theme', 'Root', 'ProgramRoot', 'AppPath',
                 'SettingsPath', 'HealthPath', 'LogDirectory', 'ShortcutPath'
             )
             $status.Running | Should -BeTrue
             $status.Status | Should -BeExactly 'Live'
             $status.QuotaWindowCount | Should -Be 2
+            $status.SchemaVersion | Should -Be 2
+            $status.RelayProviderCount | Should -Be 3
+            $status.RelayHostState | Should -BeExactly 'Live'
+            $status.DisplayMode | Should -BeExactly 'CompactBar'
+            $status.Theme | Should -BeExactly 'Light'
             @($healthResult.PSObject.Properties.Name) | Should -Be @(
                 'Healthy', 'LiveRequired', 'Installed', 'Running', 'HealthPresent',
-                'HealthFresh', 'Status', 'Reason', 'PlanType', 'QuotaWindowCount',
-                'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt'
+                'HealthFresh', 'Status', 'Reason', 'SchemaVersion', 'PlanType',
+                'QuotaWindowCount', 'LastErrorCategory', 'LastErrorMessage',
+                'ProcessId', 'UpdatedAt', 'RelayProviderCount', 'RelayLiveCount',
+                'RelayStaleCount', 'RelayInvalidCount', 'RelayHostState',
+                'DisplayMode', 'Theme'
             )
             $healthResult.Healthy | Should -BeTrue
             $healthResult.Reason | Should -BeExactly 'Healthy'
@@ -536,6 +712,126 @@ Describe 'Codex quota monitor installation lifecycle' {
                 param($Instance)
                 Close-MonitorInstance -Instance $Instance
             } $primary
+        }
+    }
+
+    It 'prepares packaged uninstall without deleting Inno-managed program files' {
+        $context = New-InstallationTestContext -Name 'Packaged Uninstall Preparation'
+        $null = Install-CodexQuotaMonitor `
+            -SourcePath $CompanionRoot `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -PwshPath (Get-Process -Id $PID).Path `
+            -InstancePrefix $context.Prefix `
+            -SkipStart
+
+        $result = Uninstall-CodexQuotaMonitor `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -InstancePrefix $context.Prefix `
+            -PreserveData `
+            -PreserveProgramFiles
+
+        $result.PreservedProgramFiles | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $context.ProgramRoot 'app\CodexQuotaMonitor.psd1') |
+            Should -BeTrue
+        Test-Path -LiteralPath $context.Data -PathType Container | Should -BeTrue
+        Test-Path -LiteralPath $context.Shortcut | Should -BeFalse
+    }
+
+    It 'publishes packaged app files outside the mutable data root' {
+        $context = New-InstallationTestContext -Name 'Packaged Root'
+        $pwshPath = (Get-Process -Id $PID).Path
+
+        $result = Install-CodexQuotaMonitor `
+            -SourcePath $CompanionRoot `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -PwshPath $pwshPath `
+            -InstancePrefix $context.Prefix `
+            -SkipStart
+
+        $result.AppPath | Should -BeExactly (Join-Path $context.ProgramRoot 'app')
+        Test-Path -LiteralPath (Join-Path $context.ProgramRoot 'app\CodexQuotaMonitor.psd1') -PathType Leaf |
+            Should -BeTrue
+        Test-Path -LiteralPath $context.Data -PathType Container | Should -BeTrue
+        Test-Path -LiteralPath $context.App | Should -BeFalse
+
+        $status = Get-CodexQuotaMonitorStatus `
+            -LocalAppData $context.LocalAppData `
+            -Startup $context.Startup `
+            -ProgramRoot $context.ProgramRoot `
+            -InstancePrefix $context.Prefix
+        $status.Installed | Should -BeTrue
+        $status.AppPath | Should -BeExactly (Join-Path $context.ProgramRoot 'app')
+    }
+
+    It 'removes the legacy app only after packaged health succeeds' {
+        $context = New-InstallationTestContext -Name 'Packaged Migration'
+        $null = New-Item -ItemType Directory -Path $context.App, $context.Data, $context.Logs -Force
+        [IO.File]::WriteAllText((Join-Path $context.App 'legacy.marker'), 'legacy')
+        & $MonitorModule {
+            param($SettingsPath)
+            $settings = New-DefaultSettings
+            $settings.Startup = $false
+            Write-MonitorSettings -Path $SettingsPath -Settings $settings
+        } $context.Settings
+        $settingsBytes = [IO.File]::ReadAllBytes($context.Settings)
+        $script:PackagedMigrationPid = $null
+        $starter = {
+            param($StartInfo, $Paths, $InstancePrefix)
+            $readyPath = Join-Path $Paths.Data 'packaged-migration.ready'
+            $process = Start-FakeMonitorInstance `
+                -Paths $Paths `
+                -Prefix $InstancePrefix `
+                -ReadyPath $readyPath
+            $script:PackagedMigrationPid = $process.Id
+            $health = [ordered]@{
+                SchemaVersion = 1
+                Status = 'AuthRequired'
+                PlanType = $null
+                QuotaWindowCount = 0
+                LastSuccessAt = $null
+                LastErrorCategory = 'AuthRequired'
+                LastErrorMessage = 'Sign in to Codex.'
+                ProcessId = $process.Id
+                UpdatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+            }
+            [IO.File]::WriteAllText(
+                $Paths.Health,
+                ($health | ConvertTo-Json),
+                [Text.UTF8Encoding]::new($false)
+            )
+            return $process
+        }
+
+        try {
+            $result = Install-CodexQuotaMonitor `
+                -SourcePath $CompanionRoot `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -ProgramRoot $context.ProgramRoot `
+                -PwshPath (Get-Process -Id $PID).Path `
+                -InstancePrefix $context.Prefix `
+                -TimeoutSeconds 3 `
+                -ProcessStarter $starter
+
+            $result.Status | Should -BeExactly 'AuthRequired'
+            Test-Path -LiteralPath $context.App | Should -BeFalse
+            Test-Path -LiteralPath (Join-Path $context.ProgramRoot 'app\CodexQuotaMonitor.psd1') |
+                Should -BeTrue
+            [IO.File]::ReadAllBytes($context.Settings) | Should -Be $settingsBytes
+        }
+        finally {
+            $null = Stop-CodexQuotaMonitor `
+                -LocalAppData $context.LocalAppData `
+                -Startup $context.Startup `
+                -ProgramRoot $context.ProgramRoot `
+                -InstancePrefix $context.Prefix `
+                -Wait
         }
     }
 }

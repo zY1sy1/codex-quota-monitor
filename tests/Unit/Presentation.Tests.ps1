@@ -260,3 +260,45 @@ Describe 'ConvertTo-QuotaPresentationRow' {
         @(ConvertTo-QuotaPresentationRow -QuotaWindows @() -Now $PresentationNow).Count | Should -Be 0
     }
 }
+
+Describe 'ConvertTo-OfficialMonitorPresentationRow' {
+    It 'adapts the legacy official display shape without changing its producer' {
+        $legacy = [pscustomobject][ordered]@{
+            Key = 'official:five-hour'
+            Label = '5 小时额度'
+            RemainingText = '74.5%'
+            ProgressValue = [double]74.5
+            CountdownText = '05:00:00'
+            ResetTimeText = '重置时间：2026-08-01 13:00'
+        }
+
+        $row = ConvertTo-OfficialMonitorPresentationRow -Row $legacy
+
+        $row.SourceKind | Should -BeExactly 'Official'
+        $row.SourceId | Should -BeExactly 'codex'
+        $row.SourceLabel | Should -BeExactly 'Codex 官方'
+        $row.ValueText | Should -BeExactly '74.5%'
+        $row.Countdown | Should -BeExactly '05:00:00'
+        $row.ResetTime | Should -BeExactly '重置时间：2026-08-01 13:00'
+    }
+}
+
+Describe 'ConvertTo-QuotaDisplayValueText' {
+    It 'strips a trailing currency unit from an amount' {
+        ConvertTo-QuotaDisplayValueText '$2.02 USD' | Should -BeExactly '$2.02'
+        ConvertTo-QuotaDisplayValueText '¥12.30 CNY' | Should -BeExactly '¥12.30'
+    }
+
+    It 'strips the currency unit but keeps a ratio and the used suffix' {
+        ConvertTo-QuotaDisplayValueText '$150.00 / $100.00 USD' | Should -BeExactly '$150.00 / $100.00'
+        ConvertTo-QuotaDisplayValueText '$150.00 / $100.00 USD used' | Should -BeExactly '$150.00 / $100.00 used'
+    }
+
+    It 'leaves percentages, plain amounts, and placeholders untouched' {
+        ConvertTo-QuotaDisplayValueText '83 / 100 %' | Should -BeExactly '83 / 100 %'
+        ConvertTo-QuotaDisplayValueText '74%' | Should -BeExactly '74%'
+        ConvertTo-QuotaDisplayValueText '$5.00' | Should -BeExactly '$5.00'
+        ConvertTo-QuotaDisplayValueText '--' | Should -BeExactly '--'
+        ConvertTo-QuotaDisplayValueText '' | Should -BeExactly ''
+    }
+}

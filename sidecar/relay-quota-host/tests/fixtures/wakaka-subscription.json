@@ -1,0 +1,24 @@
+{
+  "success": true,
+  "data": {
+    "mode": "subscription",
+    "plans": [
+      {
+        "name": "Weekly",
+        "remaining": 75,
+        "total": 100,
+        "used": 25,
+        "unit": "requests",
+        "reset": "7d"
+      },
+      {
+        "name": "Monthly",
+        "remaining": 1200,
+        "total": 2000,
+        "used": 800,
+        "unit": "tokens",
+        "reset": "22d"
+      }
+    ]
+  }
+}

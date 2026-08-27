@@ -38,6 +38,28 @@ BeforeAll {
 }
 
 Describe 'Resolve-WindowPlacement' {
+    It 'selects saved placement and dimensions for every display mode' -ForEach @(
+        @{ Mode = 'Full'; Left = 10; Top = 20; Width = 420; Height = 560 }
+        @{ Mode = 'CompactBar'; Left = 30; Top = 40; Width = 280; Height = 64 }
+        @{ Mode = 'Orb'; Left = 50; Top = 60; Width = 84; Height = 84 }
+    ) {
+        $settings = [ordered]@{
+            Window = [ordered]@{
+                Full = [ordered]@{ Left = 10; Top = 20; Width = 420; Height = 560 }
+                CompactBar = [ordered]@{ Left = 30; Top = 40 }
+                Orb = [ordered]@{ Left = 50; Top = 60 }
+            }
+        }
+        $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
+
+        $result = Resolve-MonitorModePlacement -Settings $settings -Mode $Mode -WorkAreas $areas
+
+        $result.Left | Should -Be $Left
+        $result.Top | Should -Be $Top
+        $result.Width | Should -Be $Width
+        $result.Height | Should -Be $Height
+    }
+
     It 'leaves an already visible saved placement unchanged' {
         $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
 
@@ -138,6 +160,63 @@ Describe 'Resolve-WindowPlacement' {
         $result.Top | Should -Be 24
     }
 
+    It 'falls back to another mode placement when the saved position is off every work area' {
+        $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
+        $fallbacks = @(
+            [pscustomobject]@{ Left = 150; Top = 100 }
+            [pscustomobject]@{ Left = 300; Top = 200 }
+        )
+
+        $result = Resolve-WindowPlacement `
+            -Left 2000 -Top 50 -WindowWidth 420 -WindowHeight 300 -WorkAreas $areas `
+            -FallbackPositions $fallbacks
+
+        $result.Left | Should -Be 150
+        $result.Top | Should -Be 100
+    }
+
+    It 'keeps the saved placement when a fallback position is also present' {
+        $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
+        $fallbacks = @([pscustomobject]@{ Left = 150; Top = 100 })
+
+        $result = Resolve-WindowPlacement `
+            -Left 100 -Top 80 -WindowWidth 420 -WindowHeight 300 -WorkAreas $areas `
+            -FallbackPositions $fallbacks
+
+        $result.Left | Should -Be 100
+        $result.Top | Should -Be 80
+    }
+
+    It 'uses a fallback position when the saved coordinates are null' {
+        $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
+        $fallbacks = @(
+            [pscustomobject]@{ Left = $null; Top = $null }
+            [pscustomobject]@{ Left = 640; Top = 480 }
+        )
+
+        $result = Resolve-WindowPlacement `
+            -Left $null -Top $null -WindowWidth 420 -WindowHeight 300 -WorkAreas $areas `
+            -FallbackPositions $fallbacks
+
+        $result.Left | Should -Be 640
+        $result.Top | Should -Be 480
+    }
+
+    It 'returns the safe origin when every candidate is off every work area' {
+        $areas = @(New-TestWorkArea -Left 0 -Top 0 -Width 1920 -Height 1040)
+        $fallbacks = @(
+            [pscustomobject]@{ Left = 2100; Top = 2000 }
+            [pscustomobject]@{ Left = 2500; Top = 50 }
+        )
+
+        $result = Resolve-WindowPlacement `
+            -Left 2000 -Top 50 -WindowWidth 420 -WindowHeight 300 -WorkAreas $areas `
+            -FallbackPositions $fallbacks
+
+        $result.Left | Should -Be 24
+        $result.Top | Should -Be 24
+    }
+
     It 'selects the intersecting work area with the largest overlap' {
         $areas = @(
             New-TestWorkArea -Left 0 -Top 0 -Width 1000 -Height 700
@@ -230,10 +309,12 @@ Describe 'Resolve-WindowPlacement' {
         }
         $settings = [ordered]@{
             Window = [ordered]@{
-                Left = 5000.0
-                Top = 3000.0
-                Topmost = $true
-                Visible = $true
+                Full = [ordered]@{
+                    Left = 5000.0
+                    Top = 3000.0
+                    Topmost = $true
+                    Visible = $true
+                }
             }
         }
         $testWorkAreas = @(

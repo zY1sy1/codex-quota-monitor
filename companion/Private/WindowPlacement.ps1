@@ -266,7 +266,11 @@ function Set-ResolvedWindowPlacement {
 
         [Parameter(Position = 3)]
         [AllowEmptyCollection()]
-        [object[]]$WorkAreas = @()
+        [object[]]$WorkAreas = @(),
+
+        [Parameter(Position = 4)]
+        [AllowEmptyCollection()]
+        [object[]]$FallbackPositions = @()
     )
 
     $width = Get-WindowPlacementDimension `
@@ -280,7 +284,8 @@ function Set-ResolvedWindowPlacement {
         -Top $Top `
         -WindowWidth $width `
         -WindowHeight $height `
-        -WorkAreas $WorkAreas
+        -WorkAreas $WorkAreas `
+        -FallbackPositions $FallbackPositions
 
     $Window.Left = [double]$placement.Left
     $Window.Top = [double]$placement.Top
@@ -303,18 +308,62 @@ function Initialize-MonitorDesktopPresentation {
         [scriptblock]$GetWorkAreas,
 
         [Parameter(Mandatory, Position = 4)]
-        [scriptblock]$SetPlacement
+        [scriptblock]$SetPlacement,
+
+        [Parameter()][AllowNull()][object]$CompactBarView,
+        [Parameter()][AllowNull()][object]$OrbView,
+        [Parameter()][AllowNull()][object]$DisplayController
     )
 
-    & $WindowView.SetTopmost ([bool]$Settings.Window.Topmost) | Out-Null
+    $windowSettings = Get-WindowPlacementField -InputObject $Settings -Name 'Window'
+    $fullSettings = Get-WindowPlacementField -InputObject $windowSettings -Name 'Full'
+    if ($null -eq $fullSettings) {
+        $fullSettings = $windowSettings
+    }
+
+    if ($null -ne $DisplayController -and $null -ne $CompactBarView -and $null -ne $OrbView) {
+        $workAreas = @(& $GetWorkAreas)
+        $definitions = @(
+            @('Full', $WindowView),
+            @('CompactBar', $CompactBarView),
+            @('Orb', $OrbView)
+        )
+        foreach ($definition in $definitions) {
+            $node = Get-WindowPlacementField -InputObject $windowSettings -Name $definition[0]
+            $fallbackPositions = @(
+                foreach ($other in $definitions) {
+                    if ($other[0] -ne $definition[0]) {
+                        Get-WindowPlacementField -InputObject $windowSettings -Name $other[0]
+                    }
+                }
+            )
+            & $SetPlacement -Window $definition[1].Window `
+                -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
+                -Top (Get-WindowPlacementField -InputObject $node -Name 'Top') `
+                -WorkAreas $workAreas `
+                -FallbackPositions $fallbackPositions | Out-Null
+        }
+        & $TrayView.SetVisible $true | Out-Null
+        & $DisplayController.ApplyVisibility | Out-Null
+        return
+    }
+
+    & $WindowView.SetTopmost ([bool](
+        Get-WindowPlacementField -InputObject $fullSettings -Name 'Topmost'
+    )) | Out-Null
     $workAreas = @(& $GetWorkAreas)
+    $fallbackPositions = @(
+        Get-WindowPlacementField -InputObject $windowSettings -Name 'CompactBar'
+        Get-WindowPlacementField -InputObject $windowSettings -Name 'Orb'
+    )
     & $SetPlacement `
         -Window $WindowView.Window `
-        -Left $Settings.Window.Left `
-        -Top $Settings.Window.Top `
-        -WorkAreas $workAreas | Out-Null
+        -Left (Get-WindowPlacementField -InputObject $fullSettings -Name 'Left') `
+        -Top (Get-WindowPlacementField -InputObject $fullSettings -Name 'Top') `
+        -WorkAreas $workAreas `
+        -FallbackPositions $fallbackPositions | Out-Null
     & $TrayView.SetVisible $true | Out-Null
-    if ([bool]$Settings.Window.Visible) {
+    if ([bool](Get-WindowPlacementField -InputObject $fullSettings -Name 'Visible')) {
         & $WindowView.Show | Out-Null
     }
     else {
@@ -342,7 +391,11 @@ function Resolve-WindowPlacement {
         [Parameter(Position = 4)]
         [AllowNull()]
         [AllowEmptyCollection()]
-        [object[]]$WorkAreas = @()
+        [object[]]$WorkAreas = @(),
+
+        [Parameter(Position = 5)]
+        [AllowEmptyCollection()]
+        [object[]]$FallbackPositions = @()
     )
 
     $usableWorkAreas = @()
@@ -373,25 +426,75 @@ function Resolve-WindowPlacement {
         }
     }
 
-    $savedLeft = ConvertTo-WindowPlacementFiniteDouble $Left
-    $savedTop = ConvertTo-WindowPlacementFiniteDouble $Top
     $width = ConvertTo-WindowPlacementFiniteDouble $WindowWidth
     $height = ConvertTo-WindowPlacementFiniteDouble $WindowHeight
-    if ($null -eq $savedLeft -or $null -eq $savedTop -or
-        $null -eq $width -or $null -eq $height -or
+    if ($null -eq $width -or $null -eq $height -or
         $width -le 0 -or $height -le 0) {
         return New-WindowPlacementFallback -UsableWorkAreas $usableWorkAreas
     }
 
-    $savedRight = $savedLeft + $width
-    $savedBottom = $savedTop + $height
+    $candidates = @(
+        @{ Left = $Left; Top = $Top }
+    )
+    foreach ($position in @($FallbackPositions)) {
+        $candidates += @{
+            Left = Get-WindowPlacementField -InputObject $position -Name 'Left'
+            Top = Get-WindowPlacementField -InputObject $position -Name 'Top'
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        $resolved = Resolve-WindowPlacementForPosition `
+            -Left $candidate.Left `
+            -Top $candidate.Top `
+            -WindowWidth $width `
+            -WindowHeight $height `
+            -UsableWorkAreas $usableWorkAreas
+        if ($null -ne $resolved) {
+            return $resolved
+        }
+    }
+
+    return New-WindowPlacementFallback -UsableWorkAreas $usableWorkAreas
+}
+
+function Resolve-WindowPlacementForPosition {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Left,
+
+        [Parameter(Position = 1)]
+        [AllowNull()]
+        [object]$Top,
+
+        [Parameter(Mandatory, Position = 2)]
+        [object]$WindowWidth,
+
+        [Parameter(Mandatory, Position = 3)]
+        [object]$WindowHeight,
+
+        [Parameter(Mandatory, Position = 4)]
+        [AllowEmptyCollection()]
+        [object[]]$UsableWorkAreas
+    )
+
+    $savedLeft = ConvertTo-WindowPlacementFiniteDouble $Left
+    $savedTop = ConvertTo-WindowPlacementFiniteDouble $Top
+    if ($null -eq $savedLeft -or $null -eq $savedTop) {
+        return $null
+    }
+
+    $savedRight = $savedLeft + $WindowWidth
+    $savedBottom = $savedTop + $WindowHeight
     if ([double]::IsInfinity($savedRight) -or [double]::IsInfinity($savedBottom)) {
-        return New-WindowPlacementFallback -UsableWorkAreas $usableWorkAreas
+        return $null
     }
 
     $selectedArea = $null
     $largestIntersection = 0.0
-    foreach ($area in $usableWorkAreas) {
+    foreach ($area in $UsableWorkAreas) {
         $intersectionWidth = [Math]::Max(
             0.0,
             [Math]::Min($savedRight, $area.Right) - [Math]::Max($savedLeft, $area.Left)
@@ -408,11 +511,11 @@ function Resolve-WindowPlacement {
     }
 
     if ($null -eq $selectedArea) {
-        return New-WindowPlacementFallback -UsableWorkAreas $usableWorkAreas
+        return $null
     }
 
-    $visibleWidth = [Math]::Min(48.0, $width)
-    $minimumLeft = $selectedArea.Left - $width + $visibleWidth
+    $visibleWidth = [Math]::Min(48.0, $WindowWidth)
+    $minimumLeft = $selectedArea.Left - $WindowWidth + $visibleWidth
     $maximumLeft = $selectedArea.Right - $visibleWidth
     if ($minimumLeft -le $maximumLeft) {
         $resolvedLeft = [Math]::Min([Math]::Max($savedLeft, $minimumLeft), $maximumLeft)
@@ -421,7 +524,7 @@ function Resolve-WindowPlacement {
         $resolvedLeft = $selectedArea.Left
     }
 
-    $titleStripHeight = [Math]::Min(48.0, $height)
+    $titleStripHeight = [Math]::Min(48.0, $WindowHeight)
     $minimumTop = $selectedArea.Top
     $maximumTop = $selectedArea.Bottom - $titleStripHeight
     if ($minimumTop -le $maximumTop) {
@@ -434,5 +537,48 @@ function Resolve-WindowPlacement {
     return [pscustomobject][ordered]@{
         Left = [double]$resolvedLeft
         Top = [double]$resolvedTop
+    }
+}
+
+function Resolve-MonitorModePlacement {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Settings,
+        [Parameter(Mandatory)][ValidateSet('Full', 'CompactBar', 'Orb')][string]$Mode,
+        [AllowEmptyCollection()][object[]]$WorkAreas = @()
+    )
+
+    $node = Get-WindowPlacementField -InputObject (
+        Get-WindowPlacementField -InputObject $Settings -Name 'Window'
+    ) -Name $Mode
+    $width = switch ($Mode) {
+        'Full' {
+            $savedWidth = ConvertTo-WindowPlacementFiniteDouble (
+                Get-WindowPlacementField -InputObject $node -Name 'Width'
+            )
+            if ($null -eq $savedWidth -or $savedWidth -le 0) { 420.0 } else { $savedWidth }
+        }
+        'CompactBar' { 280.0 }
+        'Orb' { 84.0 }
+    }
+    $height = switch ($Mode) {
+        'Full' {
+            $savedHeight = ConvertTo-WindowPlacementFiniteDouble (
+                Get-WindowPlacementField -InputObject $node -Name 'Height'
+            )
+            if ($null -eq $savedHeight -or $savedHeight -le 0) { 560.0 } else { $savedHeight }
+        }
+        'CompactBar' { 64.0 }
+        'Orb' { 84.0 }
+    }
+    $placement = Resolve-WindowPlacement `
+        -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
+        -Top (Get-WindowPlacementField -InputObject $node -Name 'Top') `
+        -WindowWidth $width -WindowHeight $height -WorkAreas $WorkAreas
+    [pscustomobject][ordered]@{
+        Left = [double]$placement.Left
+        Top = [double]$placement.Top
+        Width = [double]$width
+        Height = [double]$height
     }
 }

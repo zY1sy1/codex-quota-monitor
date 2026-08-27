@@ -11,7 +11,7 @@ Describe 'Codex quota monitor production composition' {
         $manifest = Import-PowerShellDataFile -Path $ManifestPath
 
         $manifest.RootModule | Should -BeExactly 'CodexQuotaMonitor.psm1'
-        $manifest.ModuleVersion | Should -BeExactly '0.1.0'
+        $manifest.ModuleVersion | Should -BeExactly '0.1.3'
         $manifest.PowerShellVersion | Should -BeExactly '7.4'
         [guid]$manifest.GUID | Should -Not -Be ([guid]::Empty)
         @($manifest.FunctionsToExport) | Should -Be @(
@@ -25,20 +25,42 @@ Describe 'Codex quota monitor production composition' {
         )
     }
 
-    It 'invokes the injected desktop initializer exactly once from the production runtime' {
+    It 'composes all display views and invokes the desktop initializer exactly once' {
         $localAppData = Join-Path $TestDrive 'Desktop Initializer'
         $startup = Join-Path $TestDrive 'Desktop Initializer Startup'
         New-Item -ItemType Directory -Path $startup -Force | Out-Null
         $instancePrefix = 'Local\CodexQuotaMonitor.DesktopInitializer.' + [guid]::NewGuid().ToString('N')
         $pwsh = (Get-Process -Id $PID).Path
         $calls = [Collections.Generic.List[string]]::new()
+        $refreshCallbacks = [Collections.Generic.List[object]]::new()
+        $relayCacheWrites = [Collections.Generic.List[object]]::new()
+        $ccSwitchDiscoveries = [Collections.Generic.List[object]]::new()
+        $relayImportLinkReads = [Collections.Generic.List[string]]::new()
+        $relayImportTransactions = [Collections.Generic.List[object]]::new()
+        $existingRelayProvider = [pscustomobject][ordered]@{
+            Id = '11111111-1111-1111-1111-111111111111'
+            Name = 'Existing relay'
+            Enabled = $false
+            BaseUrl = 'https://relay.example'
+            ProviderKind = 'Generic'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'GET'; Path = '/usage'; Query = [pscustomobject][ordered]@{}
+                Headers = [pscustomobject][ordered]@{}; Body = $null
+            }
+            ExtractorScript = 'function(response){return {remaining:response.balance};}'
+            TimeoutSeconds = 10
+            IntervalMinutes = 15
+            TrustedDestination = 'https://relay.example:443'
+            Secrets = [pscustomobject]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
+        }
 
         $windowView = [pscustomobject][ordered]@{
             Window = [pscustomobject]@{}
-            Render = { param($PresentationRows) }
             SetFreshness = { param([bool]$IsLive, [string]$Text) }
             Dispose = { }
         }
+        $compactBarView = [pscustomobject][ordered]@{ Window = [pscustomobject]@{}; Dispose = { } }
+        $orbView = [pscustomobject][ordered]@{ Window = [pscustomobject]@{}; Dispose = { } }
         $trayView = [pscustomobject][ordered]@{
             SetSeverity = { param([string]$Severity) }
             SetTooltip = { param([string]$Tooltip) }
@@ -46,27 +68,191 @@ Describe 'Codex quota monitor production composition' {
         }
         $interaction = [pscustomobject][ordered]@{
             ShowAndActivate = { }
+            ToggleTopmost = { }
+            SetDisplayMode = { param($Mode) }
+            SetTheme = { param($Theme) }
+            SetFullLayout = { param($Layout) }
+            ToggleStartup = { }
+            Refresh = { }
+            ManageRelays = { }
             Dispose = { }
         }
+        $settingsView = [pscustomobject][ordered]@{
+            Dispose = { $calls.Add('dispose-settings-view') | Out-Null }
+        }
+        $settingsController = [pscustomobject][ordered]@{
+            Show = { $calls.Add('show-settings') | Out-Null }
+            Dispose = { $calls.Add('dispose-settings-controller') | Out-Null }
+        }
+        $relayManagerView = [pscustomobject][ordered]@{
+            Dispose = { $calls.Add('dispose-relay-manager-view') | Out-Null }
+        }
+        $relayManagerController = [pscustomobject][ordered]@{
+            Show = { $calls.Add('show-relay-manager') | Out-Null }
+            Dispose = { $calls.Add('dispose-relay-manager-controller') | Out-Null }
+        }
+        $ccSwitchImportView = [pscustomobject][ordered]@{
+            Dispose = { $calls.Add('dispose-cc-switch-import-view') | Out-Null }
+        }
+        $ccSwitchImportController = [pscustomobject][ordered]@{
+            Show = {
+                param($Providers)
+                $calls.Add('show-cc-switch-import') | Out-Null
+                return $null
+            }
+            Dispose = { $calls.Add('dispose-cc-switch-import-controller') | Out-Null }
+        }
+        $displayController = [pscustomobject][ordered]@{
+            State = [pscustomobject]@{ Visible = $true; Mode = 'Full'; Theme = 'Dark'; FullLayout = 'Overview'; Topmost = $true }
+            SetSnapshot = { param($Rows) $calls.Add("snapshot:$(@($Rows).Count)") | Out-Null }
+            Dispose = { $calls.Add('dispose-display') | Out-Null }
+        }
         $overrides = [ordered]@{
-            NewWindow = { Write-Output -NoEnumerate $windowView }.GetNewClosure()
+            ReadRelayProviders = {
+                param($Path)
+                [pscustomobject]@{ SchemaVersion = 2; Providers = @($existingRelayProvider) }
+            }.GetNewClosure()
+            DiscoverCcSwitch = {
+                param($ExecutablePath, $DatabasePath)
+                $ccSwitchDiscoveries.Add([pscustomobject][ordered]@{
+                    ExecutablePath = $ExecutablePath
+                    DatabasePath = $DatabasePath
+                    ParameterNames = [string[]]@($PSBoundParameters.Keys)
+                }) | Out-Null
+                [pscustomobject]@{ Ok = $true; Providers = @(); Error = $null }
+            }.GetNewClosure()
+            ReadRelayImportLinks = {
+                param($Path)
+                $relayImportLinkReads.Add([string]$Path) | Out-Null
+                [pscustomobject]@{ SchemaVersion = 1; Links = @() }
+            }.GetNewClosure()
+            WriteRelayImportTransaction = {
+                param($ProviderPath, $LinkPath, $ProviderDocument, $Mutation)
+                $relayImportTransactions.Add([pscustomobject][ordered]@{
+                    ProviderPath = $ProviderPath
+                    LinkPath = $LinkPath
+                    ProviderDocument = $ProviderDocument
+                    Mutation = $Mutation
+                }) | Out-Null
+            }.GetNewClosure()
+            ReadRelayCache = {
+                param($Path)
+                [pscustomobject]@{
+                    SchemaVersion = 1
+                    Providers = @([pscustomobject]@{
+                        ProviderId = $existingRelayProvider.Id
+                        UpdatedAt = '2026-08-01T08:00:00.0000000+00:00'
+                        Results = @([pscustomobject]@{
+                            IsValid = $true; Remaining = 9; Unit = 'USD'; PlanName = 'Old'
+                        })
+                    })
+                }
+            }.GetNewClosure()
+            WriteRelayCache = {
+                param($Path, $Cache)
+                $relayCacheWrites.Add($Cache) | Out-Null
+            }.GetNewClosure()
+            NewWindow = {
+                param([AllowNull()][scriptblock]$OnRefreshRequested)
+                $refreshCallbacks.Add($OnRefreshRequested) | Out-Null
+                Write-Output -NoEnumerate $windowView
+            }.GetNewClosure()
+            NewCompactBar = { Write-Output -NoEnumerate $compactBarView }.GetNewClosure()
+            NewOrb = { Write-Output -NoEnumerate $orbView }.GetNewClosure()
             NewTray = { param([switch]$Visible) Write-Output -NoEnumerate $trayView }.GetNewClosure()
+            NewRelayManager = {
+                $calls.Add('new-relay-manager-view') | Out-Null
+                Write-Output -NoEnumerate $relayManagerView
+            }.GetNewClosure()
+            NewCcSwitchImportView = {
+                $calls.Add('new-cc-switch-import-view') | Out-Null
+                Write-Output -NoEnumerate $ccSwitchImportView
+            }.GetNewClosure()
+            NewCcSwitchImportController = {
+                param($View, $Discover, $ReadLinks, $ConvertCandidate)
+                $View | Should -Be $ccSwitchImportView
+                $ConvertCandidate | Should -BeOfType ([scriptblock])
+                $null = & $Discover
+                $null = & $ReadLinks
+                $calls.Add('new-cc-switch-import-controller') | Out-Null
+                Write-Output -NoEnumerate $ccSwitchImportController
+            }.GetNewClosure()
+            NewRelayManagerController = {
+                param(
+                    $View, $Providers, $WriteRelayState, $ImportProvider, $ProtectSecret, $UnprotectSecret,
+                    $QueryProvider, $ApplyProviders, $RemoveProviderArtifacts, $ConfirmDelete
+                )
+                $View | Should -Be $relayManagerView
+                & $WriteRelayState ([pscustomobject]@{ SchemaVersion = 2; Providers = @() }) ([pscustomobject]@{
+                    Kind = 'None'; Link = $null; ProviderId = $null
+                })
+                $null = & $ImportProvider @()
+                & $ApplyProviders @($existingRelayProvider) @($existingRelayProvider.Id) @() $false
+                $calls.Add('new-relay-manager-controller') | Out-Null
+                Write-Output -NoEnumerate $relayManagerController
+            }.GetNewClosure()
+            NewDisplay = {
+                param(
+                    $Settings, $FullView, $CompactBarView, $OrbView, $SaveSettings,
+                    [AllowNull()][scriptblock]$OnRefreshRequested, [switch]$DeferShow
+                )
+                $FullView | Should -Be $windowView
+                $CompactBarView | Should -Be $compactBarView
+                $OrbView | Should -Be $orbView
+                $refreshCallbacks.Add($OnRefreshRequested) | Out-Null
+                $DeferShow | Should -BeTrue
+                $calls.Add('new-display') | Out-Null
+                Write-Output -NoEnumerate $displayController
+            }.GetNewClosure()
             NewInteraction = {
                 param(
                     $Settings,
                     $WindowView,
+                    $DisplayController,
                     $TrayView,
                     $SaveSettings,
                     $ApplyStartupPreference,
                     $RequestRefresh,
                     $ExitEvent,
                     $OpenTarget,
-                    $LogDirectory
+                    $LogDirectory,
+                    $OnManageRelays,
+                    $OnOpenSettings
                 )
+                $refreshCallbacks.Add($RequestRefresh) | Out-Null
+                $DisplayController | Should -Be $displayController
+                $OnManageRelays | Should -BeOfType ([scriptblock])
+                $OnOpenSettings | Should -BeOfType ([scriptblock])
+                & $OnManageRelays
                 Write-Output -NoEnumerate $interaction
             }.GetNewClosure()
+            NewSettingsView = {
+                $calls.Add('new-settings-view') | Out-Null
+                Write-Output -NoEnumerate $settingsView
+            }.GetNewClosure()
+            NewSettingsController = {
+                param(
+                    $View, $GetSnapshot, $SetDisplayMode, $SetTheme, $SetFullLayout,
+                    $ToggleTopmost, $ToggleStartup, $RequestRefresh, $ManageRelays
+                )
+                $View | Should -Be $settingsView
+                $GetSnapshot | Should -BeOfType ([scriptblock])
+                $SetDisplayMode | Should -BeOfType ([scriptblock])
+                $SetTheme | Should -BeOfType ([scriptblock])
+                $SetFullLayout | Should -BeOfType ([scriptblock])
+                $ToggleTopmost | Should -BeOfType ([scriptblock])
+                $ToggleStartup | Should -BeOfType ([scriptblock])
+                $RequestRefresh | Should -BeOfType ([scriptblock])
+                $ManageRelays | Should -BeOfType ([scriptblock])
+                $calls.Add('new-settings-controller') | Out-Null
+                Write-Output -NoEnumerate $settingsController
+            }.GetNewClosure()
             InitializeDesktop = {
-                param($WindowView, $TrayView, $Settings, $GetWorkAreas, $SetPlacement)
+                param(
+                    $WindowView, $CompactBarView, $OrbView, $DisplayController,
+                    $TrayView, $Settings, $GetWorkAreas, $SetPlacement
+                )
+                $DisplayController | Should -Be $displayController
                 $calls.Add('initialize-desktop') | Out-Null
             }.GetNewClosure()
         }
@@ -96,8 +282,47 @@ Describe 'Codex quota monitor production composition' {
             Remove-Module -ModuleInfo $module -Force -ErrorAction SilentlyContinue
         }
 
-        @($calls) | Should -Be @('initialize-desktop')
+        @($calls | Where-Object { $_ -notlike 'snapshot:*' -and $_ -ne 'dispose-display' }) |
+            Should -Be @(
+                'new-relay-manager-view', 'new-cc-switch-import-view',
+                'new-cc-switch-import-controller', 'show-cc-switch-import',
+                'new-relay-manager-controller', 'new-display', 'show-relay-manager',
+                'new-settings-view', 'new-settings-controller',
+                'initialize-desktop', 'dispose-settings-controller',
+                'dispose-relay-manager-controller',
+                'dispose-cc-switch-import-controller', 'dispose-cc-switch-import-view'
+            )
+        @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0
+        @($calls | Where-Object { $_ -eq 'dispose-display' }).Count | Should -Be 1
+        $refreshCallbacks.Count | Should -Be 3
+        $refreshCallbacks[0] | Should -BeOfType ([scriptblock])
+        [object]::ReferenceEquals($refreshCallbacks[0], $refreshCallbacks[1]) | Should -BeTrue
+        [object]::ReferenceEquals($refreshCallbacks[1], $refreshCallbacks[2]) | Should -BeTrue
+        @($calls | Where-Object { $_ -eq 'dispose-relay-manager-view' }).Count | Should -Be 0
+        $ccSwitchDiscoveries.Count | Should -Be 1
+        $ccSwitchDiscoveries[0].ExecutablePath | Should -BeExactly (
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'app', 'Bin', 'relay-quota-host.exe')
+        )
+        $ccSwitchDiscoveries[0].DatabasePath | Should -BeExactly (
+            [IO.Path]::GetFullPath([IO.Path]::Combine($env:USERPROFILE, '.cc-switch', 'cc-switch.db'))
+        )
+        @($ccSwitchDiscoveries[0].ParameterNames) | Should -Be @('ExecutablePath', 'DatabasePath')
+        @($relayImportLinkReads) | Should -Be @(
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-import-links.json')
+        )
+        $relayImportTransactions.Count | Should -Be 1
+        $relayImportTransactions[0].ProviderPath | Should -BeExactly (
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-providers.json')
+        )
+        $relayImportTransactions[0].LinkPath | Should -BeExactly (
+            [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-import-links.json')
+        )
+        $relayCacheWrites.Count | Should -Be 1
+        @($relayCacheWrites[0].Providers).Count | Should -Be 0
         $result.Status | Should -BeExactly 'Live'
+        $dispatcher = [Windows.Threading.Dispatcher]::CurrentDispatcher
+        $dispatcher.HasShutdownStarted | Should -BeFalse
+        $dispatcher.HasShutdownFinished | Should -BeFalse
     }
 
     It 'runs headless through the full fake App Server handshake and writes only sanitized health' {
@@ -134,9 +359,11 @@ Describe 'Codex quota monitor production composition' {
 
         @($health.PSObject.Properties.Name) | Should -Be @(
             'SchemaVersion', 'Status', 'PlanType', 'QuotaWindowCount', 'LastSuccessAt',
-            'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt'
+            'LastErrorCategory', 'LastErrorMessage', 'ProcessId', 'UpdatedAt',
+            'RelayProviderCount', 'RelayLiveCount', 'RelayStaleCount', 'RelayInvalidCount',
+            'RelayHostState', 'DisplayMode', 'Theme'
         )
-        $health.SchemaVersion | Should -Be 1
+        $health.SchemaVersion | Should -Be 2
         $health.Status | Should -BeExactly 'Live'
         $health.PlanType | Should -BeExactly 'plus'
         $health.QuotaWindowCount | Should -Be 2
@@ -145,6 +372,13 @@ Describe 'Codex quota monitor production composition' {
         $health.LastErrorMessage | Should -BeNullOrEmpty
         $health.ProcessId | Should -Be $PID
         [datetimeoffset]$health.UpdatedAt | Should -BeGreaterThan ([datetimeoffset]'2020-01-01')
+        $health.RelayProviderCount | Should -Be 0
+        $health.RelayLiveCount | Should -Be 0
+        $health.RelayStaleCount | Should -Be 0
+        $health.RelayInvalidCount | Should -Be 0
+        $health.RelayHostState | Should -BeExactly 'Disabled'
+        $health.DisplayMode | Should -BeExactly 'Full'
+        $health.Theme | Should -BeExactly 'Dark'
 
         $result.Status | Should -BeExactly 'Live'
         $result.PlanType | Should -BeExactly 'plus'

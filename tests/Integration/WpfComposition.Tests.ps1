@@ -38,6 +38,7 @@ BeforeAll {
         param(
             [string]$Key = 'codex|primary',
             [string]$Label = '5 小时额度',
+            [string]$SourceLabel = 'Codex 官方',
             [string]$RemainingText = '74.5%',
             [AllowNull()][object]$ProgressValue = 74.5,
             [string]$CountdownText = '04:59:59',
@@ -46,6 +47,7 @@ BeforeAll {
 
         [pscustomobject][ordered]@{
             Key = $Key
+            SourceLabel = $SourceLabel
             Label = $Label
             RemainingText = $RemainingText
             ProgressValue = $ProgressValue
@@ -78,15 +80,18 @@ Describe 'WPF floating window composition' {
         $window.WindowStyle | Should -Be ([Windows.WindowStyle]::None)
         $window.AllowsTransparency | Should -BeTrue
         $window.Background.ToString() | Should -BeExactly '#00FFFFFF'
-        $window.Width | Should -Be 300
+        $window.Width | Should -Be 420
         $window.SizeToContent | Should -Be ([Windows.SizeToContent]::Height)
-        $window.MinHeight | Should -Be 150
+        $window.MinHeight | Should -Be 136
         $window.Topmost | Should -BeTrue
         $window.ShowInTaskbar | Should -BeFalse
 
         foreach ($name in @(
             'RootBorder', 'HeaderDragArea', 'ConnectionDot', 'TitleText', 'PinButton',
-            'HideButton', 'CloseButton', 'QuotaRows', 'FreshnessText'
+            'ThemeButton', 'ModeButton', 'LayoutButton', 'RefreshButton', 'HideButton', 'CloseButton',
+            'OverviewPanel', 'TabsPanel', 'OfficialRows', 'RelayRows',
+            'OfficialTabRows', 'RelayTabRows', 'OfficialTabButton', 'RelayTabButton',
+            'OfficialExpander', 'RelayExpander', 'FreshnessText'
         )) {
             $View.Controls.Contains($name) | Should -BeTrue
             $View.Controls[$name] | Should -Not -BeNullOrEmpty
@@ -94,16 +99,27 @@ Describe 'WPF floating window composition' {
         }
 
         $View.Controls.RootBorder | Should -BeOfType ([Windows.Controls.Border])
-        $View.Controls.RootBorder.Background.ToString() | Should -BeExactly '#EE101827'
-        $View.Controls.RootBorder.CornerRadius.TopLeft | Should -Be 16
-        $View.Controls.RootBorder.Padding.Left | Should -Be 12
+        $View.Controls.RootBorder.Background.ToString() | Should -BeExactly '#E6323A4C'
+        $View.Controls.RootBorder.CornerRadius.TopLeft | Should -BeLessOrEqual 8
+        $View.Controls.RootBorder.Padding.Left | Should -Be 16
         $View.Controls.HeaderDragArea.ActualHeight | Should -Be 0
         $View.Controls.ConnectionDot | Should -BeOfType ([Windows.Controls.Border])
         $View.Controls.TitleText | Should -BeOfType ([Windows.Controls.TextBlock])
-        $View.Controls.QuotaRows | Should -BeOfType ([Windows.Controls.StackPanel])
+        $View.Controls.TitleText.IsHitTestVisible | Should -BeFalse
+        $View.Controls.OfficialRows | Should -BeOfType ([Windows.Controls.StackPanel])
+        $View.Controls.RelayRows | Should -BeOfType ([Windows.Controls.StackPanel])
         $View.Controls.FreshnessText | Should -BeOfType ([Windows.Controls.TextBlock])
+        $View.State.Theme | Should -BeExactly 'Dark'
+        $View.State.FullLayout | Should -BeExactly 'Overview'
+        $View.State.OfficialRows.Count | Should -Be 0
+        $View.State.RelayRows.Count | Should -Be 0
+        $View.State.FocusKey | Should -BeNullOrEmpty
+        $View.State.Palette.Surface | Should -BeExactly '#E6323A4C'
+        $window.Tag | Should -BeExactly 'Dark'
 
-        foreach ($buttonName in @('PinButton', 'HideButton', 'CloseButton')) {
+        foreach ($buttonName in @(
+            'PinButton', 'ThemeButton', 'ModeButton', 'LayoutButton', 'RefreshButton', 'HideButton', 'CloseButton'
+        )) {
             $button = $View.Controls[$buttonName]
             $button | Should -BeOfType ([Windows.Controls.Button])
             $button.Width | Should -BeGreaterOrEqual 28
@@ -111,7 +127,12 @@ Describe 'WPF floating window composition' {
             $button.Focusable | Should -BeTrue
             [string]$button.ToolTip | Should -Not -BeNullOrEmpty
             [Windows.Automation.AutomationProperties]::GetName($button) | Should -Not -BeNullOrEmpty
+            $button.Content | Should -BeOfType ([Windows.Shapes.Path]) -Because 'header icons are self-drawn vectors, never font glyphs'
         }
+        [string]$View.Controls.RefreshButton.ToolTip | Should -BeExactly '立即刷新'
+        [Windows.Automation.AutomationProperties]::GetName($View.Controls.RefreshButton) |
+            Should -BeExactly '立即刷新官方和中转站额度'
+        [Windows.Controls.Grid]::GetColumn($View.Controls.RefreshButton) | Should -Be 6
         [Windows.Automation.AutomationProperties]::GetName($View.Controls.ConnectionDot) | Should -Match '连接状态'
 
         $exclusive = [IO.File]::Open($XamlPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -134,8 +155,8 @@ Describe 'WPF floating window composition' {
 
         & $View.Render -PresentationRows $rows
 
-        $View.Controls.QuotaRows.Children.Count | Should -Be 2
-        $texts = @(Get-TestDescendant -Root $View.Controls.QuotaRows -Type ([Windows.Controls.TextBlock]))
+        $View.Controls.OfficialRows.Children.Count | Should -Be 2
+        $texts = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.TextBlock]))
         @($texts.Text) | Should -Contain '5 小时额度'
         @($texts.Text) | Should -Contain '74.5%'
         @($texts.Text) | Should -Contain '04:59:59'
@@ -144,11 +165,28 @@ Describe 'WPF floating window composition' {
         @($texts.Text) | Should -Contain '--%'
         @($texts.Text) | Should -Contain '重置时间未知'
 
-        $bars = @(Get-TestDescendant -Root $View.Controls.QuotaRows -Type ([Windows.Controls.ProgressBar]) -Tag 'QuotaProgress')
+        $bars = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.ProgressBar]) -Tag 'QuotaProgress')
         $bars.Count | Should -Be 2
         $bars[0].Visibility | Should -Be ([Windows.Visibility]::Visible)
         $bars[0].Value | Should -Be 74.5
         $bars[1].Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+    }
+
+    It 'lays out the progress indicator from the actual value' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        & $View.Render -PresentationRows @((New-TestPresentationRow -ProgressValue 50))
+        $bar = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.ProgressBar]) -Tag 'QuotaProgress')[0]
+
+        $bar.Width = 200
+        $bar.ApplyTemplate() | Out-Null
+        $bar.Measure([Windows.Size]::new(200, 6))
+        $bar.Arrange([Windows.Rect]::new(0, 0, 200, 6))
+        $bar.UpdateLayout()
+        $indicator = $bar.Template.FindName('PART_Indicator', $bar)
+
+        $indicator | Should -Not -BeNullOrEmpty
+        $indicator.ActualWidth | Should -BeGreaterThan 90
+        $indicator.ActualWidth | Should -BeLessThan 110
     }
 
     It 'replaces old rows and shows the exact empty-state message' {
@@ -157,17 +195,17 @@ Describe 'WPF floating window composition' {
             New-TestPresentationRow
             New-TestPresentationRow -Key 'weekly' -Label '周额度'
         )
-        $View.Controls.QuotaRows.Children.Count | Should -Be 2
+        $View.Controls.OfficialRows.Children.Count | Should -Be 2
 
         & $View.Render -PresentationRows @((New-TestPresentationRow -Key 'other' -Label '其他额度'))
-        $View.Controls.QuotaRows.Children.Count | Should -Be 1
-        $texts = @(Get-TestDescendant -Root $View.Controls.QuotaRows -Type ([Windows.Controls.TextBlock]))
+        $View.Controls.OfficialRows.Children.Count | Should -Be 1
+        $texts = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.TextBlock]))
         @($texts.Text) | Should -Contain '其他额度'
         @($texts.Text) | Should -Not -Contain '周额度'
 
         & $View.Render -PresentationRows @()
-        $View.Controls.QuotaRows.Children.Count | Should -Be 1
-        $empty = $View.Controls.QuotaRows.Children[0]
+        $View.Controls.OfficialRows.Children.Count | Should -Be 1
+        $empty = $View.Controls.OfficialRows.Children[0]
         $empty | Should -BeOfType ([Windows.Controls.TextBlock])
         $empty.Text | Should -BeExactly '当前账户未返回额度窗口'
     }
@@ -184,10 +222,115 @@ Describe 'WPF floating window composition' {
 
         { & $View.Render -PresentationRows @($row) } | Should -Not -Throw
 
-        $texts = @(Get-TestDescendant -Root $View.Controls.QuotaRows -Type ([Windows.Controls.TextBlock]))
+        $texts = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.TextBlock]))
         @($texts.Text) | Should -Contain $longLabel
-        $bar = @(Get-TestDescendant -Root $View.Controls.QuotaRows -Type ([Windows.Controls.ProgressBar]) -Tag 'QuotaProgress')[0]
+        $bar = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.ProgressBar]) -Tag 'QuotaProgress')[0]
         $bar.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+    }
+
+    It 'renders official and relay snapshots into overview and tabs in sync' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        $official = @(New-TestPresentationRow -Key 'official|five-hour' -Label '官方 5 小时')
+        $relay = @(New-TestPresentationRow -Key 'relay|daily' -Label '中转日额度')
+        $connectionState = [pscustomobject]@{ IsLive = $true }
+
+        & $View.RenderGroups -OfficialRows $official -RelayRows $relay -State $connectionState
+
+        foreach ($name in @('OfficialRows', 'OfficialTabRows')) {
+            $View.Controls[$name].Children.Count | Should -Be 1
+            $texts = @(Get-TestDescendant -Root $View.Controls[$name] -Type ([Windows.Controls.TextBlock]))
+            @($texts.Text) | Should -Contain '官方 5 小时'
+        }
+        foreach ($name in @('RelayRows', 'RelayTabRows')) {
+            $View.Controls[$name].Children.Count | Should -Be 1
+            $texts = @(Get-TestDescendant -Root $View.Controls[$name] -Type ([Windows.Controls.TextBlock]))
+            @($texts.Text) | Should -Contain '中转日额度'
+        }
+        @($View.State.OfficialRows).Count | Should -Be 1
+        @($View.State.RelayRows).Count | Should -Be 1
+        [object]::ReferenceEquals($View.State.ConnectionState, $connectionState) | Should -BeTrue
+    }
+
+    It 'renders the shared relay presentation contract without legacy field aliases' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        $relay = [pscustomobject][ordered]@{
+            Key = 'relay:wkk:wallet'
+            SourceKind = 'Relay'
+            SourceId = 'wkk'
+            GroupLabel = '中转站额度'
+            Label = 'Wakaka 账户余额'
+            ValueText = '$18.42 USD'
+            SecondaryText = '最近查询成功'
+            ProgressValue = $null
+            Countdown = '18:26:40'
+            ResetTime = '重置时间：明天 00:00'
+            IsStale = $false
+            UpdatedAt = [DateTimeOffset]'2026-08-02T10:00:00Z'
+            State = 'Live'
+        }
+
+        & $View.RenderGroups -OfficialRows @() -RelayRows @($relay)
+
+        foreach ($name in @('RelayRows', 'RelayTabRows')) {
+            $texts = @(Get-TestDescendant -Root $View.Controls[$name] -Type ([Windows.Controls.TextBlock]))
+            @($texts.Text) | Should -Contain 'Wakaka 账户余额'
+            @($texts.Text) | Should -Contain '$18.42'
+            @($texts.Text) | Should -Not -Contain '$18.42 USD' -Because 'the panel shows the amount without the currency unit'
+            @($texts.Text) | Should -Contain '最近查询成功'
+            @($texts.Text) | Should -Contain '18:26:40'
+            @($texts.Text) | Should -Contain '重置时间：明天 00:00'
+        }
+    }
+
+    It 'rethemes and relayouts from the existing snapshot without losing rows' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official' -Label '官方快照')) `
+            -RelayRows @((New-TestPresentationRow -Key 'relay' -Label '中转快照'))
+
+        & $View.SetTheme Light
+        $View.State.Theme | Should -BeExactly 'Light'
+        $View.State.Palette.Surface | Should -BeExactly '#E6F4EFEA'
+        $View.Controls.RootBorder.Background.ToString() | Should -BeExactly '#E6F4EFEA'
+        $View.Controls.OfficialRows.Children.Count | Should -Be 1
+        $View.Controls.RelayTabRows.Children.Count | Should -Be 1
+
+        & $View.SetLayout Tabs
+        $View.State.FullLayout | Should -BeExactly 'Tabs'
+        $View.Controls.OverviewPanel.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        $View.Controls.TabsPanel.Visibility | Should -Be ([Windows.Visibility]::Visible)
+        $View.Controls.OfficialTabRows.Visibility | Should -Be ([Windows.Visibility]::Visible)
+        $View.Controls.RelayTabRows.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+
+        $View.Controls.RelayTabButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.OfficialTabRows.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        $View.Controls.RelayTabRows.Visibility | Should -Be ([Windows.Visibility]::Visible)
+        $relayTexts = @(Get-TestDescendant -Root $View.Controls.RelayTabRows -Type ([Windows.Controls.TextBlock]))
+        @($relayTexts.Text) | Should -Contain '中转快照'
+    }
+
+    It 'renders accessible focus controls and marks the selected quota' {
+        $focused = [Collections.Generic.List[string]]::new()
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath `
+            -OnFocusRequested { param($key) $focused.Add($key) }
+
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official|selected')) `
+            -RelayRows @() `
+            -FocusKey 'official|selected'
+
+        $card = $View.Controls.OfficialRows.Children[0]
+        $card.BorderBrush.ToString() | Should -BeExactly '#FF58C2C7'
+        $card.BorderThickness.Left | Should -Be 1
+        $focusButton = @(Get-TestDescendant -Root $card -Type ([Windows.Controls.Button]) -Tag 'QuotaFocus')[0]
+        $focusButton | Should -Not -BeNullOrEmpty
+        $focusButton.Focusable | Should -BeTrue
+         [string]$focusButton.ToolTip | Should -BeExactly '取消迷你模式固定显示'
+         [Windows.Automation.AutomationProperties]::GetName($focusButton) |
+             Should -BeExactly '取消迷你模式固定显示'
+
+        $focusButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        @($focused) | Should -Be @('official|selected')
     }
 
     It 'grows from one to two rows and bounds many-row height through a ScrollViewer' {
@@ -209,14 +352,14 @@ Describe 'WPF floating window composition' {
         $twoRowHeight | Should -BeGreaterThan $oneRowHeight
         $scroll = @(Get-TestDescendant -Root $View.Controls.RootBorder -Type ([Windows.Controls.ScrollViewer]))[0]
         $scroll.MaxHeight | Should -BeGreaterThan 0
-        $scroll.MaxHeight | Should -BeLessOrEqual 420
+        $scroll.MaxHeight | Should -BeLessOrEqual 560
 
         & $View.Dispose
         $script:View = New-QuotaWindowView -XamlPath $XamlPath
         $many = 1..50 | ForEach-Object { New-TestPresentationRow -Key "row-$_" -Label ("额度 $_") }
         & $View.Render -PresentationRows $many
         $View.Controls.RootBorder.Measure([Windows.Size]::new(300, [double]::PositiveInfinity))
-        $View.Controls.RootBorder.DesiredSize.Height | Should -BeLessThan 520
+        $View.Controls.RootBorder.DesiredSize.Height | Should -BeLessThan 680
     }
 
     It 'switches topmost and exposes current placement without showing the window' {
@@ -246,11 +389,19 @@ Describe 'WPF floating window composition' {
         [Windows.Automation.AutomationProperties]::GetName($View.Controls.ConnectionDot) | Should -BeExactly '连接状态：实时'
         $View.Controls.ConnectionDot.Background.ToString() | Should -BeExactly '#FF22C55E'
 
+        & $View.SetTheme Light
+        $View.Controls.ConnectionDot.Background.ToString() | Should -BeExactly '#FF22C55E'
+
         & $View.SetFreshness -IsLive $false -Text '最后同步：12:34，正在重连'
         $View.Controls.FreshnessText.Visibility | Should -Be ([Windows.Visibility]::Visible)
         $View.Controls.FreshnessText.Text | Should -BeExactly '最后同步：12:34，正在重连'
         [Windows.Automation.AutomationProperties]::GetName($View.Controls.ConnectionDot) | Should -BeExactly '连接状态：数据已过期'
-        $View.Controls.ConnectionDot.Background.ToString() | Should -BeExactly '#FF94A3B8'
+        $View.Controls.ConnectionDot.Background.ToString() | Should -BeExactly '#FF6F6B67'
+
+        & $View.SetTheme Dark
+        $View.Controls.FreshnessText.Visibility | Should -Be ([Windows.Visibility]::Visible)
+        $View.Controls.FreshnessText.Text | Should -BeExactly '最后同步：12:34，正在重连'
+        $View.Controls.ConnectionDot.Background.ToString() | Should -BeExactly '#FFAFB8CB'
     }
 
     It 'raises each injected callback exactly once and performs injected drag before reporting placement' {
@@ -260,6 +411,10 @@ Describe 'WPF floating window composition' {
             -DragAction { $calls.Add('drag-action') } `
             -OnDrag { param($placement) $calls.Add('on-drag'); $script:dragPlacement = $placement } `
             -OnToggleTopmost { $calls.Add('toggle') } `
+            -OnThemeRequested { $calls.Add('theme') } `
+            -OnModeRequested { $calls.Add('mode') } `
+            -OnLayoutRequested { $calls.Add('layout') } `
+            -OnRefreshRequested { $calls.Add('refresh') } `
             -OnHide { $calls.Add('hide') } `
             -OnCloseRequested { $calls.Add('close') }
 
@@ -271,10 +426,16 @@ Describe 'WPF floating window composition' {
         $mouseEvent.RoutedEvent = [Windows.UIElement]::MouseLeftButtonDownEvent
         $View.Controls.HeaderDragArea.RaiseEvent($mouseEvent)
         $View.Controls.PinButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.ThemeButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.ModeButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.LayoutButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.RefreshButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $View.Controls.HideButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $View.Controls.CloseButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
 
-        @($calls) | Should -Be @('drag-action', 'on-drag', 'toggle', 'hide', 'close')
+        @($calls) | Should -Be @(
+            'drag-action', 'on-drag', 'toggle', 'theme', 'mode', 'layout', 'refresh', 'hide', 'close'
+        )
         $script:dragPlacement | Should -Not -BeNullOrEmpty
         @($script:dragPlacement.PSObject.Properties.Name) | Should -Be @('Left', 'Top', 'Topmost', 'Visible')
     }
@@ -286,6 +447,11 @@ Describe 'WPF floating window composition' {
         & $View.SetCallbacks `
             -OnDrag { $calls.Add('new-drag') } `
             -OnToggleTopmost { $calls.Add('new-toggle') } `
+            -OnThemeRequested { $calls.Add('new-theme') } `
+            -OnModeRequested { $calls.Add('new-mode') } `
+            -OnLayoutRequested { $calls.Add('new-layout') } `
+            -OnRefreshRequested { $calls.Add('new-refresh') } `
+            -OnFocusRequested { param($key) $calls.Add("new-focus:$key") } `
             -OnHide { $calls.Add('new-hide') } `
             -OnCloseRequested { $calls.Add('new-close') }
 
@@ -293,14 +459,45 @@ Describe 'WPF floating window composition' {
         @($calls) | Should -Be @('new-hide')
         @($View.State.Callbacks.PSObject.Properties.Name) | Should -Be @(
             'OnDrag', 'OnToggleTopmost', 'OnHide', 'OnCloseRequested'
+            'OnThemeRequested', 'OnModeRequested', 'OnLayoutRequested', 'OnRefreshRequested', 'OnFocusRequested'
         )
 
         & $View.Dispose
         $View.State.Callbacks | Should -BeNullOrEmpty
         $before = $calls.Count
         $View.Controls.HideButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $View.Controls.RefreshButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         $calls.Count | Should -Be $before
         $script:View = $null
+    }
+
+    It 'shrinks when both overview groups are collapsed and restores natural height' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official')) `
+            -RelayRows @((New-TestPresentationRow -Key 'relay' -SourceLabel 'Wakaka' -Label '账户余额'))
+
+        $size = [Windows.Size]::new(420, [double]::PositiveInfinity)
+        $View.Controls.RootBorder.Measure($size)
+        $expandedHeight = $View.Controls.RootBorder.DesiredSize.Height
+
+        $View.Controls.OfficialExpander.IsExpanded = $false
+        $View.Controls.RelayExpander.IsExpanded = $false
+        $View.Controls.RootBorder.InvalidateMeasure()
+        $View.Controls.RootBorder.UpdateLayout()
+        $View.Controls.RootBorder.Measure($size)
+        $collapsedHeight = $View.Controls.RootBorder.DesiredSize.Height
+
+        $collapsedHeight | Should -BeLessThan $expandedHeight
+        $View.Window.MinHeight | Should -Be 136
+        $View.Controls.OfficialExpander.IsExpanded = $true
+        $View.Controls.RootBorder.InvalidateMeasure()
+        $View.Controls.RootBorder.UpdateLayout()
+        $View.Controls.RootBorder.Measure($size)
+        $View.Controls.RootBorder.DesiredSize.Height | Should -BeGreaterThan $collapsedHeight
+
+        $scroll = @(Get-TestDescendant -Root $View.Controls.RootBorder -Type ([Windows.Controls.ScrollViewer]))[0]
+        $scroll.MaxHeight | Should -BeLessOrEqual 560
     }
 
     It 'cancels ordinary closing, permits explicit exit, and disposes idempotently' {

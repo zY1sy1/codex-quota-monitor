@@ -1,0 +1,142 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Codex 额度迷你条"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Width="280"
+        SizeToContent="Height"
+        Topmost="True"
+        ShowInTaskbar="False"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        AutomationProperties.Name="Codex 额度迷你条">
+    <Window.Resources>
+        <Style x:Key="CompactIconButton" TargetType="Button">
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="22" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="1,0,0,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style x:Key="CompactIconGlyph" TargetType="Path">
+            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+            <Setter Property="StrokeThickness" Value="1.6" />
+            <Setter Property="StrokeStartLineCap" Value="Round" />
+            <Setter Property="StrokeEndLineCap" Value="Round" />
+            <Setter Property="StrokeLineJoin" Value="Round" />
+            <Setter Property="Stretch" Value="Uniform" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="RootBorder"
+            Background="#E6323A4C"
+            BorderBrush="#4D707A90"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="8"
+            Cursor="Hand">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="23" />
+                    <ColumnDefinition Width="23" />
+                </Grid.ColumnDefinitions>
+                <Border x:Name="HeaderDragArea"
+                        Grid.Column="0"
+                        Grid.ColumnSpan="2"
+                        Background="Transparent"
+                        Cursor="SizeAll"
+                        AutomationProperties.Name="拖动额度迷你条" />
+                <TextBlock x:Name="MetricLabel"
+                           Grid.Column="0"
+                           Margin="0,0,8,0"
+                           VerticalAlignment="Center"
+                           Foreground="#FFAFB8CB"
+                           FontSize="11"
+                           TextTrimming="CharacterEllipsis"
+                           IsHitTestVisible="False"
+                           AutomationProperties.Name="额度名称" />
+                <TextBlock x:Name="MetricValue"
+                           Grid.Column="1"
+                           Margin="0,0,6,0"
+                           VerticalAlignment="Center"
+                           Foreground="#FFF4F3F1"
+                           FontSize="16"
+                           FontWeight="Bold"
+                           TextAlignment="Right"
+                           IsHitTestVisible="False"
+                           AutomationProperties.Name="剩余额度" />
+                <Button x:Name="ModeButton"
+                        Grid.Column="2"
+                        Style="{StaticResource CompactIconButton}"
+                        ToolTip="切换显示模式"
+                        AutomationProperties.Name="切换显示模式">
+                    <Path Style="{StaticResource CompactIconGlyph}" Width="11" Height="11"
+                          Data="M5,2 H9.8 V7.2 M2.2,4.6 H7.6 V10 H2.2 Z" />
+                </Button>
+                <Button x:Name="CloseButton"
+                        Grid.Column="3"
+                        Style="{StaticResource CompactIconButton}"
+                        ToolTip="关闭到系统托盘"
+                        AutomationProperties.Name="关闭到系统托盘">
+                    <Path Style="{StaticResource CompactIconGlyph}" Width="10" Height="10"
+                          Data="M3.1,3.1 L8.9,8.9 M8.9,3.1 L3.1,8.9" />
+                </Button>
+            </Grid>
+
+            <Border x:Name="ProgressTrack"
+                    Grid.Row="1"
+                    Height="5"
+                    Margin="0,5,0,0"
+                    Background="#664D566A"
+                    CornerRadius="2.5"
+                    ClipToBounds="True">
+                <Border x:Name="ProgressFill"
+                        Width="0"
+                        HorizontalAlignment="Left"
+                        Background="#FF58C2C7"
+                        CornerRadius="2.5" />
+            </Border>
+
+            <Grid x:Name="FooterRow" Grid.Row="2" Margin="0,4,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="CountdownText"
+                           Grid.Column="0"
+                           Margin="0,0,8,0"
+                           VerticalAlignment="Center"
+                           Foreground="#FF58C2C7"
+                           FontSize="10"
+                           TextTrimming="CharacterEllipsis"
+                           AutomationProperties.Name="重置倒计时" />
+                <TextBlock x:Name="ResetTimeText"
+                           Grid.Column="1"
+                           VerticalAlignment="Center"
+                           Foreground="#FFAFB8CB"
+                           FontSize="9"
+                           TextAlignment="Right"
+                           TextTrimming="CharacterEllipsis"
+                           AutomationProperties.Name="重置时间" />
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
