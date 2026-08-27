@@ -115,6 +115,35 @@ function Select-QuotaOrbMetricFontSize {
     return 11
 }
 
+function Select-QuotaOrbFitFontSize {
+    # TextBlocks inherit the OS-locale default family (Microsoft YaHei UI on
+    # zh-CN systems, not Segoe UI), whose digits are wider, so any fixed size
+    # can blow the MaxWidth by a fraction of a pixel and CharacterEllipsis
+    # turns "$50.37" into "$50.…". Measure with the control's own family.
+    # Family/Weight stay untyped: WPF assemblies may load after this file is
+    # parsed, and eagerly resolving [Windows.Media.*] in a signature position
+    # poisons the lookup cache ("Unable to find type" even once loaded).
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][object]$Family,
+        [Parameter(Mandatory)][object]$Weight,
+        [Parameter(Mandatory)][double]$Budget,
+        [Parameter(Mandatory)][ValidateRange(6, 40)][int]$MaxSize,
+        [Parameter(Mandatory)][ValidateRange(6, 40)][int]$MinSize
+    )
+
+    $typeface = [Windows.Media.Typeface]::new(
+        $Family, [Windows.FontStyles]::Normal, $Weight, [Windows.FontStretches]::Normal)
+    for ($size = $MaxSize; $size -ge $MinSize; $size--) {
+        $formatted = [Windows.Media.FormattedText]::new(
+            $Text, [Globalization.CultureInfo]::CurrentUICulture,
+            [Windows.FlowDirection]::LeftToRight, $typeface, $size,
+            [Windows.Media.Brushes]::White, 1.0)
+        if ($formatted.Width -le $Budget) { return $size }
+    }
+    return $MinSize
+}
+
 function Set-QuotaOrbThemeVisuals {
     param(
         [Parameter(Mandatory)][object]$Window,
@@ -258,6 +287,7 @@ function New-QuotaOrbView {
         ConvertProgress = ${function:ConvertTo-QuotaOrbProgressValue}
         CompactValueText = ${function:ConvertTo-QuotaOrbCompactValueText}
         SelectFontSize = ${function:Select-QuotaOrbMetricFontSize}
+        SelectFitFontSize = ${function:Select-QuotaOrbFitFontSize}
         GetArcGeometry = ${function:Get-QuotaOrbArcGeometry}
         GetPlacementModel = ${function:Get-QuotaOrbPlacement}
         TestEventFromButton = ${function:Test-QuotaOrbEventFromButton}
@@ -428,9 +458,13 @@ function New-QuotaOrbView {
                 # No ring to frame the disc here, so the amount becomes the hero
                 # and fills the circle instead of leaving it looking hollow.
                 $state.Controls.MetricText.Visibility = [Windows.Visibility]::Collapsed
-                $state.Controls.ValueText.Visibility = [Windows.Visibility]::Visible
-                $state.Controls.ValueText.FontSize = 19
-                $state.Controls.ValueText.FontWeight = [Windows.FontWeights]::Bold
+                $valueBlock = $state.Controls.ValueText
+                $valueBlock.Visibility = [Windows.Visibility]::Visible
+                $valueBlock.FontWeight = [Windows.FontWeights]::Bold
+                $valueBlock.FontSize = & $state.SelectFitFontSize `
+                    -Text $compactValue -Family $valueBlock.FontFamily `
+                    -Weight ([Windows.FontWeights]::Bold) -Budget $valueBlock.MaxWidth `
+                    -MaxSize 19 -MinSize 13
                 $state.Controls.SourceText.FontSize = 10
             }
             else {

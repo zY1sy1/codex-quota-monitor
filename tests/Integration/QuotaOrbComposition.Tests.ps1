@@ -205,10 +205,43 @@ Describe 'quota orb composition' {
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.ValueText.Text | Should -BeExactly '$18.42'
             $OrbView.Controls.SourceText.Text | Should -BeExactly '账户余额' -Because 'the orb face prefers the bare short label'
-            $OrbView.Controls.ValueText.FontSize | Should -Be 19 -Because 'the ringless wallet face promotes the amount to hero size'
-            $OrbView.Controls.ValueText.FontWeight | Should -Be ([Windows.FontWeights]::Bold)
+            $valueBlock = $OrbView.Controls.ValueText
+            $valueBlock.FontSize | Should -BeGreaterOrEqual 13
+            $valueBlock.FontSize | Should -BeLessOrEqual 19 -Because 'the hero amount shrinks to the largest size that still fits'
+            # Fit invariant, independent of OS font: the rendered string must be
+            # narrower than MaxWidth in the control's own family (YaHei on zh-CN).
+            $fitTypeface = [Windows.Media.Typeface]::new(
+                $valueBlock.FontFamily, [Windows.FontStyles]::Normal,
+                [Windows.FontWeights]::Bold, [Windows.FontStretches]::Normal)
+            $fitText = [Windows.Media.FormattedText]::new(
+                $valueBlock.Text, [Globalization.CultureInfo]::CurrentUICulture,
+                [Windows.FlowDirection]::LeftToRight, $fitTypeface,
+                $valueBlock.FontSize, [Windows.Media.Brushes]::White, 1.0)
+            $fitText.Width | Should -BeLessOrEqual ([double]$valueBlock.MaxWidth) -Because 'anything wider would render as CharacterEllipsis dots'
+            $valueBlock.FontWeight | Should -Be ([Windows.FontWeights]::Bold)
             $OrbView.Controls.SourceText.FontSize | Should -Be 10
             [string]$OrbView.Controls.RootBorder.ToolTip | Should -Match '^Wakaka · 账户余额' -Because 'the tooltip keeps the full source context'
+        }
+
+        It 'shrinks a long pinned amount below hero size instead of ellipsizing' {
+            $script:OrbView = New-QuotaOrbView -XamlPath $script:QuotaOrbXamlPath
+            $wallet = New-TestOrbRow -Key 'relay:wakaka:wallet' -Label '账户余额' `
+                -SourceLabel 'Wakaka' -ValueText '$1234.56 USD' -ProgressValue $null `
+                -ResetTime '最近更新：刚刚'
+
+            & $OrbView.RenderFocus -Row $wallet -PinnedKey 'relay:wakaka:wallet'
+
+            $longBlock = $OrbView.Controls.ValueText
+            $longBlock.FontSize | Should -BeLessThan 19 -Because 'a nine-character amount cannot stay at hero size'
+            $fitTypeface = [Windows.Media.Typeface]::new(
+                $longBlock.FontFamily, [Windows.FontStyles]::Normal,
+                [Windows.FontWeights]::Bold, [Windows.FontStretches]::Normal)
+            $fitText = [Windows.Media.FormattedText]::new(
+                $longBlock.Text, [Globalization.CultureInfo]::CurrentUICulture,
+                [Windows.FlowDirection]::LeftToRight, $fitTypeface,
+                $longBlock.FontSize, [Windows.Media.Brushes]::White, 1.0)
+            $fitText.Width | Should -BeLessOrEqual ([double]$longBlock.MaxWidth)
+            $longBlock.Text | Should -BeExactly '$1234.56' -Because 'the full amount is kept, only the glyph size adapts'
         }
 
         It 'renders an em dash for an unpinned absolute wallet' {
