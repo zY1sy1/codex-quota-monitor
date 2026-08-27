@@ -127,8 +127,8 @@ Describe 'WPF floating window composition' {
             $button.Focusable | Should -BeTrue
             [string]$button.ToolTip | Should -Not -BeNullOrEmpty
             [Windows.Automation.AutomationProperties]::GetName($button) | Should -Not -BeNullOrEmpty
+            $button.Content | Should -BeOfType ([Windows.Shapes.Path]) -Because 'header icons are self-drawn vectors, never font glyphs'
         }
-        $View.Controls.RefreshButton.Content | Should -BeExactly '↻'
         [string]$View.Controls.RefreshButton.ToolTip | Should -BeExactly '立即刷新'
         [Windows.Automation.AutomationProperties]::GetName($View.Controls.RefreshButton) |
             Should -BeExactly '立即刷新官方和中转站额度'

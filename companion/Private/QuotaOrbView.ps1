@@ -362,11 +362,10 @@ function New-QuotaOrbView {
 
         $sourceLabel = & $state.GetPresentationText $Row @('SourceLabel')
         $label = & $state.GetPresentationText $Row @('Label')
-        $displayLabel = if (-not [string]::IsNullOrWhiteSpace($sourceLabel) -and
-            -not [string]::IsNullOrWhiteSpace($label)) {
-            "$sourceLabel · $label"
-        }
-        elseif (-not [string]::IsNullOrWhiteSpace($label)) {
+        # The orb face only fits one short secondary line, so prefer the bare
+        # label (周额度 / 账户余额) over the long "source · label" concat that
+        # always ellipsized. Full context stays on RootBorder tooltip.
+        $displayLabel = if (-not [string]::IsNullOrWhiteSpace($label)) {
             $label
         }
         else {
@@ -433,7 +432,9 @@ function New-QuotaOrbView {
         $isStale = [bool](& $state.GetPresentationField -Row $Row -Name 'IsStale')
         $freshness = if ($isStale) { '数据已过期' } else { '数据正常' }
         $resetTime = & $state.GetPresentationText $Row @('ResetTime', 'ResetTimeText')
-        $state.Controls.RootBorder.ToolTip = "${displayLabel}`n${valueText}`n${freshness}`n${resetTime}"
+        $tooltipTitle = if (-not [string]::IsNullOrWhiteSpace($sourceLabel) -and
+            $sourceLabel -ne $displayLabel) { "$sourceLabel · $displayLabel" } else { $displayLabel }
+        $state.Controls.RootBorder.ToolTip = "${tooltipTitle}`n${valueText}`n${freshness}`n${resetTime}"
     }.GetNewClosure()
 
     $setTheme = {

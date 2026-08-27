@@ -204,7 +204,8 @@ Describe 'quota orb composition' {
             $OrbView.Controls.MetricText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
             $OrbView.Controls.ValueText.Visibility | Should -Be ([Windows.Visibility]::Visible)
             $OrbView.Controls.ValueText.Text | Should -BeExactly '$18.42'
-            $OrbView.Controls.SourceText.Text | Should -BeExactly 'Wakaka · 账户余额'
+            $OrbView.Controls.SourceText.Text | Should -BeExactly '账户余额' -Because 'the orb face prefers the bare short label'
+            [string]$OrbView.Controls.RootBorder.ToolTip | Should -Match '^Wakaka · 账户余额' -Because 'the tooltip keeps the full source context'
         }
 
         It 'renders an em dash for an unpinned absolute wallet' {

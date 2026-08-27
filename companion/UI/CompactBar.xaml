@@ -25,6 +25,16 @@
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Cursor" Value="Hand" />
         </Style>
+        <Style x:Key="CompactIconGlyph" TargetType="Path">
+            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+            <Setter Property="StrokeThickness" Value="1.6" />
+            <Setter Property="StrokeStartLineCap" Value="Round" />
+            <Setter Property="StrokeEndLineCap" Value="Round" />
+            <Setter Property="StrokeLineJoin" Value="Round" />
+            <Setter Property="Stretch" Value="Uniform" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
     </Window.Resources>
 
     <Border x:Name="RootBorder"
@@ -59,17 +69,16 @@
                            Margin="0,0,8,0"
                            VerticalAlignment="Center"
                            Foreground="#FFAFB8CB"
-                           FontSize="12"
-                           FontWeight="SemiBold"
+                           FontSize="11"
                            TextTrimming="CharacterEllipsis"
                            IsHitTestVisible="False"
                            AutomationProperties.Name="额度名称" />
                 <TextBlock x:Name="MetricValue"
                            Grid.Column="1"
-                           Margin="0,0,4,0"
+                           Margin="0,0,6,0"
                            VerticalAlignment="Center"
                            Foreground="#FFF4F3F1"
-                           FontSize="18"
+                           FontSize="16"
                            FontWeight="Bold"
                            TextAlignment="Right"
                            IsHitTestVisible="False"
@@ -77,15 +86,19 @@
                 <Button x:Name="ModeButton"
                         Grid.Column="2"
                         Style="{StaticResource CompactIconButton}"
-                        Content="▣"
                         ToolTip="切换显示模式"
-                        AutomationProperties.Name="切换显示模式" />
+                        AutomationProperties.Name="切换显示模式">
+                    <Path Style="{StaticResource CompactIconGlyph}" Width="11" Height="11"
+                          Data="M5,2 H9.8 V7.2 M2.2,4.6 H7.6 V10 H2.2 Z" />
+                </Button>
                 <Button x:Name="CloseButton"
                         Grid.Column="3"
                         Style="{StaticResource CompactIconButton}"
-                        Content="×"
                         ToolTip="关闭到系统托盘"
-                        AutomationProperties.Name="关闭到系统托盘" />
+                        AutomationProperties.Name="关闭到系统托盘">
+                    <Path Style="{StaticResource CompactIconGlyph}" Width="10" Height="10"
+                          Data="M3.1,3.1 L8.9,8.9 M8.9,3.1 L3.1,8.9" />
+                </Button>
             </Grid>
 
             <Border x:Name="ProgressTrack"
