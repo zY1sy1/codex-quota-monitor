@@ -58,6 +58,16 @@
         </GroupBox>
 
         <StackPanel Margin="0,0,0,12">
+            <TextBlock Text="自动查询间隔（分钟，0 表示不自动查询）"
+                       Style="{StaticResource FieldLabel}" />
+            <TextBox x:Name="AutoQueryIntervalTextBox"
+                     MinHeight="30"
+                     Padding="8,4"
+                     MaxLength="4"
+                     AutomationProperties.Name="中转站自动查询间隔分钟数" />
+        </StackPanel>
+
+        <StackPanel Margin="0,0,0,12">
             <CheckBox x:Name="TopmostCheckBox" Content="始终置顶" />
             <CheckBox x:Name="StartupCheckBox" Content="开机启动" />
         </StackPanel>

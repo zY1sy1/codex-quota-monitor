@@ -20,6 +20,7 @@ Describe 'settings window composition' {
             -OnSetFullLayout { param($value) $script:Calls.Add("layout:$value") } `
             -OnToggleTopmost { $script:Calls.Add('topmost') } `
             -OnToggleStartup { $script:Calls.Add('startup') } `
+            -OnSetRelayAutoQueryInterval { param($value) $script:Calls.Add("interval:$value") } `
             -OnRefresh { $script:Calls.Add('refresh') } `
             -OnManageRelays { $script:Calls.Add('relays') } `
             -OnClosing { $script:Calls.Add('closing') }
@@ -39,7 +40,8 @@ Describe 'settings window composition' {
             'DisplayModeGroup', 'FullModeRadio', 'CompactBarModeRadio', 'OrbModeRadio',
             'ThemeGroup', 'LightThemeRadio', 'DarkThemeRadio',
             'FullLayoutGroup', 'OverviewLayoutRadio', 'TabsLayoutRadio',
-            'TopmostCheckBox', 'StartupCheckBox', 'RefreshButton', 'ManageRelaysButton',
+            'AutoQueryIntervalTextBox', 'TopmostCheckBox', 'StartupCheckBox',
+            'RefreshButton', 'ManageRelaysButton',
             'StatusText'
         )) {
             $View.Controls[$name] | Should -Not -BeNullOrEmpty
@@ -58,6 +60,10 @@ Describe 'settings window composition' {
         $View.Controls.StartupCheckBox.Content | Should -BeExactly '开机启动'
         $View.Controls.RefreshButton.Content | Should -BeExactly '立即刷新'
         $View.Controls.ManageRelaysButton.Content | Should -BeExactly '管理中转站'
+        [Windows.Automation.AutomationProperties]::GetName($View.Controls.AutoQueryIntervalTextBox) |
+            Should -BeExactly '中转站自动查询间隔分钟数'
+        [IO.File]::ReadAllText($script:XamlPath) |
+            Should -Match '自动查询间隔（分钟，0 表示不自动查询）'
         [string]$View.Controls.FullModeRadio.GroupName | Should -BeExactly 'DisplayModeGroup'
         [string]$View.Controls.OrbModeRadio.Tag | Should -BeExactly 'Orb'
         [string]$View.Controls.LightThemeRadio.Tag | Should -BeExactly 'Light'
@@ -73,7 +79,8 @@ Describe 'settings window composition' {
     }
 
     It 'renders a snapshot without invoking any action callbacks' {
-        & $View.SetSnapshot -Mode Orb -Theme Light -FullLayout Tabs -Topmost $true -Startup $false
+        & $View.SetSnapshot -Mode Orb -Theme Light -FullLayout Tabs -Topmost $true `
+            -Startup $false -RelayAutoQueryIntervalMinutes 7
 
         $View.Controls.FullModeRadio.IsChecked | Should -BeFalse
         $View.Controls.CompactBarModeRadio.IsChecked | Should -BeFalse
@@ -84,12 +91,14 @@ Describe 'settings window composition' {
         $View.Controls.TabsLayoutRadio.IsChecked | Should -BeTrue
         $View.Controls.TopmostCheckBox.IsChecked | Should -BeTrue
         $View.Controls.StartupCheckBox.IsChecked | Should -BeFalse
+        $View.Controls.AutoQueryIntervalTextBox.Text | Should -BeExactly '7'
         $View.Controls.StatusText.Text | Should -BeExactly ''
         @($script:Calls) | Should -Be @()
     }
 
     It 'routes radio clicks by tag and checkbox toggles exactly once' {
-        & $View.SetSnapshot -Mode Full -Theme Dark -FullLayout Overview -Topmost $false -Startup $false
+        & $View.SetSnapshot -Mode Full -Theme Dark -FullLayout Overview -Topmost $false `
+            -Startup $false -RelayAutoQueryIntervalMinutes 10
 
         $View.Controls.CompactBarModeRadio.RaiseEvent(
             [Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent)
@@ -112,10 +121,14 @@ Describe 'settings window composition' {
         $View.Controls.ManageRelaysButton.RaiseEvent(
             [Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent)
         )
+        $View.Controls.AutoQueryIntervalTextBox.Text = '12'
+        $View.Controls.AutoQueryIntervalTextBox.RaiseEvent(
+            [Windows.RoutedEventArgs]::new([Windows.UIElement]::LostFocusEvent)
+        )
 
         @($script:Calls) | Should -Be @(
             'mode:CompactBar', 'theme:Light', 'layout:Tabs',
-            'topmost', 'startup', 'refresh', 'relays'
+            'topmost', 'startup', 'refresh', 'relays', 'interval:12'
         )
     }
 

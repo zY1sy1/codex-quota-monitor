@@ -23,6 +23,9 @@ function New-SettingsController {
         [scriptblock]$ToggleStartup,
 
         [Parameter(Mandatory)]
+        [scriptblock]$SetRelayAutoQueryInterval,
+
+        [Parameter(Mandatory)]
         [scriptblock]$RequestRefresh,
 
         [Parameter()]
@@ -43,7 +46,8 @@ function New-SettingsController {
             -Theme ([string]$snapshot.Theme) `
             -FullLayout ([string]$snapshot.FullLayout) `
             -Topmost ([bool]$snapshot.Topmost) `
-            -Startup ([bool]$snapshot.Startup)
+            -Startup ([bool]$snapshot.Startup) `
+            -RelayAutoQueryIntervalMinutes ([int]$snapshot.RelayAutoQueryIntervalMinutes)
     }.GetNewClosure()
 
     $failWith = {
@@ -106,6 +110,34 @@ function New-SettingsController {
         }
     }.GetNewClosure()
 
+    $setRelayAutoQueryIntervalAction = {
+        param([string]$Value)
+        if ($state.Disposed) { return $false }
+        $interval = 0
+        $valid = [int]::TryParse(
+            $Value,
+            [Globalization.NumberStyles]::Integer,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$interval
+        ) -and $interval -ge 0 -and $interval -le 1440
+        if (-not $valid) {
+            & $render
+            & $View.SetStatus '自动查询间隔必须是 0 到 1440 之间的整数。'
+            return $false
+        }
+
+        try {
+            & $SetRelayAutoQueryInterval $interval
+            & $render
+            & $View.SetStatus '自动查询间隔已更新。'
+            return $true
+        }
+        catch {
+            & $failWith '无法更新自动查询间隔：' $_.Exception
+            return $false
+        }
+    }.GetNewClosure()
+
     $refreshAction = {
         if ($state.Disposed) { return }
         try {
@@ -147,7 +179,8 @@ function New-SettingsController {
         try {
             & $View.SetCallbacks `
                 -OnSetDisplayMode $null -OnSetTheme $null -OnSetFullLayout $null `
-                -OnToggleTopmost $null -OnToggleStartup $null -OnRefresh $null `
+                -OnToggleTopmost $null -OnToggleStartup $null `
+                -OnSetRelayAutoQueryInterval $null -OnRefresh $null `
                 -OnManageRelays $null -OnClosing $null
         }
         catch { }
@@ -160,6 +193,7 @@ function New-SettingsController {
         -OnSetFullLayout $setLayoutAction `
         -OnToggleTopmost $topmostAction `
         -OnToggleStartup $startupAction `
+        -OnSetRelayAutoQueryInterval $setRelayAutoQueryIntervalAction `
         -OnRefresh $refreshAction `
         -OnManageRelays $manageRelaysAction `
         -OnClosing $closingAction
