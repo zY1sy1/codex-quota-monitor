@@ -50,7 +50,7 @@ function New-DefaultSettings {
     param()
 
     [ordered]@{
-        SchemaVersion = 2
+        SchemaVersion = 3
         Appearance = [ordered]@{
             Theme = 'Dark'
             DisplayMode = 'Full'
@@ -77,6 +77,9 @@ function New-DefaultSettings {
         }
         Compact = [ordered]@{
             FocusMetric = 'Auto'
+        }
+        Relay = [ordered]@{
+            AutoQueryIntervalMinutes = 10
         }
         Startup = $true
     }
@@ -218,13 +221,57 @@ function Get-MonitorSettingsSchemaVersion {
             $Value,
             [Globalization.CultureInfo]::InvariantCulture
         )
-        if ($version -in @(1, 2)) {
+        if ($version -in @(1, 2, 3)) {
             return [int]$version
         }
         return $null
     }
     catch {
         return $null
+    }
+}
+
+function Test-MonitorSettingsInteger {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$Value,
+
+        [Parameter(Mandatory)]
+        [long]$Minimum,
+
+        [Parameter(Mandatory)]
+        [long]$Maximum
+    )
+
+    if ($null -eq $Value -or $Value.GetType().IsEnum -or
+        (Test-MonitorSettingsCollection -Value $Value)) {
+        return $false
+    }
+
+    if ([Type]::GetTypeCode($Value.GetType()) -notin @(
+        [TypeCode]::SByte,
+        [TypeCode]::Byte,
+        [TypeCode]::Int16,
+        [TypeCode]::UInt16,
+        [TypeCode]::Int32,
+        [TypeCode]::UInt32,
+        [TypeCode]::Int64,
+        [TypeCode]::UInt64
+    )) {
+        return $false
+    }
+
+    try {
+        $number = [Convert]::ToDecimal(
+            $Value,
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        return $number -ge $Minimum -and $number -le $Maximum
+    }
+    catch {
+        return $false
     }
 }
 
@@ -318,6 +365,25 @@ function ConvertTo-CanonicalMonitorSettings {
         foreach ($node in @($appearance, $compact, $full, $compactBar, $orb)) {
             if (-not (Test-MonitorSettingsObject -Value $node)) { return $null }
         }
+
+        $relayAutoQueryIntervalMinutes = 10
+        if ($version -eq 3) {
+            if (-not (Test-MonitorSettingsHasField -InputObject $Settings -Name 'Relay')) {
+                return $null
+            }
+            $relay = Get-MonitorSettingsField -InputObject $Settings -Name 'Relay'
+            if (-not (Test-MonitorSettingsObject -Value $relay) -or
+                -not (Test-MonitorSettingsRequiredFields -InputObject $relay `
+                    -Names @('AutoQueryIntervalMinutes'))) {
+                return $null
+            }
+            $relayAutoQueryIntervalMinutes = Get-MonitorSettingsField `
+                -InputObject $relay -Name 'AutoQueryIntervalMinutes'
+            if (-not (Test-MonitorSettingsInteger -Value $relayAutoQueryIntervalMinutes `
+                -Minimum 0 -Maximum 1440)) {
+                return $null
+            }
+        }
         if (-not (Test-MonitorSettingsRequiredFields -InputObject $appearance `
             -Names @('Theme', 'DisplayMode', 'FullLayout', 'RememberLastMode')) -or
             -not (Test-MonitorSettingsRequiredFields -InputObject $full `
@@ -356,7 +422,7 @@ function ConvertTo-CanonicalMonitorSettings {
         }
 
         $canonical = [ordered]@{
-            SchemaVersion = 2
+            SchemaVersion = 3
             Appearance = [ordered]@{
                 Theme = $theme
                 DisplayMode = $displayMode
@@ -394,6 +460,9 @@ function ConvertTo-CanonicalMonitorSettings {
                 }
             }
             Compact = [ordered]@{ FocusMetric = $focusMetric }
+            Relay = [ordered]@{
+                AutoQueryIntervalMinutes = [int]$relayAutoQueryIntervalMinutes
+            }
             Startup = [bool]$startup
         }
         Write-Output -NoEnumerate -InputObject $canonical

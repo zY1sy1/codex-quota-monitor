@@ -50,10 +50,10 @@ Describe 'Get-MonitorPaths' {
 }
 
 Describe 'New-DefaultSettings' {
-    It 'returns fresh schema-2 appearance and per-mode positions' {
+    It 'returns fresh schema-3 appearance, relay, and per-mode positions' {
         $settings = New-DefaultSettings
 
-        $settings.SchemaVersion | Should -Be 2
+        $settings.SchemaVersion | Should -Be 3
         $settings.Appearance.Theme | Should -BeExactly 'Dark'
         $settings.Appearance.DisplayMode | Should -BeExactly 'Full'
         $settings.Appearance.FullLayout | Should -BeExactly 'Overview'
@@ -65,12 +65,14 @@ Describe 'New-DefaultSettings' {
         $settings.Window.CompactBar.Left | Should -BeNullOrEmpty
         $settings.Window.Orb.Top | Should -BeNullOrEmpty
         $settings.Compact.FocusMetric | Should -BeExactly 'Auto'
+        $settings.Relay.AutoQueryIntervalMinutes | Should -Be 10
+        $settings.Relay.AutoQueryIntervalMinutes | Should -BeOfType ([int])
     }
 
     It 'returns the versioned visible topmost startup defaults' {
         $settings = New-DefaultSettings
 
-        $settings.SchemaVersion | Should -Be 2
+        $settings.SchemaVersion | Should -Be 3
         $settings.Window.Full.Left | Should -BeNullOrEmpty
         $settings.Window.Full.Top | Should -BeNullOrEmpty
         $settings.Window.Full.Topmost | Should -BeTrue
@@ -81,11 +83,13 @@ Describe 'New-DefaultSettings' {
     It 'returns a fresh independent settings graph on every call' {
         $first = New-DefaultSettings
         $first.Window.Full['Topmost'] = $false
+        $first.Relay['AutoQueryIntervalMinutes'] = 0
         $first['Startup'] = $false
 
         $second = New-DefaultSettings
 
         $second.Window.Full.Topmost | Should -BeTrue
+        $second.Relay.AutoQueryIntervalMinutes | Should -Be 10
         $second.Startup | Should -BeTrue
     }
 }
@@ -102,13 +106,33 @@ Describe 'monitor settings persistence' {
 
         $settings = Read-MonitorSettings -Path $path
 
-        $settings.SchemaVersion | Should -Be 2
+        $settings.SchemaVersion | Should -Be 3
         $settings.Window.Full.Left | Should -Be 12.5
         $settings.Window.Full.Top | Should -Be -8
         $settings.Window.Full.Topmost | Should -BeFalse
         $settings.Window.Full.Visible | Should -BeFalse
+        $settings.Relay.AutoQueryIntervalMinutes | Should -Be 10
         $settings.Startup | Should -BeFalse
-        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).SchemaVersion | Should -Be 2
+        (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).SchemaVersion | Should -Be 3
+    }
+
+    It 'migrates schema 2 to schema 3 with the default relay interval' {
+        $path = Join-Path $TestDrive 'migration-schema-2\settings.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        $json = '{"SchemaVersion":2,"Appearance":{"Theme":"Light","DisplayMode":"CompactBar","FullLayout":"Tabs","RememberLastMode":false},"Window":{"Full":{"Left":10,"Top":20,"Width":480,"Height":600,"Topmost":false,"Visible":true},"CompactBar":{"Left":30,"Top":40},"Orb":{"Left":50,"Top":60}},"Compact":{"FocusMetric":"primary"},"Startup":false}'
+        [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
+
+        $settings = Read-MonitorSettings -Path $path
+
+        $settings.SchemaVersion | Should -Be 3
+        $settings.Appearance.Theme | Should -BeExactly 'Light'
+        $settings.Window.Full.Left | Should -Be 10
+        $settings.Compact.FocusMetric | Should -BeExactly 'primary'
+        $settings.Relay.AutoQueryIntervalMinutes | Should -Be 10
+        $settings.Startup | Should -BeFalse
+        $persisted = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $persisted.SchemaVersion | Should -Be 3
+        $persisted.Relay.AutoQueryIntervalMinutes | Should -Be 10
     }
 
     It 'returns fresh defaults when the settings file is missing' {
@@ -129,6 +153,7 @@ Describe 'monitor settings persistence' {
         $settings.Window.Full['Top'] = [long]72
         $settings.Window.Full['Topmost'] = $false
         $settings.Window.Full['Visible'] = $false
+        $settings.Relay['AutoQueryIntervalMinutes'] = 0
         $settings['Startup'] = $false
 
         Write-MonitorSettings -Path $path -Settings $settings
@@ -143,6 +168,8 @@ Describe 'monitor settings persistence' {
         $loaded.Window.Full.Topmost | Should -BeOfType ([bool])
         $loaded.Window.Full.Visible | Should -BeFalse
         $loaded.Window.Full.Visible | Should -BeOfType ([bool])
+        $loaded.Relay.AutoQueryIntervalMinutes | Should -Be 0
+        $loaded.Relay.AutoQueryIntervalMinutes | Should -BeOfType ([int])
         $loaded.Startup | Should -BeFalse
         $loaded.Startup | Should -BeOfType ([bool])
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
@@ -306,6 +333,38 @@ Describe 'monitor settings persistence' {
         Test-Path -LiteralPath $path | Should -BeFalse
     }
 
+    It 'round-trips valid relay auto query interval boundaries' -ForEach @(
+        @{ Name = 'manual-only'; Value = 0 }
+        @{ Name = 'maximum'; Value = 1440 }
+    ) {
+        $path = Join-Path $TestDrive "relay-interval-$Name\settings.json"
+        $settings = New-DefaultSettings
+        $settings.Relay['AutoQueryIntervalMinutes'] = $Value
+
+        Write-MonitorSettings -Path $path -Settings $settings
+
+        $loaded = Read-MonitorSettings -Path $path
+        $loaded.Relay.AutoQueryIntervalMinutes | Should -Be $Value
+        $loaded.Relay.AutoQueryIntervalMinutes | Should -BeOfType ([int])
+    }
+
+    It 'rejects invalid relay auto query interval values before writing' -ForEach @(
+        @{ Name = 'negative'; Value = -1 }
+        @{ Name = 'above-range'; Value = 1441 }
+        @{ Name = 'boolean'; Value = $true }
+        @{ Name = 'decimal'; Value = [double]7.5 }
+        @{ Name = 'string'; Value = '7' }
+        @{ Name = 'array'; Value = [object[]]@(7) }
+    ) {
+        $path = Join-Path $TestDrive "invalid-relay-interval-$Name\settings.json"
+        $settings = New-DefaultSettings
+        $settings.Relay['AutoQueryIntervalMinutes'] = $Value
+
+        { Write-MonitorSettings -Path $path -Settings $settings } |
+            Should -Throw -ExpectedMessage 'Settings do not match the supported schema.'
+        Test-Path -LiteralPath $path | Should -BeFalse
+    }
+
     It 'returns and rewrites only canonical allowlisted fields from valid JSON' {
         $path = Join-Path $TestDrive 'canonical-read\settings.json'
         New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
@@ -319,7 +378,8 @@ Describe 'monitor settings persistence' {
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
 
-        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Startup'
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Relay,Startup'
+        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes'
         ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         ($fileObject.Window.Full.PSObject.Properties.Name -join ',') |
             Should -BeExactly 'Left,Top,Width,Height,Topmost,Visible'
@@ -341,7 +401,8 @@ Describe 'monitor settings persistence' {
 
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
-        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Startup'
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Relay,Startup'
+        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes'
         ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         ($fileObject.Window.Full.PSObject.Properties.Name -join ',') |
             Should -BeExactly 'Left,Top,Width,Height,Topmost,Visible'
@@ -505,7 +566,8 @@ $null = $mutex.WaitOne()
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
         $fileObject.Window.Full.Left | Should -BeIn (100..103)
-        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Startup'
+        ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Relay,Startup'
+        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes'
         ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         $persisted | Should -Not -Match 'must-not-persist'
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
