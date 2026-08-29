@@ -82,7 +82,8 @@ BeforeAll {
             [AllowNull()][string]$FailUnprotectProvider = $null,
             [AllowNull()][string]$CrashRelayQueryProvider = $null,
             [switch]$ThrowRelayStop,
-            [string]$AppServerScenario = 'RuntimeHappy'
+            [string]$AppServerScenario = 'RuntimeHappy',
+            [ValidateRange(0, 1440)][int]$AutoQueryIntervalMinutes = 10
         )
         $localAppData = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $startup = Join-Path $TestDrive ('Startup-' + [guid]::NewGuid().ToString('N'))
@@ -100,9 +101,28 @@ BeforeAll {
             SchemaVersion = 1
             Providers = [object[]]$Providers
         }
+        $settingsDocument = [ordered]@{
+            SchemaVersion = 3
+            Appearance = [ordered]@{
+                Theme = 'Dark'; DisplayMode = 'Full'; FullLayout = 'Overview'
+                RememberLastMode = $true
+            }
+            Window = [ordered]@{
+                Full = [ordered]@{
+                    Left = $null; Top = $null; Width = 420.0; Height = 560.0
+                    Topmost = $true; Visible = $true
+                }
+                CompactBar = [ordered]@{ Left = $null; Top = $null }
+                Orb = [ordered]@{ Left = $null; Top = $null }
+            }
+            Compact = [ordered]@{ FocusMetric = 'Auto' }
+            Relay = [ordered]@{ AutoQueryIntervalMinutes = $AutoQueryIntervalMinutes }
+            Startup = $true
+        }
         $module = Import-Module -Name $script:ManifestPath -Force -PassThru
         $originalStopProcess = & $module { ${function:Stop-AppServerProcess} }
         $overrides = [ordered]@{
+            ReadSettings = { param($Path) $settingsDocument }.GetNewClosure()
             ReadRelayProviders = { param($Path) $providerDocument }.GetNewClosure()
             ReadRelayCache = { param($Path) $Cache }.GetNewClosure()
             WriteRelayCache = {
@@ -350,7 +370,7 @@ Describe 'relay runtime composition' {
         $state.LastAttemptAt | Should -BeNullOrEmpty
     }
 
-    It 'manual refresh requests official quota and every enabled interval-zero relay beyond one scheduler batch' {
+    It 'manual refresh requests official quota and every enabled global-manual relay beyond one scheduler batch' {
         $providers = @(
             New-TestRuntimeRelayProvider 'one' -IntervalMinutes 0
             New-TestRuntimeRelayProvider 'two' -IntervalMinutes 0
@@ -368,7 +388,7 @@ Describe 'relay runtime composition' {
         $run = Invoke-TestRelayRuntime -Providers $providers -Cache (New-TestRuntimeCache) `
             -Responses @{
                 one = $success; two = $success; three = $success; four = $success; five = $success
-            } -RequestManualRefresh
+            } -RequestManualRefresh -AutoQueryIntervalMinutes 0
 
         @($run.QueryCalls | Sort-Object) | Should -Be @('five', 'four', 'one', 'three', 'two')
         @($run.OfficialRefreshCalls | Where-Object { $_ -eq 'account/rateLimits/updated' }).Count |
@@ -441,7 +461,7 @@ Describe 'relay runtime composition' {
 
         $run = Invoke-TestRelayRuntime -Providers @($provider) -Cache (New-TestRuntimeCache) `
             -Responses @{ crash = $success } -CrashRelayQueryProvider 'crash' `
-            -RequestManualRefresh -RunForSeconds 2
+            -RequestManualRefresh -RunForSeconds 2 -AutoQueryIntervalMinutes 0
 
         $run.Result.Status | Should -BeExactly 'Live'
         @($run.LifecycleCalls | Where-Object { $_ -eq 'official-stop' }).Count | Should -Be 1
