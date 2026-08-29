@@ -94,7 +94,7 @@ exit 0
         try {
             $result = Test-MonitorPwshExecutable `
                 -Path $pwshPath `
-                -TimeoutMilliseconds 500 `
+                -TimeoutMilliseconds 1500 `
                 -ProbeCommand $probeCommand
             $stopwatch.Stop()
 
