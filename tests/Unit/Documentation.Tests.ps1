@@ -96,3 +96,15 @@ Describe 'Windows installer documentation' {
         $documents | Should -Match '不包含.*凭据|不会.*打包.*凭据'
     }
 }
+
+Describe 'adaptive settings center documentation' {
+    It 'documents the three implemented pages and immediate theme behavior' {
+        $readme = Get-Content -Raw (Join-Path $script:RepoRoot 'README.md')
+
+        $readme | Should -Match '外观、行为和中转站'
+        $readme | Should -Match '设置中心.*浅色.*深色|浅色.*深色.*设置中心'
+        $readme | Should -Match '仅.*完整窗口.*布局'
+        $readme | Should -Match '每个中转站.*查询间隔'
+        $readme | Should -Not -Match '设置窗口.*全局自动查询间隔'
+    }
+}

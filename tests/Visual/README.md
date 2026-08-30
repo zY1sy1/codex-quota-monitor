@@ -21,3 +21,14 @@ The PNGs are written to the ignored `outputs/visual` directory. Review each imag
 - visible close controls and no clipped metric text;
 - source labels, refresh button, unavailable placeholder, and collapsed-window natural height;
 - correct layout at both scale factors.
+
+## Settings center matrix
+
+```powershell
+pwsh -NoLogo -NoProfile -NonInteractive -Sta -File .\tests\Visual\Capture-SettingsMatrix.ps1
+```
+
+The script writes 18 PNGs under `outputs/visual/settings`, covering all three pages,
+light and dark themes, 100% and 150% scale, the disabled full-layout state, and a
+focused error status. Review navigation selection, text clipping, keyboard-focus
+affordance, segment and switch alignment, fixed status height, and theme contrast.
