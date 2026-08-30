@@ -82,8 +82,7 @@ BeforeAll {
             [AllowNull()][string]$FailUnprotectProvider = $null,
             [AllowNull()][string]$CrashRelayQueryProvider = $null,
             [switch]$ThrowRelayStop,
-            [string]$AppServerScenario = 'RuntimeHappy',
-            [ValidateRange(0, 1440)][int]$AutoQueryIntervalMinutes = 10
+            [string]$AppServerScenario = 'RuntimeHappy'
         )
         $localAppData = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $startup = Join-Path $TestDrive ('Startup-' + [guid]::NewGuid().ToString('N'))
@@ -116,7 +115,7 @@ BeforeAll {
                 Orb = [ordered]@{ Left = $null; Top = $null }
             }
             Compact = [ordered]@{ FocusMetric = 'Auto' }
-            Relay = [ordered]@{ AutoQueryIntervalMinutes = $AutoQueryIntervalMinutes }
+            Relay = [ordered]@{ AutoQueryIntervalMinutes = 10 }
             Startup = $true
         }
         $module = Import-Module -Name $script:ManifestPath -Force -PassThru
@@ -388,7 +387,7 @@ Describe 'relay runtime composition' {
         $run = Invoke-TestRelayRuntime -Providers $providers -Cache (New-TestRuntimeCache) `
             -Responses @{
                 one = $success; two = $success; three = $success; four = $success; five = $success
-            } -RequestManualRefresh -AutoQueryIntervalMinutes 0
+            } -RequestManualRefresh
 
         @($run.QueryCalls | Sort-Object) | Should -Be @('five', 'four', 'one', 'three', 'two')
         @($run.OfficialRefreshCalls | Where-Object { $_ -eq 'account/rateLimits/updated' }).Count |
@@ -461,7 +460,7 @@ Describe 'relay runtime composition' {
 
         $run = Invoke-TestRelayRuntime -Providers @($provider) -Cache (New-TestRuntimeCache) `
             -Responses @{ crash = $success } -CrashRelayQueryProvider 'crash' `
-            -RequestManualRefresh -RunForSeconds 2 -AutoQueryIntervalMinutes 0
+            -RequestManualRefresh -RunForSeconds 2
 
         $run.Result.Status | Should -BeExactly 'Live'
         @($run.LifecycleCalls | Where-Object { $_ -eq 'official-stop' }).Count | Should -Be 1

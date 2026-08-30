@@ -36,7 +36,6 @@ Describe 'Codex quota monitor production composition' {
         $relayCacheWrites = [Collections.Generic.List[object]]::new()
         $schedulerCreations = [Collections.Generic.List[object]]::new()
         $settingsSnapshots = [Collections.Generic.List[string]]::new()
-        $settingsWrites = [Collections.Generic.List[int]]::new()
         $ccSwitchDiscoveries = [Collections.Generic.List[object]]::new()
         $relayImportLinkReads = [Collections.Generic.List[string]]::new()
         $relayImportTransactions = [Collections.Generic.List[object]]::new()
@@ -240,8 +239,7 @@ Describe 'Codex quota monitor production composition' {
             NewSettingsController = {
                 param(
                     $View, $GetSnapshot, $SetDisplayMode, $SetTheme, $SetFullLayout,
-                    $ToggleTopmost, $ToggleStartup, $SetRelayAutoQueryInterval,
-                    $RequestRefresh, $ManageRelays
+                    $ToggleTopmost, $ToggleStartup, $RequestRefresh, $ManageRelays
                 )
                 $View | Should -Be $settingsView
                 $GetSnapshot | Should -BeOfType ([scriptblock])
@@ -250,15 +248,10 @@ Describe 'Codex quota monitor production composition' {
                 $SetFullLayout | Should -BeOfType ([scriptblock])
                 $ToggleTopmost | Should -BeOfType ([scriptblock])
                 $ToggleStartup | Should -BeOfType ([scriptblock])
-                $SetRelayAutoQueryInterval | Should -BeOfType ([scriptblock])
                 $RequestRefresh | Should -BeOfType ([scriptblock])
                 $ManageRelays | Should -BeOfType ([scriptblock])
                 $settingsSnapshots.Add(
-                    "before:$((& $GetSnapshot).RelayAutoQueryIntervalMinutes)"
-                ) | Out-Null
-                & $SetRelayAutoQueryInterval 0
-                $settingsSnapshots.Add(
-                    "after:$((& $GetSnapshot).RelayAutoQueryIntervalMinutes)"
+                    ((& $GetSnapshot).PSObject.Properties.Name -join ',')
                 ) | Out-Null
                 $calls.Add('new-settings-controller') | Out-Null
                 Write-Output -NoEnumerate $settingsController
@@ -275,34 +268,14 @@ Describe 'Codex quota monitor production composition' {
 
         $module = Import-Module -Name $ManifestPath -Force -PassThru
         $originalNewRelayScheduler = & $module { ${function:New-RelaySchedulerState} }
-        $originalWriteSettings = & $module { ${function:Write-MonitorSettings} }
         $overrides['NewRelayScheduler'] = {
-            param($Providers, $Now, $MaximumConcurrency, $AutoQueryIntervalMinutes)
-            $requestedInterval = if ($PSBoundParameters.ContainsKey('AutoQueryIntervalMinutes')) {
-                [int]$AutoQueryIntervalMinutes
-            }
-            else {
-                -1
-            }
-            $scheduler = if ($requestedInterval -ge 0) {
-                & $originalNewRelayScheduler -Providers $Providers -Now $Now `
-                    -MaximumConcurrency $MaximumConcurrency `
-                    -AutoQueryIntervalMinutes $requestedInterval
-            }
-            else {
-                & $originalNewRelayScheduler -Providers $Providers -Now $Now `
-                    -MaximumConcurrency $MaximumConcurrency
-            }
+            param($Providers, $Now, $MaximumConcurrency)
+            $scheduler = & $originalNewRelayScheduler -Providers $Providers -Now $Now `
+                -MaximumConcurrency $MaximumConcurrency
             $schedulerCreations.Add([pscustomobject][ordered]@{
-                RequestedInterval = $requestedInterval
                 EntryIntervals = [int[]]@($scheduler.Providers.IntervalMinutes)
             }) | Out-Null
             Write-Output -NoEnumerate $scheduler
-        }.GetNewClosure()
-        $overrides['WriteSettings'] = {
-            param($Path, $Settings)
-            $settingsWrites.Add([int]$Settings.Relay.AutoQueryIntervalMinutes) | Out-Null
-            & $originalWriteSettings -Path $Path -Settings $Settings
         }.GetNewClosure()
         try {
             $arguments = @{
@@ -365,14 +338,13 @@ Describe 'Codex quota monitor production composition' {
         )
         $relayCacheWrites.Count | Should -Be 1
         @($relayCacheWrites[0].Providers).Count | Should -Be 0
-        @($settingsSnapshots) | Should -Be @('before:7', 'after:0')
-        $schedulerCreations[0].RequestedInterval | Should -Be 7
-        @($schedulerCreations[0].EntryIntervals) | Should -Be @(7)
-        $schedulerCreations[-1].RequestedInterval | Should -Be 0
-        @($schedulerCreations[-1].EntryIntervals) | Should -Be @(0)
-        @($settingsWrites) | Should -Contain 0
+        @($settingsSnapshots) | Should -Be @('Mode,Theme,FullLayout,Topmost,Startup')
+        @($schedulerCreations).Count | Should -BeGreaterOrEqual 2
+        foreach ($creation in $schedulerCreations) {
+            @($creation.EntryIntervals) | Should -Be @(15)
+        }
         (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).Relay.AutoQueryIntervalMinutes |
-            Should -Be 0
+            Should -Be 7
         $result.Status | Should -BeExactly 'Live'
         $dispatcher = [Windows.Threading.Dispatcher]::CurrentDispatcher
         $dispatcher.HasShutdownStarted | Should -BeFalse
