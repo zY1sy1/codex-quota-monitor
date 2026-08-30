@@ -37,42 +37,42 @@ Describe 'relay provider scheduler' {
         @($first.State.Providers | Where-Object InFlight).Count | Should -Be 2
     }
 
-    It 'uses the global interval for every provider regardless of provider values' {
+    It 'uses each provider interval without a global override' {
         $now = [DateTimeOffset]'2026-08-01T08:00:00Z'
         $scheduler = New-RelaySchedulerState -Providers @(
             New-TestRelaySchedulerProvider 'one' -IntervalMinutes 3
             New-TestRelaySchedulerProvider 'two' -IntervalMinutes 17
-        ) -Now $now -AutoQueryIntervalMinutes 7
+        ) -Now $now
 
         $automatic = Get-RelaySchedulerActions -State $scheduler -Now $now
 
-        @($scheduler.Providers | Select-Object -ExpandProperty IntervalMinutes) | Should -Be @(7, 7)
+        @($scheduler.Providers | Select-Object -ExpandProperty IntervalMinutes) | Should -Be @(3, 17)
         @($automatic.Actions | Select-Object -ExpandProperty ProviderId) | Should -Be @('one', 'two')
     }
 
-    It 'keeps global interval zero manual-only while preserving explicit refresh' {
+    It 'keeps only a zero-interval provider manual-only' {
         $now = [DateTimeOffset]'2026-08-01T08:00:00Z'
-        $scheduler = New-RelaySchedulerState -Providers @(
-            New-TestRelaySchedulerProvider 'disabled' -Enabled $false
-            New-TestRelaySchedulerProvider 'manual-one' -IntervalMinutes 5
-            New-TestRelaySchedulerProvider 'manual-two' -IntervalMinutes 20
-        ) -Now $now -AutoQueryIntervalMinutes 0
+        $providers = @(
+            New-TestRelaySchedulerProvider 'disabled' -Enabled $false -IntervalMinutes 5
+            New-TestRelaySchedulerProvider 'manual' -IntervalMinutes 0
+            New-TestRelaySchedulerProvider 'automatic' -IntervalMinutes 20
+        )
+        $scheduler = New-RelaySchedulerState -Providers $providers -Now $now
 
         $automatic = Get-RelaySchedulerActions -State $scheduler -Now $now
-        $manual = Get-RelaySchedulerActions -State $automatic.State -Now $now -ManualRefresh
+        $manual = Get-RelaySchedulerActions -State (New-RelaySchedulerState -Providers $providers -Now $now) -Now $now -ManualRefresh
 
-        @($scheduler.Providers | Select-Object -ExpandProperty IntervalMinutes) | Should -Be @(0, 0, 0)
-        @($scheduler.Providers | Select-Object -ExpandProperty NextDueAt) |
-            Should -Be @([DateTimeOffset]::MaxValue, [DateTimeOffset]::MaxValue, [DateTimeOffset]::MaxValue)
-        @($automatic.Actions).Count | Should -Be 0
-        @($manual.Actions | Select-Object -ExpandProperty ProviderId) | Should -Be @('manual-one', 'manual-two')
+        @($scheduler.Providers | Select-Object -ExpandProperty IntervalMinutes) | Should -Be @(5, 0, 20)
+        @($scheduler.Providers | Select-Object -ExpandProperty NextDueAt) | Should -Be @([DateTimeOffset]::MaxValue, [DateTimeOffset]::MaxValue, $now)
+        @($automatic.Actions | Select-Object -ExpandProperty ProviderId) | Should -Be @('automatic')
+        @($manual.Actions | Select-Object -ExpandProperty ProviderId) | Should -Be @('manual', 'automatic')
     }
 
-    It 'schedules the next success at the configured global interval' {
+    It 'schedules the next success at the provider interval' {
         $now = [DateTimeOffset]'2026-08-01T08:00:00Z'
         $scheduler = New-RelaySchedulerState -Providers @(
             New-TestRelaySchedulerProvider 'wkk' -IntervalMinutes 17
-        ) -Now $now -AutoQueryIntervalMinutes 17
+        ) -Now $now
         $started = Get-RelaySchedulerActions -State $scheduler -Now $now
 
         $completed = Complete-RelaySchedulerAction -State $started.State -ProviderId 'wkk' `
@@ -88,15 +88,15 @@ Describe 'relay provider scheduler' {
             Should -Be 1
     }
 
-    It 'rejects an out-of-range global interval' -ForEach @(
+    It 'rejects an out-of-range provider interval' -ForEach @(
         @{ Value = -1 }
         @{ Value = 1441 }
     ) {
         {
             New-RelaySchedulerState -Providers @(
-                New-TestRelaySchedulerProvider 'wkk'
-            ) -AutoQueryIntervalMinutes $Value
-        } | Should -Throw -ExpectedMessage '*allowed range*'
+                New-TestRelaySchedulerProvider 'wkk' -IntervalMinutes $Value
+            )
+        } | Should -Throw -ExpectedMessage '*between 0 and 1440*'
     }
 
     It 'uses the exact bounded network backoff sequence' {
