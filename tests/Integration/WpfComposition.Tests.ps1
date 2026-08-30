@@ -291,7 +291,11 @@ Describe 'WPF floating window composition' {
         & $View.SetTheme Light
         $View.State.Theme | Should -BeExactly 'Light'
         $View.State.Palette.Surface | Should -BeExactly '#E6F4EFEA'
+        $View.State.Palette.AccentSoft | Should -BeExactly '#244DADB3'
         $View.Controls.RootBorder.Background.ToString() | Should -BeExactly '#E6F4EFEA'
+        $View.Window.Resources['QuotaFocusRingBrush'].ToString() | Should -BeExactly '#FF4DADB3'
+        $View.Window.Resources['QuotaFocusHoverBrush'].ToString() | Should -BeExactly '#244DADB3'
+        $View.Window.Resources['QuotaFocusPressedBrush'].ToString() | Should -BeExactly '#3D4DADB3'
         $View.Controls.OfficialRows.Children.Count | Should -Be 1
         $View.Controls.RelayTabRows.Children.Count | Should -Be 1
 
@@ -309,27 +313,69 @@ Describe 'WPF floating window composition' {
         @($relayTexts.Text) | Should -Contain '中转快照'
     }
 
-    It 'renders accessible focus controls and marks the selected quota' {
+    It 'renders accessible vector focus controls and marks only the selected quota' {
         $focused = [Collections.Generic.List[string]]::new()
         $script:View = New-QuotaWindowView -XamlPath $XamlPath `
             -OnFocusRequested { param($key) $focused.Add($key) }
 
         & $View.RenderGroups `
-            -OfficialRows @((New-TestPresentationRow -Key 'official|selected')) `
+            -OfficialRows @(
+                (New-TestPresentationRow -Key 'official|selected'),
+                (New-TestPresentationRow -Key 'official|automatic' -Label '每周额度')
+            ) `
             -RelayRows @() `
             -FocusKey 'official|selected'
 
-        $card = $View.Controls.OfficialRows.Children[0]
-        $card.BorderBrush.ToString() | Should -BeExactly '#FF58C2C7'
-        $card.BorderThickness.Left | Should -Be 1
-        $focusButton = @(Get-TestDescendant -Root $card -Type ([Windows.Controls.Button]) -Tag 'QuotaFocus')[0]
-        $focusButton | Should -Not -BeNullOrEmpty
-        $focusButton.Focusable | Should -BeTrue
-         [string]$focusButton.ToolTip | Should -BeExactly '取消迷你模式固定显示'
-         [Windows.Automation.AutomationProperties]::GetName($focusButton) |
-             Should -BeExactly '取消迷你模式固定显示'
+        $selectedCard = $View.Controls.OfficialRows.Children[0]
+        $selectedCard.BorderBrush.ToString() | Should -BeExactly '#FF58C2C7'
+        $selectedCard.Background.ToString() | Should -BeExactly '#D93C4B5F'
+        $selectedCard.BorderThickness.Left | Should -Be 1
 
-        $focusButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+        $selectedButton = @(
+            Get-TestDescendant -Root $selectedCard -Type ([Windows.Controls.Button]) -Tag 'QuotaFocus'
+        )[0]
+        $selectedButton | Should -Not -BeNullOrEmpty
+        $selectedButton.Style | Should -BeOfType ([Windows.Style])
+        $selectedButton.Template | Should -BeOfType ([Windows.Controls.ControlTemplate])
+        $selectedButton.FocusVisualStyle | Should -BeOfType ([Windows.Style])
+        $selectedButton.Focusable | Should -BeTrue
+        $selectedButton.Width | Should -Be 28
+        $selectedButton.Height | Should -Be 28
+        $selectedButton.Background.ToString() | Should -BeExactly '#2458C2C7'
+        [string]$selectedButton.ToolTip | Should -BeExactly '取消迷你模式固定显示'
+        [Windows.Automation.AutomationProperties]::GetName($selectedButton) |
+            Should -BeExactly '取消迷你模式固定显示'
+
+        $selectedVisual = $selectedButton.Content
+        $selectedVisual | Should -BeOfType ([Windows.Controls.Grid])
+        $selectedVisual.Width | Should -Be 16
+        $selectedVisual.Height | Should -Be 16
+        $selectedRing = @($selectedVisual.Children | Where-Object { [string]$_.Tag -eq 'QuotaFocusRing' })[0]
+        $selectedDot = @($selectedVisual.Children | Where-Object { [string]$_.Tag -eq 'QuotaFocusDot' })[0]
+        $selectedRing | Should -BeOfType ([Windows.Shapes.Ellipse])
+        $selectedRing.Width | Should -Be 16
+        $selectedRing.Height | Should -Be 16
+        $selectedRing.StrokeThickness | Should -Be 1.5
+        $selectedDot | Should -BeOfType ([Windows.Shapes.Ellipse])
+        $selectedDot.Width | Should -Be 6
+        $selectedDot.Height | Should -Be 6
+        $selectedDot.Visibility | Should -Be ([Windows.Visibility]::Visible)
+
+        $automaticCard = $View.Controls.OfficialRows.Children[1]
+        $automaticCard.BorderBrush.ToString() | Should -BeExactly '#4D707A90'
+        $automaticCard.Background.ToString() | Should -BeExactly '#D93A4358'
+        $automaticButton = @(
+            Get-TestDescendant -Root $automaticCard -Type ([Windows.Controls.Button]) -Tag 'QuotaFocus'
+        )[0]
+        $automaticButton.Background.ToString() | Should -BeExactly '#00FFFFFF'
+        $automaticButton.Foreground.ToString() | Should -BeExactly '#FFAFB8CB'
+        $automaticDot = @(
+            $automaticButton.Content.Children | Where-Object { [string]$_.Tag -eq 'QuotaFocusDot' }
+        )[0]
+        $automaticDot.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        [string]$automaticButton.ToolTip | Should -BeExactly '设为迷你模式显示项'
+
+        $selectedButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
         @($focused) | Should -Be @('official|selected')
     }
 

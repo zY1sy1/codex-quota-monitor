@@ -80,6 +80,9 @@ function New-WpfQuotaCard {
         [Parameter(Mandatory)]
         [Collections.IDictionary]$Palette,
 
+        [Parameter(Mandatory)]
+        [Windows.Style]$FocusButtonStyle,
+
         [Parameter()]
         [AllowNull()]
         [scriptblock]$OnFocusRequested,
@@ -94,7 +97,7 @@ function New-WpfQuotaCard {
     $brush = { param([string]$Color) [Windows.Media.BrushConverter]::new().ConvertFromString($Color) }
 
     $card = [Windows.Controls.Border]::new()
-    $card.Background = & $brush $Palette.SurfaceStrong
+    $card.Background = & $brush $(if ($selected) { $Palette.SelectionSurface } else { $Palette.SurfaceStrong })
     $card.BorderBrush = & $brush $(if ($selected) { $Palette.Accent } else { $Palette.Separator })
     $card.BorderThickness = [Windows.Thickness]::new(1)
     $card.CornerRadius = [Windows.CornerRadius]::new(8)
@@ -148,17 +151,65 @@ function New-WpfQuotaCard {
     $heading.Children.Add($remaining) | Out-Null
 
     $focusButton = [Windows.Controls.Button]::new()
-    $focusButton.Width = 28
-    $focusButton.Height = 28
+    $focusButton.Style = $FocusButtonStyle
     $focusButton.Margin = [Windows.Thickness]::new(6, 0, 0, 0)
-    $focusButton.Padding = [Windows.Thickness]::new(0)
-    $focusButton.Background = [Windows.Media.Brushes]::Transparent
-    $focusButton.BorderBrush = [Windows.Media.Brushes]::Transparent
-    $focusButton.Foreground = & $brush $Palette.Accent
-    $focusButton.Focusable = $true
-    $focusButton.Content = $(if ($selected) { '●' } else { '○' })
+    $focusButton.Foreground = & $brush $(if ($selected) { $Palette.Accent } else { $Palette.TextSecondary })
+    $focusButton.Background = $(
+        if ($selected) { & $brush $Palette.AccentSoft }
+        else { [Windows.Media.Brushes]::Transparent }
+    )
     $focusButton.Tag = 'QuotaFocus'
     $focusButton.ToolTip = $(if ($selected) { '取消迷你模式固定显示' } else { '设为迷你模式显示项' })
+
+    $focusVisual = [Windows.Controls.Grid]::new()
+    $focusVisual.Width = 16
+    $focusVisual.Height = 16
+    $focusVisual.IsHitTestVisible = $false
+
+    $focusRing = [Windows.Shapes.Ellipse]::new()
+    $focusRing.Width = 16
+    $focusRing.Height = 16
+    $focusRing.StrokeThickness = 1.5
+    $focusRing.Tag = 'QuotaFocusRing'
+
+    $focusDot = [Windows.Shapes.Ellipse]::new()
+    $focusDot.Width = 6
+    $focusDot.Height = 6
+    $focusDot.HorizontalAlignment = [Windows.HorizontalAlignment]::Center
+    $focusDot.VerticalAlignment = [Windows.VerticalAlignment]::Center
+    $focusDot.Visibility = $(
+        if ($selected) { [Windows.Visibility]::Visible }
+        else { [Windows.Visibility]::Collapsed }
+    )
+    $focusDot.Tag = 'QuotaFocusDot'
+
+    $ringBinding = [Windows.Data.Binding]::new('Foreground')
+    $ringBinding.RelativeSource = [Windows.Data.RelativeSource]::new(
+        [Windows.Data.RelativeSourceMode]::FindAncestor,
+        [Windows.Controls.Button],
+        1
+    )
+    [Windows.Data.BindingOperations]::SetBinding(
+        $focusRing,
+        [Windows.Shapes.Shape]::StrokeProperty,
+        $ringBinding
+    ) | Out-Null
+
+    $dotBinding = [Windows.Data.Binding]::new('Foreground')
+    $dotBinding.RelativeSource = [Windows.Data.RelativeSource]::new(
+        [Windows.Data.RelativeSourceMode]::FindAncestor,
+        [Windows.Controls.Button],
+        1
+    )
+    [Windows.Data.BindingOperations]::SetBinding(
+        $focusDot,
+        [Windows.Shapes.Shape]::FillProperty,
+        $dotBinding
+    ) | Out-Null
+
+    $focusVisual.Children.Add($focusRing) | Out-Null
+    $focusVisual.Children.Add($focusDot) | Out-Null
+    $focusButton.Content = $focusVisual
     [Windows.Automation.AutomationProperties]::SetName($focusButton, [string]$focusButton.ToolTip)
     [Windows.Controls.Grid]::SetColumn($focusButton, 2)
 
@@ -343,6 +394,12 @@ function New-QuotaWindowView {
         throw
     }
 
+    $focusButtonStyle = $window.TryFindResource('QuotaFocusButton')
+    if ($focusButtonStyle -isnot [Windows.Style]) {
+        $window.Close()
+        throw "The Codex quota floating-window XAML is missing style 'QuotaFocusButton'."
+    }
+
     if ($null -eq $DragAction) {
         $DragAction = {
             param([Windows.Window]$TargetWindow)
@@ -378,6 +435,7 @@ function New-QuotaWindowView {
         DragAction = $DragAction
         CreateBrush = ${function:ConvertTo-WpfBrush}
         CreateQuotaCard = ${function:New-WpfQuotaCard}
+        FocusButtonStyle = $focusButtonStyle
         GetPlacementModel = ${function:Get-WpfQuotaWindowPlacement}
         ApplyTheme = ${function:Set-MonitorWindowTheme}
         FocusHandlers = [Collections.Generic.List[object]]::new()
@@ -518,6 +576,7 @@ function New-QuotaWindowView {
 
         foreach ($row in $Rows) {
             $card = & $state.CreateQuotaCard -PresentationRow $row -Palette $state.Palette `
+                -FocusButtonStyle $state.FocusButtonStyle `
                 -OnFocusRequested $focusRequest -SelectedKey $state.FocusKey
             $Panel.Children.Add($card) | Out-Null
             $state.FocusHandlers.Add([pscustomobject]@{
