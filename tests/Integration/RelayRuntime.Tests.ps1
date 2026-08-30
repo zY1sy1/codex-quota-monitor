@@ -369,7 +369,7 @@ Describe 'relay runtime composition' {
         $state.LastAttemptAt | Should -BeNullOrEmpty
     }
 
-    It 'manual refresh requests official quota and every enabled global-manual relay beyond one scheduler batch' {
+    It 'manual refresh requests official quota and every enabled manual-only relay beyond one scheduler batch' {
         $providers = @(
             New-TestRuntimeRelayProvider 'one' -IntervalMinutes 0
             New-TestRuntimeRelayProvider 'two' -IntervalMinutes 0

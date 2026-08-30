@@ -24,6 +24,7 @@ Describe 'settings controller' {
         $viewState = $script:ViewState
         $script:View = [pscustomobject][ordered]@{
             SetSnapshot = {
+                [CmdletBinding()]
                 param($Mode, $Theme, $FullLayout, $Topmost, $Startup)
                 $viewState.Snapshot = [pscustomobject][ordered]@{
                     Mode = $Mode
@@ -36,6 +37,7 @@ Describe 'settings controller' {
             }.GetNewClosure()
             SetStatus = { param($Message) $viewState.Status = $Message }.GetNewClosure()
             SetCallbacks = {
+                [CmdletBinding()]
                 param(
                     $OnSetDisplayMode, $OnSetTheme, $OnSetFullLayout,
                     $OnToggleTopmost, $OnToggleStartup,

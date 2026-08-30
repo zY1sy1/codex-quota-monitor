@@ -237,6 +237,7 @@ Describe 'Codex quota monitor production composition' {
                 Write-Output -NoEnumerate $settingsView
             }.GetNewClosure()
             NewSettingsController = {
+                [CmdletBinding()]
                 param(
                     $View, $GetSnapshot, $SetDisplayMode, $SetTheme, $SetFullLayout,
                     $ToggleTopmost, $ToggleStartup,
@@ -268,6 +269,7 @@ Describe 'Codex quota monitor production composition' {
         $module = Import-Module -Name $ManifestPath -Force -PassThru
         $originalNewRelayScheduler = & $module { ${function:New-RelaySchedulerState} }
         $overrides['NewRelayScheduler'] = {
+            [CmdletBinding()]
             param($Providers, $Now, $MaximumConcurrency)
             $scheduler = & $originalNewRelayScheduler -Providers $Providers -Now $Now `
                 -MaximumConcurrency $MaximumConcurrency

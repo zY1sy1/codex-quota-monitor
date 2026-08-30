@@ -24,10 +24,6 @@
             <Setter Property="Padding" Value="10,4" />
             <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
-        <Style x:Key="FieldLabel" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#FF5A6478" />
-            <Setter Property="Margin" Value="0,0,0,4" />
-        </Style>
         <Style x:Key="GroupBoxStyle" TargetType="GroupBox">
             <Setter Property="Foreground" Value="#FF5A6478" />
             <Setter Property="Margin" Value="0,0,0,12" />
