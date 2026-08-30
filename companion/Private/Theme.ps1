@@ -41,6 +41,67 @@ function Get-MonitorThemePalette {
     }
 }
 
+function Get-SettingsThemePalette {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Light', 'Dark')]
+        [string]$Theme
+    )
+
+    if ($Theme -eq 'Light') {
+        return [ordered]@{
+            Surface = '#FFF9FAFA'
+            Sidebar = '#FFF1F5F5'
+            SurfaceStrong = '#FFFFFFFF'
+            TextPrimary = '#FF201F1D'
+            TextSecondary = '#FF6F6B67'
+            Accent = '#FF348186'
+            AccentText = '#FFFFFFFF'
+            Success = '#FF24757A'
+            Selection = '#FFE2F0F0'
+            Border = '#FF7A878C'
+            Separator = '#FFD1D9DC'
+            Hover = '#FFEAF3F3'
+            Pressed = '#FFD9EAEA'
+            Danger = '#FFB42323'
+        }
+    }
+
+    return [ordered]@{
+        Surface = '#FF323A4C'
+        Sidebar = '#FF272E3D'
+        SurfaceStrong = '#FF3A4358'
+        TextPrimary = '#FFF4F3F1'
+        TextSecondary = '#FFAFB8CB'
+        Accent = '#FF58C2C7'
+        AccentText = '#FF1F2832'
+        Success = '#FF79D9DD'
+        Selection = '#FF354D58'
+        Border = '#FF8792A6'
+        Separator = '#FF566074'
+        Hover = '#FF3A4658'
+        Pressed = '#FF425264'
+        Danger = '#FFFFA0A0'
+    }
+}
+
+function Set-SettingsWindowTheme {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Window,
+        [Parameter(Mandatory)][ValidateSet('Light', 'Dark')][string]$Theme
+    )
+
+    $palette = Get-SettingsThemePalette -Theme $Theme
+    foreach ($entry in $palette.GetEnumerator()) {
+        $Window.Resources["Settings$($entry.Key)Brush"] =
+            ConvertTo-MonitorThemeBrush $entry.Value
+    }
+    $Window.Tag = $Theme
+    return $palette
+}
+
 function ConvertTo-MonitorThemeBrush {
     param([Parameter(Mandatory)][string]$Color)
     [Windows.Media.BrushConverter]::new().ConvertFromString($Color)

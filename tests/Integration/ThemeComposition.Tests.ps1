@@ -30,6 +30,30 @@ BeforeAll {
             if ($null -ne $stream) { $stream.Dispose() }
         }
     }
+
+    function Get-TestRelativeLuminance {
+        param([Parameter(Mandatory)][string]$Color)
+        $hex = $Color.TrimStart('#')
+        if ($hex.Length -eq 8) { $hex = $hex.Substring(2) }
+        $channels = for ($index = 0; $index -lt 6; $index += 2) {
+            $channel = [Convert]::ToInt32($hex.Substring($index, 2), 16) / 255
+            if ($channel -le 0.04045) {
+                $channel / 12.92
+            }
+            else {
+                [Math]::Pow(($channel + 0.055) / 1.055, 2.4)
+            }
+        }
+        0.2126 * $channels[0] + 0.7152 * $channels[1] + 0.0722 * $channels[2]
+    }
+
+    function Get-TestContrastRatio {
+        param([string]$Foreground, [string]$Background)
+        $first = Get-TestRelativeLuminance $Foreground
+        $second = Get-TestRelativeLuminance $Background
+        ([Math]::Max($first, $second) + 0.05) /
+            ([Math]::Min($first, $second) + 0.05)
+    }
 }
 
 Describe 'quota monitor theme composition' {
@@ -44,6 +68,87 @@ Describe 'quota monitor theme composition' {
             'AccentSoft', 'AccentPressed', 'SelectionSurface',
             'Track', 'Separator', 'Shadow', 'Warning', 'Danger'
         )
+    }
+
+    It 'returns the exact opaque settings palette contract for <Theme>' -ForEach @(
+        @{
+            Theme = 'Light'
+            Surface = '#FFF9FAFA'; Sidebar = '#FFF1F5F5'; SurfaceStrong = '#FFFFFFFF'
+            TextPrimary = '#FF201F1D'; TextSecondary = '#FF6F6B67'
+            Accent = '#FF348186'; AccentText = '#FFFFFFFF'; Success = '#FF24757A'
+            Selection = '#FFE2F0F0'; Border = '#FF7A878C'; Separator = '#FFD1D9DC'
+            Hover = '#FFEAF3F3'; Pressed = '#FFD9EAEA'; Danger = '#FFB42323'
+        }
+        @{
+            Theme = 'Dark'
+            Surface = '#FF323A4C'; Sidebar = '#FF272E3D'; SurfaceStrong = '#FF3A4358'
+            TextPrimary = '#FFF4F3F1'; TextSecondary = '#FFAFB8CB'
+            Accent = '#FF58C2C7'; AccentText = '#FF1F2832'; Success = '#FF79D9DD'
+            Selection = '#FF354D58'; Border = '#FF8792A6'; Separator = '#FF566074'
+            Hover = '#FF3A4658'; Pressed = '#FF425264'; Danger = '#FFFFA0A0'
+        }
+    ) {
+        $palette = Get-SettingsThemePalette -Theme $Theme
+
+        @($palette.Keys) | Should -Be @(
+            'Surface', 'Sidebar', 'SurfaceStrong', 'TextPrimary', 'TextSecondary',
+            'Accent', 'AccentText', 'Success', 'Selection', 'Border',
+            'Separator', 'Hover', 'Pressed', 'Danger'
+        )
+        foreach ($key in @($palette.Keys)) {
+            $palette[$key] | Should -BeExactly (Get-Variable -Name $key -ValueOnly)
+            $palette[$key] | Should -Match '^#FF'
+        }
+    }
+
+    It 'keeps settings text and controls above minimum contrast for <Theme>' -ForEach @(
+        @{ Theme = 'Light' }
+        @{ Theme = 'Dark' }
+    ) {
+        $palette = Get-SettingsThemePalette -Theme $Theme
+
+        foreach ($background in @(
+            $palette.Surface, $palette.Sidebar, $palette.SurfaceStrong
+        )) {
+            Get-TestContrastRatio $palette.TextPrimary $background |
+                Should -BeGreaterOrEqual 4.5
+            Get-TestContrastRatio $palette.TextSecondary $background |
+                Should -BeGreaterOrEqual 4.5
+        }
+        Get-TestContrastRatio $palette.AccentText $palette.Accent |
+            Should -BeGreaterOrEqual 4.5
+        Get-TestContrastRatio $palette.Success $palette.SurfaceStrong |
+            Should -BeGreaterOrEqual 4.5
+        Get-TestContrastRatio $palette.Success $palette.Selection |
+            Should -BeGreaterOrEqual 4.5
+        foreach ($background in @($palette.Surface, $palette.SurfaceStrong)) {
+            Get-TestContrastRatio $palette.Accent $background |
+                Should -BeGreaterOrEqual 3
+            Get-TestContrastRatio $palette.Border $background |
+                Should -BeGreaterOrEqual 3
+        }
+        Get-TestContrastRatio $palette.Danger $palette.SurfaceStrong |
+            Should -BeGreaterOrEqual 4.5
+    }
+
+    It 'applies every settings palette entry as a window resource' -ForEach @(
+        @{ Theme = 'Light'; Accent = '#FF348186' }
+        @{ Theme = 'Dark'; Accent = '#FF58C2C7' }
+    ) {
+        $window = [Windows.Window]::new()
+        try {
+            $palette = Set-SettingsWindowTheme -Window $window -Theme $Theme
+
+            $window.Tag | Should -BeExactly $Theme
+            $palette.Accent | Should -BeExactly $Accent
+            foreach ($key in @($palette.Keys)) {
+                $window.Resources["Settings${key}Brush"].ToString() |
+                    Should -BeExactly $palette[$key]
+            }
+        }
+        finally {
+            $window.Close()
+        }
     }
 
     It 'uses transparent cohesive surfaces without opaque white borders' {
