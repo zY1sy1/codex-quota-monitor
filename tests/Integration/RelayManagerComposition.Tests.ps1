@@ -279,6 +279,19 @@ Describe 'relay manager WPF adapter contract' {
             ForEach-Object Text) -join "`n") | Should -Not -Match 'api-secret|token-secret|user-secret'
     }
 
+    It 'uses manual mode only for an explicit numeric zero interval' -ForEach @(
+        @{ Value = ''; Expected = -1 }
+        @{ Value = 'abc'; Expected = -1 }
+        @{ Value = '5.5'; Expected = -1 }
+        @{ Value = '0'; Expected = 0 }
+    ) {
+        $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
+        & $script:View.SetDraft (New-TestRelayDraft)
+        $script:View.Controls.IntervalTextBox.Text = $Value
+
+        (& $script:View.ReadDraft).IntervalMinutes | Should -Be $Expected
+    }
+
     It 'round-trips import metadata without placing it in a text control' {
         $script:View = New-RelayManagerView -XamlPath $XamlPath -TrustPrompt { param($value) $false }
         $draft = New-TestRelayDraft
