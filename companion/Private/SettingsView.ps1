@@ -1,6 +1,9 @@
 if (-not (Get-Command Get-MonitorAppIconPath -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'WindowIcon.ps1')
 }
+if (-not (Get-Command Set-SettingsWindowTheme -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'Theme.ps1')
+}
 
 function New-SettingsView {
     [CmdletBinding()]
@@ -9,9 +12,14 @@ function New-SettingsView {
         [string]$XamlPath = (Join-Path $PSScriptRoot '..\UI\Settings.xaml')
     )
 
-    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne [Threading.ApartmentState]::STA) {
+    if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne
+        [Threading.ApartmentState]::STA) {
         throw 'The settings window requires an STA thread.'
     }
+    if (-not (Get-Command Set-SettingsWindowTheme -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot 'Theme.ps1')
+    }
+    $setSettingsWindowThemeFunction = ${function:Set-SettingsWindowTheme}
     Add-Type -AssemblyName PresentationFramework
     Add-Type -AssemblyName PresentationCore
     Add-Type -AssemblyName WindowsBase
@@ -35,7 +43,9 @@ function New-SettingsView {
         if ($null -ne $reader) { $reader.Dispose() }
         if ($null -ne $stream) { $stream.Dispose() }
     }
-    if ($window -isnot [Windows.Window]) { throw 'Settings XAML root must be a Window.' }
+    if ($window -isnot [Windows.Window]) {
+        throw 'Settings XAML root must be a Window.'
+    }
 
     $windowIcon = ConvertTo-MonitorWindowIconSource (Get-MonitorAppIconPath)
     if ($null -ne $windowIcon) {
@@ -43,12 +53,14 @@ function New-SettingsView {
     }
 
     $controlNames = @(
+        'RootGrid', 'SidebarBorder',
+        'AppearanceNavRadio', 'BehaviorNavRadio', 'RelayNavRadio',
+        'AppearancePage', 'BehaviorPage', 'RelayPage',
         'DisplayModeGroup', 'FullModeRadio', 'CompactBarModeRadio', 'OrbModeRadio',
         'ThemeGroup', 'LightThemeRadio', 'DarkThemeRadio',
         'FullLayoutGroup', 'OverviewLayoutRadio', 'TabsLayoutRadio',
-        'TopmostCheckBox', 'StartupCheckBox',
-        'RefreshButton', 'ManageRelaysButton',
-        'StatusText'
+        'LayoutAvailabilityText', 'TopmostCheckBox', 'StartupCheckBox',
+        'RefreshButton', 'ManageRelaysButton', 'StatusText'
     )
     $controls = [ordered]@{}
     foreach ($name in $controlNames) {
@@ -65,6 +77,7 @@ function New-SettingsView {
         Controls = $controls
         Callbacks = $null
         Disposed = $false
+        CurrentPage = 'Appearance'
         Delegates = [ordered]@{}
     }
 
@@ -72,20 +85,51 @@ function New-SettingsView {
         param([string]$Name, [object[]]$Arguments)
         if ($state.Disposed -or $null -eq $state.Callbacks) { return $null }
         $callback = $state.Callbacks.PSObject.Properties[$Name]
-        if ($null -ne $callback -and $null -ne $callback.Value) { return & $callback.Value @Arguments }
+        if ($null -ne $callback -and $null -ne $callback.Value) {
+            return & $callback.Value @Arguments
+        }
         return $null
     }.GetNewClosure()
 
+    $setPage = {
+        param([ValidateSet('Appearance', 'Behavior', 'Relay')][string]$Page)
+        if ($state.Disposed) { return }
+        $state.CurrentPage = $Page
+        foreach ($name in @('Appearance', 'Behavior', 'Relay')) {
+            $state.Controls["${name}Page"].Visibility = if ($name -eq $Page) {
+                [Windows.Visibility]::Visible
+            }
+            else {
+                [Windows.Visibility]::Collapsed
+            }
+            $state.Controls["${name}NavRadio"].IsChecked = ($name -eq $Page)
+        }
+    }.GetNewClosure()
+
     foreach ($definition in @(
-        @{ Control = 'FullModeRadio'; Callback = 'OnSetDisplayMode'; Tag = 'Full' },
-        @{ Control = 'CompactBarModeRadio'; Callback = 'OnSetDisplayMode'; Tag = 'CompactBar' },
-        @{ Control = 'OrbModeRadio'; Callback = 'OnSetDisplayMode'; Tag = 'Orb' },
-        @{ Control = 'LightThemeRadio'; Callback = 'OnSetTheme'; Tag = 'Light' },
-        @{ Control = 'DarkThemeRadio'; Callback = 'OnSetTheme'; Tag = 'Dark' },
-        @{ Control = 'OverviewLayoutRadio'; Callback = 'OnSetFullLayout'; Tag = 'Overview' },
+        @{ Control = 'AppearanceNavRadio'; Page = 'Appearance' }
+        @{ Control = 'BehaviorNavRadio'; Page = 'Behavior' }
+        @{ Control = 'RelayNavRadio'; Page = 'Relay' }
+    )) {
+        $page = [string]$definition.Page
+        $handler = [Windows.RoutedEventHandler]{
+            param($sender, $args)
+            & $setPage $page
+        }.GetNewClosure()
+        $state.Delegates[$definition.Control] = $handler
+        $controls[$definition.Control].Add_Click($handler)
+    }
+
+    foreach ($definition in @(
+        @{ Control = 'FullModeRadio'; Callback = 'OnSetDisplayMode'; Tag = 'Full' }
+        @{ Control = 'CompactBarModeRadio'; Callback = 'OnSetDisplayMode'; Tag = 'CompactBar' }
+        @{ Control = 'OrbModeRadio'; Callback = 'OnSetDisplayMode'; Tag = 'Orb' }
+        @{ Control = 'LightThemeRadio'; Callback = 'OnSetTheme'; Tag = 'Light' }
+        @{ Control = 'DarkThemeRadio'; Callback = 'OnSetTheme'; Tag = 'Dark' }
+        @{ Control = 'OverviewLayoutRadio'; Callback = 'OnSetFullLayout'; Tag = 'Overview' }
         @{ Control = 'TabsLayoutRadio'; Callback = 'OnSetFullLayout'; Tag = 'Tabs' }
     )) {
-        $callbackName = $definition.Callback
+        $callbackName = [string]$definition.Callback
         $tagValue = [string]$definition.Tag
         $handler = [Windows.RoutedEventHandler]{
             param($sender, $args)
@@ -96,12 +140,12 @@ function New-SettingsView {
     }
 
     foreach ($definition in @(
-        @{ Control = 'TopmostCheckBox'; Callback = 'OnToggleTopmost' },
-        @{ Control = 'StartupCheckBox'; Callback = 'OnToggleStartup' },
-        @{ Control = 'RefreshButton'; Callback = 'OnRefresh' },
+        @{ Control = 'TopmostCheckBox'; Callback = 'OnToggleTopmost' }
+        @{ Control = 'StartupCheckBox'; Callback = 'OnToggleStartup' }
+        @{ Control = 'RefreshButton'; Callback = 'OnRefresh' }
         @{ Control = 'ManageRelaysButton'; Callback = 'OnManageRelays' }
     )) {
-        $callbackName = $definition.Callback
+        $callbackName = [string]$definition.Callback
         $handler = [Windows.RoutedEventHandler]{
             param($sender, $args)
             $null = & $invoke $callbackName @()
@@ -114,14 +158,18 @@ function New-SettingsView {
         param($sender, $eventArgs)
         if (-not $state.Disposed) {
             $eventArgs.Cancel = $true
-            $null = & $invoke 'OnClosing'
+            $null = & $invoke 'OnClosing' @()
             $state.Window.Hide()
         }
     }.GetNewClosure()
     $state.Delegates.Closing = $closing
     $window.Add_Closing($closing)
 
-    $showDialog = { if (-not $state.Disposed) { return $state.Window.ShowDialog() } }.GetNewClosure()
+    $showDialog = {
+        if ($state.Disposed) { return }
+        & $setPage 'Appearance'
+        return $state.Window.ShowDialog()
+    }.GetNewClosure()
 
     $setSnapshot = {
         param(
@@ -132,32 +180,68 @@ function New-SettingsView {
             [bool]$Startup
         )
         if ($state.Disposed) { return }
+
         $modeControl = switch ($Mode) {
             'CompactBar' { $state.Controls.CompactBarModeRadio }
             'Orb' { $state.Controls.OrbModeRadio }
             default { $state.Controls.FullModeRadio }
         }
-        $themeControl = if ($Theme -eq 'Light') { $state.Controls.LightThemeRadio } else { $state.Controls.DarkThemeRadio }
-        $layoutControl = if ($FullLayout -eq 'Tabs') { $state.Controls.TabsLayoutRadio } else { $state.Controls.OverviewLayoutRadio }
-        $state.Controls.FullModeRadio.IsChecked = $false
-        $state.Controls.CompactBarModeRadio.IsChecked = $false
-        $state.Controls.OrbModeRadio.IsChecked = $false
-        $state.Controls.LightThemeRadio.IsChecked = $false
-        $state.Controls.DarkThemeRadio.IsChecked = $false
-        $state.Controls.OverviewLayoutRadio.IsChecked = $false
-        $state.Controls.TabsLayoutRadio.IsChecked = $false
+        $themeControl = if ($Theme -eq 'Light') {
+            $state.Controls.LightThemeRadio
+        }
+        else {
+            $state.Controls.DarkThemeRadio
+        }
+        $layoutControl = if ($FullLayout -eq 'Tabs') {
+            $state.Controls.TabsLayoutRadio
+        }
+        else {
+            $state.Controls.OverviewLayoutRadio
+        }
+
+        foreach ($control in @(
+            $state.Controls.FullModeRadio, $state.Controls.CompactBarModeRadio,
+            $state.Controls.OrbModeRadio, $state.Controls.LightThemeRadio,
+            $state.Controls.DarkThemeRadio, $state.Controls.OverviewLayoutRadio,
+            $state.Controls.TabsLayoutRadio
+        )) {
+            $control.IsChecked = $false
+        }
         $modeControl.IsChecked = $true
         $themeControl.IsChecked = $true
         $layoutControl.IsChecked = $true
         $state.Controls.TopmostCheckBox.IsChecked = $Topmost
         $state.Controls.StartupCheckBox.IsChecked = $Startup
-        $state.Controls.StatusText.Text = [string]::Empty
+
+        $layoutEnabled = ($Mode -eq 'Full')
+        $state.Controls.OverviewLayoutRadio.IsEnabled = $layoutEnabled
+        $state.Controls.TabsLayoutRadio.IsEnabled = $layoutEnabled
+        $state.Controls.LayoutAvailabilityText.Text = '仅完整窗口模式可用'
+        $null = & $setSettingsWindowThemeFunction -Window $state.Window -Theme $Theme
+        $state.Controls.StatusText.Text = '更改即时保存'
+        $state.Controls.StatusText.Foreground =
+            $state.Window.Resources['SettingsTextSecondaryBrush']
     }.GetNewClosure()
 
     $setStatus = {
-        param([string]$Message)
+        param(
+            [string]$Message,
+            [ValidateSet('Idle', 'Success', 'Error')]
+            [string]$Kind = 'Idle'
+        )
         if ($state.Disposed) { return }
-        $state.Controls.StatusText.Text = $Message
+        $state.Controls.StatusText.Text = if ([string]::IsNullOrWhiteSpace($Message)) {
+            '更改即时保存'
+        }
+        else {
+            $Message
+        }
+        $brushKey = switch ($Kind) {
+            'Success' { 'SettingsSuccessBrush' }
+            'Error' { 'SettingsDangerBrush' }
+            default { 'SettingsTextSecondaryBrush' }
+        }
+        $state.Controls.StatusText.Foreground = $state.Window.Resources[$brushKey]
     }.GetNewClosure()
 
     $setCallbacks = {
@@ -188,10 +272,9 @@ function New-SettingsView {
         if ($state.Disposed) { return }
         $state.Disposed = $true
         try { $window.remove_Closing($state.Delegates.Closing) } catch { }
-        foreach ($name in $state.Delegates.Keys) {
-            if ($name -eq 'Closing') {
-                continue
-            }
+        foreach ($name in @($state.Delegates.Keys)) {
+            if ($name -eq 'Closing') { continue }
+            if (-not $state.Controls.Contains($name)) { continue }
             try { $state.Controls[$name].remove_Click($state.Delegates[$name]) } catch { }
         }
         $state.Delegates.Clear()
@@ -199,11 +282,14 @@ function New-SettingsView {
         try { $window.Close() } catch { }
     }.GetNewClosure()
 
+    & $setPage 'Appearance'
+
     return [pscustomobject][ordered]@{
         Window = $window
         Controls = $controls
         State = $state
         ShowDialog = $showDialog
+        SetPage = $setPage
         SetSnapshot = $setSnapshot
         SetStatus = $setStatus
         SetCallbacks = $setCallbacks
