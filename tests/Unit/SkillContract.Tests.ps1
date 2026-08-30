@@ -233,7 +233,7 @@ Describe 'Chinese README contract' {
         foreach ($pattern in @(
             '管理中转站', 'Wakaka', 'General', 'New API', 'Custom',
             'Base URL', 'API Key', 'Access Token', 'User ID', 'DPAPI',
-            '测试脚本', '保存并启用', '10 分钟', 'Full', 'CompactBar', 'Orb',
+            '测试脚本', '保存并启用', '5 分钟', 'Full', 'CompactBar', 'Orb',
             '浅色透明', '深色透明', '关闭到系统托盘', '显式零值',
             'USD', 'CNY', 'Repair', 'PreserveData', '过期'
         )) {

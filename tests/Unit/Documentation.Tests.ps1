@@ -24,6 +24,8 @@ Describe 'generic relay provider documentation' {
         $example = Get-Content -Raw $examplePath | ConvertFrom-Json
         $example.SchemaVersion | Should -Be 2
         @($example.Providers).Count | Should -Be 2
+        @($example.Providers.IntervalMinutes | Select-Object -Unique) |
+            Should -BeExactly @(5)
         $example.Providers[0].RequestDefinition.Method | Should -BeExactly 'GET'
         $example.Providers[1].RequestDefinition.Method | Should -BeExactly 'POST'
         $example.Providers[0].RequestDefinition.Headers.Authorization | Should -Match '\{\{apiKey\}\}'
@@ -55,6 +57,14 @@ Describe 'generic relay provider documentation' {
         }
         $migration | Should -Match '不会猜测|不猜测'
         $migration | Should -Match '没有可用的余额接口'
+    }
+
+    It 'documents provider-specific query intervals and the five-minute default' {
+        $readme = Get-Content -Raw (Join-Path $script:RepoRoot 'README.md')
+
+        $readme | Should -Match '每个中转站.*查询间隔'
+        $readme | Should -Match '默认.*5 分钟'
+        $readme | Should -Match '0.*手动'
     }
 }
 

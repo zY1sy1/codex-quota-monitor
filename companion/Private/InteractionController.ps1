@@ -80,7 +80,7 @@ function New-EmptyRelayManagerDraft {
         }
         ExtractorScript = 'function(response){return {isValid:response.success??true,invalidMessage:response.message??null,remaining:(response.data??response).balance,unit:(response.data??response).currency??null};}'
         TimeoutSeconds = 10
-        IntervalMinutes = 10
+        IntervalMinutes = 5
         TrustedDestination = $null
         MigrationWarning = $null
         ImportLink = $null

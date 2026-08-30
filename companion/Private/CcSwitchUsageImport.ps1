@@ -541,7 +541,7 @@ function ConvertTo-CcSwitchRelayImportCandidate {
         [bool](Get-RelayProviderField $ExistingProvider 'Enabled')
     }
     $interval = if ($null -eq $ExistingProvider) {
-        [Math]::Clamp([int]$Descriptor.AutoQueryIntervalMinutes, 0, 1440)
+        5
     }
     else {
         [int](Get-RelayProviderField $ExistingProvider 'IntervalMinutes')

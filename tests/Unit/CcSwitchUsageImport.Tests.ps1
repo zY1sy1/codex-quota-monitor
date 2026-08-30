@@ -228,7 +228,7 @@ Describe 'CC Switch usage discovery client' {
 
 Describe 'CC Switch usage rule conversion' {
     It 'converts a real-format Wakaka rule into a Generic draft' {
-        $descriptor = New-TestCcSwitchDescriptor -Code @'
+        $descriptor = New-TestCcSwitchDescriptor -IntervalMinutes 47 -Code @'
 ({
   request: { url: "{{baseUrl}}/v1/usage", method: "GET", headers: { Authorization: "Bearer {{apiKey}}" } },
   extractor: function(response) { const data = response.data ?? response; return { isValid: true, remaining: data.balance, unit: data.currency ?? "USD" }; }
@@ -244,6 +244,7 @@ Describe 'CC Switch usage rule conversion' {
         $candidate.Draft.RequestDefinition.Path | Should -BeExactly '/v1/usage'
         $candidate.Draft.RequestDefinition.Headers.Authorization |
             Should -BeExactly 'Bearer {{apiKey}}'
+        $candidate.Draft.IntervalMinutes | Should -Be 5
         $candidate.Draft.TrustedDestination | Should -BeNullOrEmpty
         $candidate.Draft.Secrets.ApiKey | Should -BeExactly ''
         $candidate.Link.SourceProviderId | Should -BeExactly 'source-1'
