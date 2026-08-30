@@ -1011,8 +1011,7 @@ function Invoke-CodexQuotaMonitorRuntime {
         $newRelaySchedulerFunction = $functions.NewRelayScheduler
         $runtime.RelayScheduler = & $newRelaySchedulerFunction `
             -Providers $runtime.RelayProviders -Now ([DateTimeOffset]::UtcNow) `
-            -MaximumConcurrency 2 `
-            -AutoQueryIntervalMinutes ([int]$runtime.Settings.Relay.AutoQueryIntervalMinutes)
+            -MaximumConcurrency 2
         $null = & $startRelayHost ([DateTimeOffset]::UtcNow)
         & $refreshCombinedPresentation ([DateTimeOffset]::UtcNow)
 
@@ -1200,8 +1199,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                 $newSchedulerFunction = $runtime.Functions.NewRelayScheduler
                 $runtime.RelayScheduler = & $newSchedulerFunction `
                     -Providers $runtime.RelayProviders -Now ([DateTimeOffset]::UtcNow) `
-                    -MaximumConcurrency 2 `
-                    -AutoQueryIntervalMinutes ([int]$runtime.Settings.Relay.AutoQueryIntervalMinutes)
+                    -MaximumConcurrency 2
                 if (@($runtime.RelayProviders | Where-Object Enabled).Count -eq 0) {
                     & $stopRelayClient
                     $runtime.RelayHostState = 'Disabled'
@@ -1294,32 +1292,6 @@ function Invoke-CodexQuotaMonitorRuntime {
 
             $newSettingsViewFunction = $functions.NewSettingsView
             $runtime.SettingsView = & $newSettingsViewFunction
-            $setRelayAutoQueryIntervalAction = {
-                param([int]$IntervalMinutes)
-                if ($IntervalMinutes -lt 0 -or $IntervalMinutes -gt 1440) {
-                    throw [ArgumentOutOfRangeException]::new(
-                        'IntervalMinutes',
-                        'Relay auto query interval must be between 0 and 1440 minutes.'
-                    )
-                }
-
-                $newSchedulerFunction = $runtime.Functions.NewRelayScheduler
-                $newScheduler = & $newSchedulerFunction `
-                    -Providers $runtime.RelayProviders `
-                    -Now ([DateTimeOffset]::UtcNow) `
-                    -MaximumConcurrency 2 `
-                    -AutoQueryIntervalMinutes $IntervalMinutes
-                $previousInterval = [int]$runtime.Settings.Relay.AutoQueryIntervalMinutes
-                $runtime.Settings.Relay.AutoQueryIntervalMinutes = $IntervalMinutes
-                try {
-                    & $saveSettingsAction $runtime.Settings
-                }
-                catch {
-                    $runtime.Settings.Relay.AutoQueryIntervalMinutes = $previousInterval
-                    throw
-                }
-                $runtime.RelayScheduler = $newScheduler
-            }.GetNewClosure()
             $settingsSnapshotAction = {
                 [pscustomobject][ordered]@{
                     Mode = [string]$runtime.DisplayController.State.Mode
@@ -1327,7 +1299,6 @@ function Invoke-CodexQuotaMonitorRuntime {
                     FullLayout = [string]$runtime.DisplayController.State.FullLayout
                     Topmost = [bool]$runtime.DisplayController.State.Topmost
                     Startup = [bool]$runtime.Settings.Startup
-                    RelayAutoQueryIntervalMinutes = [int]$runtime.Settings.Relay.AutoQueryIntervalMinutes
                 }
             }.GetNewClosure()
             $newSettingsControllerFunction = $functions.NewSettingsController
@@ -1339,7 +1310,6 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -SetFullLayout $runtime.Interaction.SetFullLayout `
                 -ToggleTopmost $runtime.Interaction.ToggleTopmost `
                 -ToggleStartup $runtime.Interaction.ToggleStartup `
-                -SetRelayAutoQueryInterval $setRelayAutoQueryIntervalAction `
                 -RequestRefresh $runtime.Interaction.Refresh `
                 -ManageRelays $manageRelaysAction
 

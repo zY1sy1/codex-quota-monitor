@@ -13,9 +13,7 @@ Describe 'settings controller' {
             FullLayout = 'Overview'
             Topmost = $true
             Startup = $true
-            RelayAutoQueryIntervalMinutes = 10
         }
-        $script:SetIntervalCalls = [Collections.Generic.List[object]]::new()
         $script:ViewState = [pscustomobject][ordered]@{
             Snapshot = $null
             Status = ''
@@ -26,14 +24,13 @@ Describe 'settings controller' {
         $viewState = $script:ViewState
         $script:View = [pscustomobject][ordered]@{
             SetSnapshot = {
-                param($Mode, $Theme, $FullLayout, $Topmost, $Startup, $RelayAutoQueryIntervalMinutes)
+                param($Mode, $Theme, $FullLayout, $Topmost, $Startup)
                 $viewState.Snapshot = [pscustomobject][ordered]@{
                     Mode = $Mode
                     Theme = $Theme
                     FullLayout = $FullLayout
                     Topmost = $Topmost
                     Startup = $Startup
-                    RelayAutoQueryIntervalMinutes = $RelayAutoQueryIntervalMinutes
                 }
                 $viewState.Status = ''
             }.GetNewClosure()
@@ -41,7 +38,7 @@ Describe 'settings controller' {
             SetCallbacks = {
                 param(
                     $OnSetDisplayMode, $OnSetTheme, $OnSetFullLayout,
-                    $OnToggleTopmost, $OnToggleStartup, $OnSetRelayAutoQueryInterval,
+                    $OnToggleTopmost, $OnToggleStartup,
                     $OnRefresh, $OnManageRelays, $OnClosing
                 )
                 $viewState.Callbacks = [pscustomobject][ordered]@{}
@@ -62,11 +59,6 @@ Describe 'settings controller' {
             -SetFullLayout { param($value) } `
             -ToggleTopmost { } `
             -ToggleStartup { } `
-            -SetRelayAutoQueryInterval {
-                param($value)
-                $script:SetIntervalCalls.Add($value)
-                $script:Snapshot.RelayAutoQueryIntervalMinutes = $value
-            } `
             -RequestRefresh { }
     }
 
@@ -76,42 +68,24 @@ Describe 'settings controller' {
         }
     }
 
-    It 'renders the relay interval from the settings snapshot' {
+    It 'renders only the five settings snapshot fields' {
         & $Controller.Show
 
-        $ViewState.Snapshot.RelayAutoQueryIntervalMinutes | Should -Be 10
+        ($ViewState.Snapshot.PSObject.Properties.Name -join ',') |
+            Should -BeExactly 'Mode,Theme,FullLayout,Topmost,Startup'
         $ViewState.ShowCalls | Should -Be 1
     }
 
-    It 'passes a valid interval to the runtime as an integer and rerenders' {
-        & $ViewState.Callbacks.OnSetRelayAutoQueryInterval '0'
-
-        @($SetIntervalCalls).Count | Should -Be 1
-        $SetIntervalCalls[0] | Should -Be 0
-        $SetIntervalCalls[0] | Should -BeOfType ([int])
-        $ViewState.Snapshot.RelayAutoQueryIntervalMinutes | Should -Be 0
-        $ViewState.Status | Should -BeExactly '自动查询间隔已更新。'
+    It 'binds only the remaining settings callbacks' {
+        ($ViewState.Callbacks.PSObject.Properties.Name -join ',') |
+            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnRefresh,OnManageRelays,OnClosing'
     }
 
-    It 'rejects an invalid interval and restores the current snapshot' -ForEach @(
-        @{ Value = '' }
-        @{ Value = 'abc' }
-        @{ Value = '5.5' }
-        @{ Value = '-1' }
-        @{ Value = '1441' }
-    ) {
-        & $ViewState.Callbacks.OnSetRelayAutoQueryInterval $Value
-
-        @($SetIntervalCalls).Count | Should -Be 0
-        $ViewState.Snapshot.RelayAutoQueryIntervalMinutes | Should -Be 10
-        $ViewState.Status | Should -BeExactly '自动查询间隔必须是 0 到 1440 之间的整数。'
-    }
-
-    It 'clears the interval callback before disposing the view' {
+    It 'clears callbacks before disposing the view' {
         & $Controller.Dispose
 
         $Controller.State.Disposed | Should -BeTrue
-        $ViewState.Callbacks.OnSetRelayAutoQueryInterval | Should -BeNullOrEmpty
+        $ViewState.Callbacks.OnRefresh | Should -BeNullOrEmpty
         $ViewState.DisposeCalls | Should -Be 1
         $script:Controller = $null
     }

@@ -46,7 +46,7 @@ function New-SettingsView {
         'DisplayModeGroup', 'FullModeRadio', 'CompactBarModeRadio', 'OrbModeRadio',
         'ThemeGroup', 'LightThemeRadio', 'DarkThemeRadio',
         'FullLayoutGroup', 'OverviewLayoutRadio', 'TabsLayoutRadio',
-        'AutoQueryIntervalTextBox', 'TopmostCheckBox', 'StartupCheckBox',
+        'TopmostCheckBox', 'StartupCheckBox',
         'RefreshButton', 'ManageRelaysButton',
         'StatusText'
     )
@@ -65,7 +65,6 @@ function New-SettingsView {
         Controls = $controls
         Callbacks = $null
         Disposed = $false
-        LastRelayAutoQueryIntervalText = $null
         Delegates = [ordered]@{}
     }
 
@@ -95,31 +94,6 @@ function New-SettingsView {
         $state.Delegates[$definition.Control] = $handler
         $controls[$definition.Control].Add_Click($handler)
     }
-
-    $submitRelayAutoQueryInterval = {
-        if ($state.Disposed) { return }
-        $text = [string]$state.Controls.AutoQueryIntervalTextBox.Text
-        if ($text -ceq $state.LastRelayAutoQueryIntervalText) { return }
-        $state.LastRelayAutoQueryIntervalText = $text
-        $null = & $invoke 'OnSetRelayAutoQueryInterval' @($text)
-    }.GetNewClosure()
-
-    $intervalLostFocus = [Windows.RoutedEventHandler]{
-        param($sender, $args)
-        & $submitRelayAutoQueryInterval
-    }.GetNewClosure()
-    $state.Delegates.AutoQueryIntervalLostFocus = $intervalLostFocus
-    $controls.AutoQueryIntervalTextBox.Add_LostFocus($intervalLostFocus)
-
-    $intervalKeyDown = [Windows.Input.KeyEventHandler]{
-        param($sender, $args)
-        if ($args.Key -eq [Windows.Input.Key]::Enter) {
-            & $submitRelayAutoQueryInterval
-            $args.Handled = $true
-        }
-    }.GetNewClosure()
-    $state.Delegates.AutoQueryIntervalKeyDown = $intervalKeyDown
-    $controls.AutoQueryIntervalTextBox.Add_KeyDown($intervalKeyDown)
 
     foreach ($definition in @(
         @{ Control = 'TopmostCheckBox'; Callback = 'OnToggleTopmost' },
@@ -155,8 +129,7 @@ function New-SettingsView {
             [string]$Theme,
             [string]$FullLayout,
             [bool]$Topmost,
-            [bool]$Startup,
-            [int]$RelayAutoQueryIntervalMinutes = 10
+            [bool]$Startup
         )
         if ($state.Disposed) { return }
         $modeControl = switch ($Mode) {
@@ -178,8 +151,6 @@ function New-SettingsView {
         $layoutControl.IsChecked = $true
         $state.Controls.TopmostCheckBox.IsChecked = $Topmost
         $state.Controls.StartupCheckBox.IsChecked = $Startup
-        $state.LastRelayAutoQueryIntervalText = [string]$RelayAutoQueryIntervalMinutes
-        $state.Controls.AutoQueryIntervalTextBox.Text = $state.LastRelayAutoQueryIntervalText
         $state.Controls.StatusText.Text = [string]::Empty
     }.GetNewClosure()
 
@@ -196,7 +167,6 @@ function New-SettingsView {
             [Parameter()][AllowNull()][scriptblock]$OnSetFullLayout,
             [Parameter()][AllowNull()][scriptblock]$OnToggleTopmost,
             [Parameter()][AllowNull()][scriptblock]$OnToggleStartup,
-            [Parameter()][AllowNull()][scriptblock]$OnSetRelayAutoQueryInterval,
             [Parameter()][AllowNull()][scriptblock]$OnRefresh,
             [Parameter()][AllowNull()][scriptblock]$OnManageRelays,
             [Parameter()][AllowNull()][scriptblock]$OnClosing
@@ -208,7 +178,6 @@ function New-SettingsView {
             OnSetFullLayout = $OnSetFullLayout
             OnToggleTopmost = $OnToggleTopmost
             OnToggleStartup = $OnToggleStartup
-            OnSetRelayAutoQueryInterval = $OnSetRelayAutoQueryInterval
             OnRefresh = $OnRefresh
             OnManageRelays = $OnManageRelays
             OnClosing = $OnClosing
@@ -219,18 +188,8 @@ function New-SettingsView {
         if ($state.Disposed) { return }
         $state.Disposed = $true
         try { $window.remove_Closing($state.Delegates.Closing) } catch { }
-        try {
-            $state.Controls.AutoQueryIntervalTextBox.remove_LostFocus(
-                $state.Delegates.AutoQueryIntervalLostFocus
-            )
-        } catch { }
-        try {
-            $state.Controls.AutoQueryIntervalTextBox.remove_KeyDown(
-                $state.Delegates.AutoQueryIntervalKeyDown
-            )
-        } catch { }
         foreach ($name in $state.Delegates.Keys) {
-            if ($name -in @('Closing', 'AutoQueryIntervalLostFocus', 'AutoQueryIntervalKeyDown')) {
+            if ($name -eq 'Closing') {
                 continue
             }
             try { $state.Controls[$name].remove_Click($state.Delegates[$name]) } catch { }
