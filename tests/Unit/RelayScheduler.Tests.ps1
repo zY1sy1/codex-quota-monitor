@@ -8,13 +8,17 @@ BeforeAll {
         param(
             [string]$Id,
             [bool]$Enabled = $true,
-            [int]$IntervalMinutes = 10
+            [object]$IntervalMinutes = 10,
+            [switch]$OmitIntervalMinutes
         )
-        [pscustomobject][ordered]@{
+        $provider = [ordered]@{
             Id = $Id
             Enabled = $Enabled
-            IntervalMinutes = $IntervalMinutes
         }
+        if (-not $OmitIntervalMinutes) {
+            $provider.IntervalMinutes = $IntervalMinutes
+        }
+        [pscustomobject]$provider
     }
 }
 
@@ -85,13 +89,56 @@ Describe 'relay provider scheduler' {
             Should -Be 1
     }
 
-    It 'rejects an out-of-range provider interval' -ForEach @(
+    It 'uses each provider interval when completing successful queries' {
+        $now = [DateTimeOffset]'2026-08-01T08:00:00Z'
+        $scheduler = New-RelaySchedulerState -Providers @(
+            New-TestRelaySchedulerProvider 'short' -IntervalMinutes 3
+            New-TestRelaySchedulerProvider 'long' -IntervalMinutes 17
+        ) -Now $now
+        $started = Get-RelaySchedulerActions -State $scheduler -Now $now
+
+        $completedShort = Complete-RelaySchedulerAction -State $started.State -ProviderId 'short' `
+            -Outcome Success -Now $now
+        $completed = Complete-RelaySchedulerAction -State $completedShort -ProviderId 'long' `
+            -Outcome Success -Now $now
+
+        $shortDue = @($completed.Providers | Where-Object ProviderId -eq 'short')[0].NextDueAt
+        $longDue = @($completed.Providers | Where-Object ProviderId -eq 'long')[0].NextDueAt
+        $shortDue | Should -Be $now.AddMinutes(3)
+        $longDue | Should -Be $now.AddMinutes(17)
+        $shortDue | Should -Not -Be $longDue
+    }
+
+    It 'accepts the inclusive provider interval bounds' -ForEach @(
+        @{ IntervalMinutes = 0 }
+        @{ IntervalMinutes = 1440 }
+    ) {
+        $scheduler = New-RelaySchedulerState -Providers @(
+            New-TestRelaySchedulerProvider 'wkk' -IntervalMinutes $IntervalMinutes
+        )
+        @($scheduler.Providers)[0].IntervalMinutes | Should -Be $IntervalMinutes
+    }
+
+    It 'rejects missing, non-integer, and out-of-range provider intervals' -ForEach @(
+        @{ OmitIntervalMinutes = $true }
+        @{ IntervalMinutes = $null }
+        @{ IntervalMinutes = $true }
+        @{ IntervalMinutes = '17' }
+        @{ IntervalMinutes = [double]1.5 }
+        @{ IntervalMinutes = -0.5 }
+        @{ IntervalMinutes = 1440.5 }
         @{ IntervalMinutes = -1 }
         @{ IntervalMinutes = 1441 }
     ) {
+        $testProvider = if ($OmitIntervalMinutes) {
+            New-TestRelaySchedulerProvider 'wkk' -OmitIntervalMinutes
+        }
+        else {
+            New-TestRelaySchedulerProvider 'wkk' -IntervalMinutes $IntervalMinutes
+        }
         {
             New-RelaySchedulerState -Providers @(
-                New-TestRelaySchedulerProvider 'wkk' -IntervalMinutes $IntervalMinutes
+                $testProvider
             )
         } | Should -Throw -ExpectedMessage '*between 0 and 1440*'
     }
