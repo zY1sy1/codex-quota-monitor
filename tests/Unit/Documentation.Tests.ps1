@@ -29,7 +29,20 @@ Describe 'generic relay provider documentation' {
         $example.Providers[0].RequestDefinition.Headers.Authorization | Should -Match '\{\{apiKey\}\}'
         $example.Providers[1].RequestDefinition.Headers.Authorization | Should -Match '\{\{accessToken\}\}'
         $example.Providers[1].RequestDefinition.Headers.'X-User-Id' | Should -Match '\{\{userId\}\}'
+        @($example.Providers.IntervalMinutes | Select-Object -Unique) | Should -BeExactly @(5)
         ($example | ConvertTo-Json -Depth 20 -Compress) | Should -Not -Match 'api-secret|access-secret|real-token'
+    }
+
+    It 'documents independent relay intervals and rejects the former global settings interval' {
+        $readme = Get-Content -Raw (Join-Path $script:RepoRoot 'README.md')
+        $settingsSection = [regex]::Match($readme, '## 设置(?s:.*?)(?=## 中转站额度)').Value
+
+        $readme | Should -Match '每个中转站.*独立.*0[–-]1440.*分钟'
+        $readme | Should -Match '新建.*首次导入.*5.*分钟'
+        $readme | Should -Match '0.*手动.*立即刷新.*手动测试'
+        $readme | Should -Match '修改.*一个中转站.*不会影响.*其他'
+        $settingsSection | Should -Not -Match '自动查询间隔'
+        $readme | Should -Not -Match '设置窗口中的全局自动查询间隔|统一覆盖所有启用的中转站|全局自动查询间隔'
     }
 
     It 'documents the complete CC Switch usage-script import boundary and workflow' {

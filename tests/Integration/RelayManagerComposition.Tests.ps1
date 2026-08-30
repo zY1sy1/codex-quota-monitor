@@ -472,6 +472,12 @@ Describe 'relay manager interaction controller' {
         if ($null -ne $script:Controller) { & $script:Controller.Dispose }
     }
 
+    It 'creates a blank relay draft with a five-minute interval' {
+        & $script:View.TestState.Callbacks.OnAdd
+
+        $script:View.TestState.Draft.IntervalMinutes | Should -Be 5
+    }
+
     It 'duplicates with a new GUID, no trust, and blank encrypted secrets after Save' {
         & $script:View.TestState.Callbacks.OnDuplicate $script:Existing.Id
         $duplicate = $script:View.TestState.Draft

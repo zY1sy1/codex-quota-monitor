@@ -369,7 +369,7 @@ Describe 'relay usage preset registry' {
         @($registry.Presets.ProviderKind | Select-Object -Unique) | Should -BeExactly @('Generic')
         @($registry.Presets.RequestDefinition.Path) | Should -BeExactly @('/v1/usage', '/user/balance', '/api/user/self')
         @($registry.Presets.DefaultTimeoutSeconds | Select-Object -Unique) | Should -BeExactly @(10)
-        @($registry.Presets.DefaultIntervalMinutes | Select-Object -Unique) | Should -BeExactly @(10)
+        @($registry.Presets.DefaultIntervalMinutes | Select-Object -Unique) | Should -BeExactly @(5)
         foreach ($preset in $registry.Presets) {
             $preset.ExtractorScript | Should -Not -BeNullOrEmpty
             $preset.RequestDefinition.Method | Should -BeExactly 'GET'

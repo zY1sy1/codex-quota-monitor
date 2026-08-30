@@ -20,7 +20,7 @@
       },
       "ExtractorScript": "function(response){const data=response.data??response;return {isValid:true,remaining:data.balance,total:data.total??null,used:data.used??null,unit:data.currency??\"USD\",planName:data.planName??\"Current\"};}",
       "TimeoutSeconds": 10,
-      "IntervalMinutes": 10,
+      "IntervalMinutes": 5,
       "TrustedDestination": null,
       "Secrets": {
         "ApiKey": "",
@@ -47,7 +47,7 @@
       },
       "ExtractorScript": "function(response){const data=response.data??response;return (data.plans??[data]).map(function(plan){return {isValid:true,remaining:plan.remaining,unit:plan.unit??\"USD\",planName:plan.name??null,total:plan.total??null,used:plan.used??null};});}",
       "TimeoutSeconds": 10,
-      "IntervalMinutes": 10,
+      "IntervalMinutes": 5,
       "TrustedDestination": null,
       "Secrets": {
         "ApiKey": "",
