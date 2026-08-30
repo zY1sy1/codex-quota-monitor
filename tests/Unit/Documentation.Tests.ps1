@@ -35,7 +35,12 @@ Describe 'generic relay provider documentation' {
 
     It 'documents independent relay intervals and rejects the former global settings interval' {
         $readme = Get-Content -Raw (Join-Path $script:RepoRoot 'README.md')
-        $settingsSection = [regex]::Match($readme, '## 设置(?s:.*?)(?=## 中转站额度)').Value
+        $settingsSectionMatch = [regex]::Match(
+            $readme,
+            '## 设置(?s:.*?)(?=## 中转站额度)'
+        )
+        $settingsSectionMatch.Success | Should -BeTrue
+        $settingsSection = $settingsSectionMatch.Value
 
         $readme | Should -Match '每个中转站.*独立.*0[–-]1440.*分钟'
         $readme | Should -Match '新建.*首次导入.*5.*分钟'
