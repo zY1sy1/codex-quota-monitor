@@ -13,6 +13,9 @@ function Get-MonitorThemePalette {
             TextPrimary = '#FF201F1D'
             TextSecondary = '#FF6F6B67'
             Accent = '#FF4DADB3'
+            AccentSoft = '#244DADB3'
+            AccentPressed = '#3D4DADB3'
+            SelectionSurface = '#D9E4E4DE'
             Track = '#667E8588'
             Separator = '#40716D68'
             Shadow = '#30000000'
@@ -27,6 +30,9 @@ function Get-MonitorThemePalette {
         TextPrimary = '#FFF4F3F1'
         TextSecondary = '#FFAFB8CB'
         Accent = '#FF58C2C7'
+        AccentSoft = '#2458C2C7'
+        AccentPressed = '#3D58C2C7'
+        SelectionSurface = '#D93C4B5F'
         Track = '#664D566A'
         Separator = '#4D707A90'
         Shadow = '#66000000'
@@ -50,6 +56,9 @@ function Set-MonitorWindowTheme {
 
     Add-Type -AssemblyName PresentationFramework
     $palette = Get-MonitorThemePalette -Theme $Theme
+    $Window.Resources['QuotaFocusRingBrush'] = ConvertTo-MonitorThemeBrush $palette.Accent
+    $Window.Resources['QuotaFocusHoverBrush'] = ConvertTo-MonitorThemeBrush $palette.AccentSoft
+    $Window.Resources['QuotaFocusPressedBrush'] = ConvertTo-MonitorThemeBrush $palette.AccentPressed
     $Controls.RootBorder.Background = ConvertTo-MonitorThemeBrush $palette.Surface
     $Controls.RootBorder.BorderBrush = ConvertTo-MonitorThemeBrush $palette.Separator
     $Controls.TitleText.Foreground = ConvertTo-MonitorThemeBrush $palette.TextPrimary

@@ -15,6 +15,74 @@
         SnapsToDevicePixels="True"
         AutomationProperties.Name="Codex 额度悬浮窗">
     <Window.Resources>
+        <SolidColorBrush x:Key="QuotaFocusRingBrush" Color="#FF58C2C7" />
+        <SolidColorBrush x:Key="QuotaFocusHoverBrush" Color="#2458C2C7" />
+        <SolidColorBrush x:Key="QuotaFocusPressedBrush" Color="#3D58C2C7" />
+
+        <Style x:Key="QuotaFocusKeyboardVisual">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Control">
+                        <Ellipse Width="24"
+                                 Height="24"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Stroke="{DynamicResource QuotaFocusRingBrush}"
+                                 StrokeThickness="1"
+                                 Opacity="0.75"
+                                 SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="QuotaFocusButton" TargetType="Button">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource QuotaFocusKeyboardVisual}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Width="28" Height="28" Background="Transparent">
+                            <Border x:Name="QuotaFocusSurface"
+                                    Width="24"
+                                    Height="24"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="12" />
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="False" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource QuotaFocusRingBrush}" />
+                                <Setter TargetName="QuotaFocusSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource QuotaFocusHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource QuotaFocusRingBrush}" />
+                                <Setter TargetName="QuotaFocusSurface"
+                                        Property="Background"
+                                        Value="{DynamicResource QuotaFocusPressedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="FlatIconButton" TargetType="Button">
             <Setter Property="Width" Value="28" />
             <Setter Property="Height" Value="28" />
