@@ -75,8 +75,7 @@ function New-RelaySchedulerState {
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Providers,
         [Parameter(Position = 1)][DateTimeOffset]$Now = [DateTimeOffset]::UtcNow,
-        [ValidateRange(1, 16)][int]$MaximumConcurrency = 2,
-        [ValidateRange(0, 1440)][int]$AutoQueryIntervalMinutes = 10
+        [ValidateRange(1, 16)][int]$MaximumConcurrency = 2
     )
     $nowUtc = $Now.ToUniversalTime()
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -84,9 +83,12 @@ function New-RelaySchedulerState {
     foreach ($provider in @($Providers)) {
         $providerId = [string](Get-RelaySchedulerValue $provider 'Id')
         $enabled = [bool](Get-RelaySchedulerValue $provider 'Enabled')
-        $interval = $AutoQueryIntervalMinutes
+        $interval = [int](Get-RelaySchedulerValue $provider 'IntervalMinutes')
         if ([string]::IsNullOrWhiteSpace($providerId) -or -not $seen.Add($providerId)) {
             throw [ArgumentException]::new('Relay scheduler provider is invalid.')
+        }
+        if ($interval -lt 0 -or $interval -gt 1440) {
+            throw [ArgumentException]::new('Relay scheduler provider interval must be between 0 and 1440 minutes.')
         }
         $nextDueAt = if ($enabled -and $interval -gt 0) {
             $nowUtc
