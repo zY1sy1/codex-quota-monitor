@@ -282,6 +282,56 @@ Describe 'WPF floating window composition' {
         }
     }
 
+    It 'vertically centers relay card text without changing the official card' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        $lineBreak = [string][char]10
+        $official = [pscustomobject][ordered]@{
+            Key = 'official:five-hour'
+            SourceKind = 'Official'
+            Label = '5 小时额度'
+            RemainingText = '74%'
+            SecondaryText = '单位：USD'
+            ProgressValue = 74
+            CountdownText = '04:59:59'
+            ResetTimeText = '重置时间：今天 18:00'
+        }
+        $relay = [pscustomobject][ordered]@{
+            Key = 'relay:wkk:wallet'
+            SourceKind = 'Relay'
+            Label = '账户余额'
+            RemainingText = '¥18.42 / ¥100'
+            SecondaryText = ('单位：CNY' + $lineBreak + '最近查询成功')
+            ProgressValue = $null
+            CountdownText = '—'
+            ResetTimeText = ('更新时间：12:00' + $lineBreak + '下次刷新：12:10')
+        }
+
+        & $View.RenderGroups -OfficialRows @($official) -RelayRows @($relay)
+
+        $View.Controls.OfficialRows.Children.Count | Should -Be 1
+        $View.Controls.RelayRows.Children.Count | Should -Be 1
+        $relayTexts = @(Get-TestDescendant -Root $View.Controls.RelayRows -Type ([Windows.Controls.TextBlock]))
+        foreach ($tag in @('QuotaLabel', 'QuotaRemaining', 'QuotaSecondary', 'QuotaCountdown', 'QuotaResetTime')) {
+            $text = @($relayTexts | Where-Object { [string]$_.Tag -eq $tag })[0]
+            $text | Should -Not -BeNullOrEmpty
+            $text.VerticalAlignment | Should -Be ([Windows.VerticalAlignment]::Center)
+        }
+        $relayLabel = @($relayTexts | Where-Object { [string]$_.Tag -eq 'QuotaLabel' })[0]
+        $relayRemaining = @($relayTexts | Where-Object { [string]$_.Tag -eq 'QuotaRemaining' })[0]
+        $relayReset = @($relayTexts | Where-Object { [string]$_.Tag -eq 'QuotaResetTime' })[0]
+        $relayLabel.TextAlignment | Should -Be ([Windows.TextAlignment]::Left)
+        $relayRemaining.TextAlignment | Should -Be ([Windows.TextAlignment]::Left)
+        $relayReset.TextAlignment | Should -Be ([Windows.TextAlignment]::Right)
+
+        $officialTexts = @(Get-TestDescendant -Root $View.Controls.OfficialRows -Type ([Windows.Controls.TextBlock]))
+        $officialLabel = @($officialTexts | Where-Object { [string]$_.Tag -eq 'QuotaLabel' })[0]
+        $officialRemaining = @($officialTexts | Where-Object { [string]$_.Tag -eq 'QuotaRemaining' })[0]
+        $officialReset = @($officialTexts | Where-Object { [string]$_.Tag -eq 'QuotaResetTime' })[0]
+        $officialLabel.VerticalAlignment | Should -Be ([Windows.VerticalAlignment]::Center)
+        $officialRemaining.VerticalAlignment | Should -Be ([Windows.VerticalAlignment]::Center)
+        $officialReset.VerticalAlignment | Should -Be ([Windows.VerticalAlignment]::Stretch)
+    }
+
     It 'rethemes and relayouts from the existing snapshot without losing rows' {
         $script:View = New-QuotaWindowView -XamlPath $XamlPath
         & $View.RenderGroups `

@@ -93,6 +93,7 @@ function New-WpfQuotaCard {
     )
 
     $key = [string](Get-WpfPresentationField -PresentationRow $PresentationRow -Name 'Key')
+    $isRelay = [string](Get-WpfPresentationField -PresentationRow $PresentationRow -Name 'SourceKind') -eq 'Relay'
     $selected = -not [string]::IsNullOrEmpty($SelectedKey) -and $SelectedKey -eq $key
     $brush = { param([string]$Color) [Windows.Media.BrushConverter]::new().ConvertFromString($Color) }
 
@@ -301,6 +302,12 @@ function New-WpfQuotaCard {
     $timing.Children.Add($resetTime) | Out-Null
     [Windows.Controls.Grid]::SetRow($timing, 3)
     $grid.Children.Add($timing) | Out-Null
+
+    if ($isRelay) {
+        foreach ($text in @($label, $remaining, $secondary, $countdown, $resetTime)) {
+            $text.VerticalAlignment = [Windows.VerticalAlignment]::Center
+        }
+    }
 
     $card.Child = $grid
     return $card
