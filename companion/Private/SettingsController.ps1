@@ -46,11 +46,17 @@ function New-SettingsController {
             -Startup ([bool]$snapshot.Startup)
     }.GetNewClosure()
 
+    $completeSetting = {
+        if ($state.Disposed) { return }
+        & $render
+        & $View.SetStatus '设置已同步' 'Success'
+    }.GetNewClosure()
+
     $failWith = {
         param([string]$Prefix, [Exception]$ErrorRecord)
         if ($state.Disposed) { return }
         & $render
-        & $View.SetStatus ("$Prefix" + [string]$ErrorRecord.Message)
+        & $View.SetStatus ("$Prefix" + [string]$ErrorRecord.Message) 'Error'
     }.GetNewClosure()
 
     $setModeAction = {
@@ -58,6 +64,7 @@ function New-SettingsController {
         if ($state.Disposed) { return }
         try {
             & $SetDisplayMode $Mode
+            & $completeSetting
         }
         catch {
             & $failWith '无法应用显示模式：' $_.Exception
@@ -69,6 +76,7 @@ function New-SettingsController {
         if ($state.Disposed) { return }
         try {
             & $SetTheme $Theme
+            & $completeSetting
         }
         catch {
             & $failWith '无法应用主题：' $_.Exception
@@ -80,6 +88,7 @@ function New-SettingsController {
         if ($state.Disposed) { return }
         try {
             & $SetFullLayout $Layout
+            & $completeSetting
         }
         catch {
             & $failWith '无法应用布局：' $_.Exception
@@ -90,6 +99,7 @@ function New-SettingsController {
         if ($state.Disposed) { return }
         try {
             & $ToggleTopmost
+            & $completeSetting
         }
         catch {
             & $failWith '无法切换置顶：' $_.Exception
@@ -100,6 +110,7 @@ function New-SettingsController {
         if ($state.Disposed) { return }
         try {
             & $ToggleStartup
+            & $completeSetting
         }
         catch {
             & $failWith '无法切换开机启动：' $_.Exception
@@ -110,7 +121,7 @@ function New-SettingsController {
         if ($state.Disposed) { return }
         try {
             & $RequestRefresh
-            & $View.SetStatus '已请求刷新。'
+            & $View.SetStatus '已请求刷新。' 'Success'
         }
         catch {
             & $failWith '无法刷新：' $_.Exception
