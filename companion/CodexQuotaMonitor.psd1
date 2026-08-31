@@ -1,6 +1,6 @@
 @{
     RootModule = 'CodexQuotaMonitor.psm1'
-    ModuleVersion = '1.0.0'
+    ModuleVersion = '1.1.0'
     GUID = '7e095aae-f952-43b8-8d93-e38b6f9703b5'
     Author = 'Local developer'
     CompanyName = 'Local developer'
