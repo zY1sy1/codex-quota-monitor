@@ -304,9 +304,14 @@ function New-RelayManagerView {
 
     $readDraft = {
         if ($state.Disposed) { return $null }
-        $timeout = 0; $interval = 0
+        $timeout = 0; $interval = -1
         $null = [int]::TryParse([string]$state.Controls.TimeoutTextBox.Text, [ref]$timeout)
-        $null = [int]::TryParse([string]$state.Controls.IntervalTextBox.Text, [ref]$interval)
+        if (-not [int]::TryParse(
+            [string]$state.Controls.IntervalTextBox.Text,
+            [ref]$interval
+        )) {
+            $interval = -1
+        }
         $kind = & $getComboValue $state.Controls.ProviderKindComboBox
         $request = $null
         if ($kind -ceq 'Generic') {

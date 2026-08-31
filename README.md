@@ -125,7 +125,7 @@ Base URL、API Key、Access Token 和 User ID 只在管理窗口的密码输入�
 
 所有 provider 都必须使用明确的目标地址信任。请求 Path 必须保持 Base URL 的 origin；信任值规范化为 `scheme://host:port`，不包含路径、查询参数或凭据。HTTPS 可用于远程目标，明文 HTTP 只允许本机回环地址；重定向不会自动跨到未信任 origin。首次测试新目标或修改 origin 后，按 UI 提示确认目标即可。
 
-“测试 provider”（旧界面称“测试脚本”）只执行一次手动验证并显示脱敏错误或归一化结果；“保存并启用”才会写入配置并加入自动调度。每个中转站在管理窗口中独立设置查询间隔，允许范围为 `0–1440` 分钟；新建和首次导入默认 5 分钟，设为 `0` 时该中转站只响应“立即刷新”和手动测试。修改一个中转站的间隔不会影响其他中转站。全局并发上限为 2。单个 extractor 可以返回一个余额对象或多个套餐对象；不同单位只展示，不跨单位求和或比较。
+“测试 provider”（旧界面称“测试脚本”）只执行一次手动验证并显示脱敏错误或归一化结果；“保存并启用”才会写入配置并加入自动调度。每个中转站都在“管理中转站”中独立配置 `0–1440` 分钟的查询间隔；新建和首次导入的中转站（包括 CC Switch）默认每 5 分钟查询。设置为 `0` 时，该中转站仅手动查询，“立即刷新”和手动测试仍可用。修改一个中转站的间隔不会影响其他中转站。全局并发上限为 2。单个 extractor 可以返回一个余额对象或多个套餐对象；不同单位只展示，不跨单位求和或比较。
 
 完整的 schema 2 迁移规则和可复制的 GET/POST 配置示例见 [`docs/relay-provider-migration.md`](docs/relay-provider-migration.md) 和 [`docs/examples/generic-relay-provider.json`](docs/examples/generic-relay-provider.json)。
 

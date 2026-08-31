@@ -16,6 +16,34 @@ function Get-RelaySchedulerValue {
     return $null
 }
 
+function Test-RelaySchedulerInteger {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory)][long]$Minimum,
+        [Parameter(Mandatory)][long]$Maximum
+    )
+    if ($null -eq $Value -or $Value -is [bool] -or $Value.GetType().IsEnum -or
+        [Type]::GetTypeCode($Value.GetType()) -notin @(
+            [TypeCode]::SByte,
+            [TypeCode]::Byte,
+            [TypeCode]::Int16,
+            [TypeCode]::UInt16,
+            [TypeCode]::Int32,
+            [TypeCode]::UInt32,
+            [TypeCode]::Int64,
+            [TypeCode]::UInt64
+        )) {
+        return $false
+    }
+    try {
+        $number = [decimal]$Value
+        return $number -ge $Minimum -and $number -le $Maximum
+    }
+    catch {
+        return $false
+    }
+}
+
 function New-RelaySchedulerProviderEntry {
     param(
         [Parameter(Mandatory)][string]$ProviderId,
@@ -83,13 +111,14 @@ function New-RelaySchedulerState {
     foreach ($provider in @($Providers)) {
         $providerId = [string](Get-RelaySchedulerValue $provider 'Id')
         $enabled = [bool](Get-RelaySchedulerValue $provider 'Enabled')
-        $interval = [int](Get-RelaySchedulerValue $provider 'IntervalMinutes')
+        $rawInterval = Get-RelaySchedulerValue $provider 'IntervalMinutes'
         if ([string]::IsNullOrWhiteSpace($providerId) -or -not $seen.Add($providerId)) {
             throw [ArgumentException]::new('Relay scheduler provider is invalid.')
         }
-        if ($interval -lt 0 -or $interval -gt 1440) {
-            throw [ArgumentOutOfRangeException]::new('IntervalMinutes', 'Relay provider interval must be between 0 and 1440 minutes.')
+        if (-not (Test-RelaySchedulerInteger -Value $rawInterval -Minimum 0 -Maximum 1440)) {
+            throw [ArgumentException]::new('Relay scheduler provider interval must be between 0 and 1440 minutes.')
         }
+        $interval = [int]$rawInterval
         $nextDueAt = if ($enabled -and $interval -gt 0) {
             $nowUtc
         }
