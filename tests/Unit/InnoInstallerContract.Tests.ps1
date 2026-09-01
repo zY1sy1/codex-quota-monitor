@@ -13,6 +13,7 @@ Describe 'Inno Setup installer contract' {
         $source | Should -Match 'PrivilegesRequiredOverridesAllowed=\s*(?:\r?\n)'
         $source | Should -Not -Match 'PrivilegesRequiredOverridesAllowed=.*(?:commandline|dialog)'
         $source | Should -Match 'ArchitecturesAllowed=x64compatible'
+        $source | Should -Match 'MinVersion=10\.0\.190[0-9]{2}'
         $source | Should -Match 'VersionInfoProductVersion=\{#NumericVersion\}'
         $source | Should -Match 'runtime\\pwsh\\pwsh\.exe'
         $source | Should -Match 'payload\\\*'

@@ -6,7 +6,7 @@ Windows 安装器把 Codex Quota Monitor 打包为：
 CodexQuotaMonitor-Setup-<version>-x64.exe
 ```
 
-目标环境为 Windows 11 x64。安装范围是当前用户，默认目录为 `%LOCALAPPDATA%\Programs\CodexQuotaMonitor`，不需要管理员权限，也不会触发 UAC。安装包内置私有 PowerShell 7.6.4 x64；它只由本应用的快捷方式调用，不写入 `PATH`，不注册为系统 Shell，也不修改用户已有的 PowerShell 或执行策略。
+目标环境为 Windows 10（build 19041 或更高）与 Windows 11 x64。安装范围是当前用户，默认目录为 `%LOCALAPPDATA%\Programs\CodexQuotaMonitor`，不需要管理员权限，也不会触发 UAC。安装包内置私有 PowerShell 7.6.4 x64；它只由本应用的快捷方式调用，不写入 `PATH`，不注册为系统 Shell，也不修改用户已有的 PowerShell 或执行策略。
 
 ## 接收者安装
 

@@ -97,7 +97,7 @@ Describe 'Windows installer documentation' {
         ) -join "`n"
         foreach ($pattern in @(
                 'CodexQuotaMonitor-Setup-<version>-x64\.exe',
-                'Windows 11 x64',
+                'Windows 10.*x64|Windows 11 x64',
                 'PowerShell 7\.6\.4',
                 '不需要管理员|无需管理员',
                 'SmartScreen',

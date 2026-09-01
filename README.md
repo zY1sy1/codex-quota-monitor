@@ -11,7 +11,7 @@ Codex Quota Monitor 是一个面向 Windows 当前用户的个人 Codex 插件�
 
 ## 系统要求
 
-- Windows 桌面环境；标准安装包以 Windows 11 x64 为目标；
+- Windows 桌面环境；标准安装包以 Windows 10（build 19041 或更高）与 Windows 11 x64 为目标；
 - 使用仓库脚本安装时需要 PowerShell 7.4 或更高版本；标准安装包已内置私有 PowerShell 7.6.4；
 - 当前 Windows 用户可以启动已安装的 Codex。
 
