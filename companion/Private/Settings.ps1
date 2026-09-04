@@ -472,17 +472,6 @@ function ConvertTo-CanonicalMonitorSettings {
     }
 }
 
-function Test-MonitorSettingsDocument {
-    [CmdletBinding()]
-    param(
-        [Parameter(Position = 0)]
-        [AllowNull()]
-        [object]$Settings
-    )
-
-    return $null -ne (ConvertTo-CanonicalMonitorSettings -Settings $Settings)
-}
-
 function Get-MonitorSettingsMutexName {
     [CmdletBinding()]
     param(
