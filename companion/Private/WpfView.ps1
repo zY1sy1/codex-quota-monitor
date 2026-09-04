@@ -309,6 +309,17 @@ function New-WpfQuotaCard {
         }
     }
 
+    # Capture the live element references so an in-place update can re-color
+    # and re-text the card without rebuilding the whole visual tree each tick.
+    $card.Resources['Label'] = $label
+    $card.Resources['Remaining'] = $remaining
+    $card.Resources['Progress'] = $progressBar
+    $card.Resources['Secondary'] = $secondary
+    $card.Resources['Countdown'] = $countdown
+    $card.Resources['ResetTime'] = $resetTime
+    $card.Resources['FocusRing'] = $focusRing
+    $card.Resources['FocusDot'] = $focusDot
+
     $card.Child = $grid
     return $card
 }
@@ -442,10 +453,12 @@ function New-QuotaWindowView {
         DragAction = $DragAction
         CreateBrush = ${function:ConvertTo-WpfBrush}
         CreateQuotaCard = ${function:New-WpfQuotaCard}
+        GetPresentationField = ${function:Get-WpfPresentationField}
+        ConvertProgress = ${function:ConvertTo-WpfProgressValue}
+        QuotaDisplayText = ${function:ConvertTo-QuotaDisplayValueText}
         FocusButtonStyle = $focusButtonStyle
         GetPlacementModel = ${function:Get-WpfQuotaWindowPlacement}
         ApplyTheme = ${function:Set-MonitorWindowTheme}
-        FocusHandlers = [Collections.Generic.List[object]]::new()
         Delegates = [ordered]@{}
     }
 
@@ -551,23 +564,148 @@ function New-QuotaWindowView {
     $window.Add_Closing($state.Delegates.Closing)
     & $updateLayoutVisuals
 
-    $removeFocusHandlers = {
-        foreach ($registration in @($state.FocusHandlers)) {
-            $registration.Button.Remove_Click($registration.Handler)
-            $registration.Button.CommandParameter = $null
-        }
-        $state.FocusHandlers.Clear()
-    }.GetNewClosure()
-
     $focusRequest = {
         param([string]$Key)
+        if ($state.Disposed) { return }
         & $invokeCallback 'OnFocusRequested' @($Key)
     }.GetNewClosure()
 
-    $renderPanel = {
-        param([Windows.Controls.StackPanel]$Panel, [object[]]$Rows)
-        $Panel.Children.Clear()
+    $detachCardHandler = {
+        param($Card)
+        if ($null -eq $Card) { return }
+        $button = $Card.Resources['FocusButton']
+        $handler = $Card.Resources['FocusHandler']
+        if ($null -ne $button -and $null -ne $handler) {
+            try { $button.Remove_Click($handler) } catch { }
+            $button.CommandParameter = $null
+        }
+    }.GetNewClosure()
+
+    $updateCard = {
+        param(
+            [Parameter(Mandatory)][object]$Card,
+            [Parameter(Mandatory)][object]$Row
+        )
+        $key = [string](& $state.GetPresentationField $Row -Name 'Key')
+        $selected = -not [string]::IsNullOrEmpty($state.FocusKey) -and $state.FocusKey -eq $key
+
+        $surface = $(if ($selected) { $state.Palette.SelectionSurface } else { $state.Palette.SurfaceStrong })
+        if ([string]$Card.Background.ToString() -cne $surface) {
+            $Card.Background = & $state.CreateBrush $surface
+        }
+        $edge = $(if ($selected) { $state.Palette.Accent } else { $state.Palette.Separator })
+        if ([string]$Card.BorderBrush.ToString() -cne $edge) {
+            $Card.BorderBrush = & $state.CreateBrush $edge
+        }
+
+        $label = $Card.Resources['Label']
+        $remaining = $Card.Resources['Remaining']
+        $progress = $Card.Resources['Progress']
+        $secondary = $Card.Resources['Secondary']
+        $countdown = $Card.Resources['Countdown']
+        $resetTime = $Card.Resources['ResetTime']
+        $focusButton = $Card.Resources['FocusButton']
+        $focusDot = $Card.Resources['FocusDot']
+
+        $labelText = [string](& $state.GetPresentationField $Row -Name 'Label')
+        if ([string]$label.Text -cne $labelText) {
+            $label.Text = $labelText
+            [Windows.Automation.AutomationProperties]::SetName($label, "额度名称：$labelText")
+        }
+
+        $remainingValue = & $state.GetPresentationField $Row -Name 'ValueText'
+        if ($null -eq $remainingValue) {
+            $remainingValue = & $state.GetPresentationField $Row -Name 'RemainingText'
+        }
+        $remainingDisplay = & $state.QuotaDisplayText ([string]$remainingValue)
+        if ([string]$remaining.Text -cne $remainingDisplay) {
+            $remaining.Text = $remainingDisplay
+            [Windows.Automation.AutomationProperties]::SetName($remaining, "剩余额度：$remainingDisplay")
+        }
+
+        $progressValue = & $state.ConvertProgress (& $state.GetPresentationField $Row -Name 'ProgressValue')
+        if ($null -eq $progressValue) {
+            if ($progress.Visibility -ne [Windows.Visibility]::Collapsed) {
+                $progress.Visibility = [Windows.Visibility]::Collapsed
+            }
+        }
+        else {
+            if ($progress.Visibility -ne [Windows.Visibility]::Visible) {
+                $progress.Visibility = [Windows.Visibility]::Visible
+            }
+            if ([double]$progress.Value -ne $progressValue) {
+                $progress.Value = $progressValue
+            }
+        }
+
+        $secondaryText = [string](& $state.GetPresentationField $Row -Name 'SecondaryText')
+        if ([string]$secondary.Text -cne $secondaryText) {
+            $secondary.Text = $secondaryText
+            [Windows.Automation.AutomationProperties]::SetName($secondary, $secondaryText)
+        }
+        $secondaryTarget = if ([string]::IsNullOrWhiteSpace($secondaryText)) {
+            [Windows.Visibility]::Collapsed
+        }
+        else {
+            [Windows.Visibility]::Visible
+        }
+        if ($secondary.Visibility -ne $secondaryTarget) {
+            $secondary.Visibility = $secondaryTarget
+        }
+
+        $countdownValue = & $state.GetPresentationField $Row -Name 'Countdown'
+        if ($null -eq $countdownValue) {
+            $countdownValue = & $state.GetPresentationField $Row -Name 'CountdownText'
+        }
+        $countdownDisplay = [string]$countdownValue
+        if ([string]$countdown.Text -cne $countdownDisplay) {
+            $countdown.Text = $countdownDisplay
+            [Windows.Automation.AutomationProperties]::SetName($countdown, "重置倒计时：$countdownDisplay")
+        }
+
+        $resetValue = & $state.GetPresentationField $Row -Name 'ResetTime'
+        if ($null -eq $resetValue) {
+            $resetValue = & $state.GetPresentationField $Row -Name 'ResetTimeText'
+        }
+        $resetDisplay = [string]$resetValue
+        if ([string]$resetTime.Text -cne $resetDisplay) {
+            $resetTime.Text = $resetDisplay
+            [Windows.Automation.AutomationProperties]::SetName($resetTime, $resetDisplay)
+        }
+
+        $focusForeground = $(if ($selected) { $state.Palette.Accent } else { $state.Palette.TextSecondary })
+        if ([string]$focusButton.Foreground.ToString() -cne $focusForeground) {
+            $focusButton.Foreground = & $state.CreateBrush $focusForeground
+        }
+        $focusBackground = $(if ($selected) { & $state.CreateBrush $state.Palette.AccentSoft } else { [Windows.Media.Brushes]::Transparent })
+        if ([string]$focusButton.Background.ToString() -cne [string]$focusBackground.ToString()) {
+            $focusButton.Background = $focusBackground
+        }
+        $focusDotTarget = if ($selected) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+        if ($focusDot.Visibility -ne $focusDotTarget) {
+            $focusDot.Visibility = $focusDotTarget
+        }
+        $focusTooltip = if ($selected) { '取消迷你模式固定显示' } else { '设为迷你模式显示项' }
+        if ([string]$focusButton.ToolTip -cne $focusTooltip) {
+            $focusButton.ToolTip = $focusTooltip
+            [Windows.Automation.AutomationProperties]::SetName($focusButton, $focusTooltip)
+        }
+    }.GetNewClosure()
+
+    $updatePanel = {
+        param(
+            [Parameter(Mandatory)][Windows.Controls.StackPanel]$Panel,
+            [Parameter()][AllowEmptyCollection()][object[]]$Rows = @()
+        )
+
         if ($Rows.Count -eq 0) {
+            if ($Panel.Children.Count -eq 1 -and $Panel.Children[0].Tag -eq 'EmptyQuotaState') {
+                return
+            }
+            for ($index = $Panel.Children.Count - 1; $index -ge 0; $index--) {
+                & $detachCardHandler $Panel.Children[$index]
+            }
+            $Panel.Children.Clear()
             $empty = [Windows.Controls.TextBlock]::new()
             $empty.Text = '当前账户未返回额度窗口'
             $empty.Foreground = & $state.CreateBrush $state.Palette.TextSecondary
@@ -581,25 +719,90 @@ function New-QuotaWindowView {
             return
         }
 
+        # Fast path: the rows are already laid out in the same order. The
+        # steady-state 1 Hz refresh lands here and only re-texts the existing
+        # cards, so the visual tree is reused instead of rebuilt and no
+        # reconcile allocation churns per tick.
+        if ($Panel.Children.Count -eq $Rows.Count) {
+            $matches = $true
+            for ($index = 0; $index -lt $Rows.Count; $index++) {
+                $key = [string](& $state.GetPresentationField $Rows[$index] -Name 'Key')
+                if ([string]$Panel.Children[$index].Tag -cne $key) {
+                    $matches = $false
+                    break
+                }
+            }
+            if ($matches) {
+                for ($index = 0; $index -lt $Rows.Count; $index++) {
+                    & $updateCard -Card $Panel.Children[$index] -Row $Rows[$index]
+                }
+                return
+            }
+        }
+
+        # Slow path: rows were added, removed, or reordered. Reconcile by key.
+        $desiredKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($row in $Rows) {
-            $card = & $state.CreateQuotaCard -PresentationRow $row -Palette $state.Palette `
-                -FocusButtonStyle $state.FocusButtonStyle `
-                -OnFocusRequested $focusRequest -SelectedKey $state.FocusKey
-            $Panel.Children.Add($card) | Out-Null
-            $state.FocusHandlers.Add([pscustomobject]@{
-                Button = $card.Resources['FocusButton']
-                Handler = $card.Resources['FocusHandler']
-            })
+            $null = $desiredKeys.Add([string](& $state.GetPresentationField $row -Name 'Key'))
+        }
+
+        $existing = [ordered]@{}
+        for ($index = $Panel.Children.Count - 1; $index -ge 0; $index--) {
+            $child = $Panel.Children[$index]
+            $tag = [string]$child.Tag
+            if ([string]::IsNullOrEmpty($tag) -or $tag -eq 'EmptyQuotaState') {
+                & $detachCardHandler $child
+                $Panel.Children.RemoveAt($index)
+                continue
+            }
+            if (-not $desiredKeys.Contains($tag)) {
+                & $detachCardHandler $child
+                $Panel.Children.RemoveAt($index)
+                continue
+            }
+            $existing[$tag] = $child
+        }
+
+        $insertIndex = 0
+        foreach ($row in $Rows) {
+            $key = [string](& $state.GetPresentationField $row -Name 'Key')
+            $card = $existing[$key]
+            if ($null -eq $card) {
+                $card = & $state.CreateQuotaCard -PresentationRow $row -Palette $state.Palette `
+                    -FocusButtonStyle $state.FocusButtonStyle `
+                    -OnFocusRequested $focusRequest -SelectedKey $state.FocusKey
+                $Panel.Children.Insert($insertIndex, $card)
+            }
+            else {
+                $currentIndex = $Panel.Children.IndexOf($card)
+                if ($currentIndex -ne $insertIndex) {
+                    $Panel.Children.RemoveAt($currentIndex)
+                    $Panel.Children.Insert($insertIndex, $card)
+                }
+                & $updateCard -Card $card -Row $row
+            }
+            $insertIndex++
+        }
+    }.GetNewClosure()
+
+    $removeFocusHandlers = {
+        foreach ($panel in @(
+            $state.Controls.OfficialRows, $state.Controls.RelayRows,
+            $state.Controls.OfficialTabRows, $state.Controls.RelayTabRows
+        )) {
+            if ($null -eq $panel) { continue }
+            foreach ($child in $panel.Children) {
+                & $detachCardHandler $child
+            }
         }
     }.GetNewClosure()
 
     $renderSnapshot = {
         if ($state.Disposed) { return }
-        & $removeFocusHandlers
-        & $renderPanel $state.Controls.OfficialRows $state.OfficialRows
-        & $renderPanel $state.Controls.RelayRows $state.RelayRows
-        & $renderPanel $state.Controls.OfficialTabRows $state.OfficialRows
-        & $renderPanel $state.Controls.RelayTabRows $state.RelayRows
+        & $updatePanel $state.Controls.OfficialRows $state.OfficialRows
+        & $updatePanel $state.Controls.RelayRows $state.RelayRows
+        & $updatePanel $state.Controls.OfficialTabRows $state.OfficialRows
+        & $updatePanel $state.Controls.RelayTabRows $state.RelayRows
         $state.Controls.RootBorder.InvalidateMeasure()
     }.GetNewClosure()
 

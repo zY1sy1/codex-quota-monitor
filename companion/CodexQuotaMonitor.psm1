@@ -576,7 +576,6 @@ function Invoke-CodexQuotaMonitorRuntime {
             [bool]$ManualRefresh = $false
         )
         if ($runtime.RelayProviders.Count -eq 0 -or $null -eq $runtime.RelayScheduler) {
-            & $refreshCombinedPresentation $Now
             return
         }
         if ($ManualRefresh) {
@@ -779,11 +778,16 @@ function Invoke-CodexQuotaMonitorRuntime {
                 break
             }
         }
-        & $refreshCombinedPresentation $Now
     }.GetNewClosure()
 
     $refreshUi = {
         param([DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
+
+        # Recompute the combined presentation exactly once per UI tick (1 Hz).
+        # The 100 ms relay tick pulls data and updates state, but the rows can
+        # only be consumed at the UI refresh cadence below, so recomputing here
+        # keeps the reset countdown fresh without the 10x idle recompute churn.
+        & $refreshCombinedPresentation $Now
 
         if ($Headless -or $null -eq $runtime.DisplayController -or $null -eq $runtime.TrayView) {
             return
