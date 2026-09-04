@@ -60,6 +60,42 @@ function Invoke-MonitorDestroyIconNative {
     return [CodexQuotaMonitor.NativeIconMethodsV1]::DestroyIcon($Handle)
 }
 
+function Get-MonitorColorLightened {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [Drawing.Color]$Color,
+
+        [ValidateRange(0, 1)]
+        [double]$Amount = 0.55
+    )
+
+    [Drawing.Color]::FromArgb(
+        $Color.A,
+        [int][Math]::Round($Color.R + (255 - $Color.R) * $Amount),
+        [int][Math]::Round($Color.G + (255 - $Color.G) * $Amount),
+        [int][Math]::Round($Color.B + (255 - $Color.B) * $Amount)
+    )
+}
+
+function Get-MonitorColorDarkened {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [Drawing.Color]$Color,
+
+        [ValidateRange(0, 1)]
+        [double]$Amount = 0.45
+    )
+
+    [Drawing.Color]::FromArgb(
+        $Color.A,
+        [int][Math]::Round($Color.R * (1 - $Amount)),
+        [int][Math]::Round($Color.G * (1 - $Amount)),
+        [int][Math]::Round($Color.B * (1 - $Amount))
+    )
+}
+
 function New-MonitorTrayIconResource {
     [CmdletBinding()]
     param(
@@ -69,9 +105,11 @@ function New-MonitorTrayIconResource {
 
     $bitmap = $null
     $graphics = $null
-    $backgroundBrush = $null
-    $accentBrush = $null
-    $outlinePen = $null
+    $discBrush = $null
+    $ringPen = $null
+    $orbPath = $null
+    $orbBrush = $null
+    $specularBrush = $null
     $icon = $null
     $handle = [IntPtr]::Zero
 
@@ -85,13 +123,36 @@ function New-MonitorTrayIconResource {
         $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $graphics.Clear([Drawing.Color]::Transparent)
 
-        $backgroundBrush = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 15, 23, 42))
-        $accentBrush = [Drawing.SolidBrush]::new($AccentColor)
-        $outlinePen = [Drawing.Pen]::new([Drawing.Color]::FromArgb(230, 255, 255, 255), 1.25)
+        # Light-from-top dome shading over the dark disc, white rim keeps the
+        # silhouette readable on both light and dark taskbars.
+        $discTop = [Drawing.Color]::FromArgb(255, 51, 65, 85)
+        $discBottom = [Drawing.Color]::FromArgb(255, 15, 23, 42)
+        $discBrush = [Drawing.Drawing2D.LinearGradientBrush]::new(
+            [Drawing.RectangleF]::new(2, 2, 28, 28),
+            $discTop,
+            $discBottom,
+            [Drawing.Drawing2D.LinearGradientMode]::Vertical
+        )
+        $graphics.FillEllipse($discBrush, 2, 2, 28, 28)
 
-        $graphics.FillEllipse($backgroundBrush, 2, 2, 28, 28)
-        $graphics.DrawEllipse($outlinePen, 2.5, 2.5, 27, 27)
-        $graphics.FillEllipse($accentBrush, 8, 8, 16, 16)
+        $ringPen = [Drawing.Pen]::new([Drawing.Color]::FromArgb(235, 248, 250, 252), 1.5)
+        $graphics.DrawEllipse($ringPen, 2.25, 2.25, 27.5, 27.5)
+
+        # Glossy severity orb: radial gradient with the light source up and left.
+        $orbPath = [Drawing.Drawing2D.GraphicsPath]::new()
+        $orbPath.AddEllipse(8.0, 8.0, 16.0, 16.0)
+        $orbBrush = [Drawing.Drawing2D.PathGradientBrush]::new($orbPath)
+        $orbBrush.CenterPoint = [Drawing.PointF]::new(11.5, 11.0)
+        $orbBrush.CenterColor = Get-MonitorColorLightened -Color $AccentColor
+        $orbBrush.SurroundColors = [Drawing.Color[]]@(
+            (Get-MonitorColorDarkened -Color $AccentColor)
+        )
+        $graphics.FillPath($orbBrush, $orbPath)
+
+        $specularBrush = [Drawing.SolidBrush]::new(
+            [Drawing.Color]::FromArgb(170, 255, 255, 255)
+        )
+        $graphics.FillEllipse($specularBrush, 10.5, 9.0, 4.6, 2.9)
 
         $handle = $bitmap.GetHicon()
         if ($handle -eq [IntPtr]::Zero) {
@@ -118,14 +179,20 @@ function New-MonitorTrayIconResource {
         throw
     }
     finally {
-        if ($null -ne $outlinePen) {
-            $outlinePen.Dispose()
+        if ($null -ne $specularBrush) {
+            $specularBrush.Dispose()
         }
-        if ($null -ne $accentBrush) {
-            $accentBrush.Dispose()
+        if ($null -ne $orbBrush) {
+            $orbBrush.Dispose()
         }
-        if ($null -ne $backgroundBrush) {
-            $backgroundBrush.Dispose()
+        if ($null -ne $orbPath) {
+            $orbPath.Dispose()
+        }
+        if ($null -ne $ringPen) {
+            $ringPen.Dispose()
+        }
+        if ($null -ne $discBrush) {
+            $discBrush.Dispose()
         }
         if ($null -ne $graphics) {
             $graphics.Dispose()
