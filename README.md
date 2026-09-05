@@ -31,7 +31,7 @@ pwsh -NoProfile -File .\scripts\Install-CodexQuotaMonitor.ps1
 
 ### 分享给其他 Windows 用户
 
-把 `CodexQuotaMonitor-Setup-<version>-x64.exe` 发给对方即可。接收者双击安装，选择桌面快捷方式、开机启动和安装后启动选项；整个过程无需命令行、无需管理员权限，也不要求对方预先安装 PowerShell。安装包自带独立的 PowerShell 7.6.4 x64，不会修改系统 PowerShell、`PATH` 或执行策略。
+把 `CodexQuotaMonitor-Setup-<version>-x64.exe` 发给对方即可。接收者双击安装，会**自动创建桌面快捷方式**，并可按需选择开机启动和安装后启动选项；整个过程无需命令行、无需管理员权限，也不要求对方预先安装 PowerShell。安装包自带独立的 PowerShell 7.6.4 x64，不会修改系统 PowerShell、`PATH` 或执行策略。每次运行更新版本的安装包都会重新生成并刷新桌面快捷方式（目标与图标随版本更新）。
 
 Codex 本身仍是外部前置条件：接收者需要自行安装 Codex，并使用自己的账户登录。安装包不包含构建电脑上的账号、Token、中转站凭据、设置、缓存或日志。未安装或未登录 Codex 不会阻止程序文件安装，但额度状态会提示相应原因。
 

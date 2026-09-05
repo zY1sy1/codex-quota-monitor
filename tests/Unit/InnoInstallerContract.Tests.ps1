@@ -33,7 +33,8 @@ Describe 'Inno Setup installer contract' {
         $source | Should -Match 'WizardIsTaskSelected'
         $source | Should -Not -Match '(?<!Wizard)IsTaskSelected'
         $source | Should -Match '\{sys\}\\wscript\.exe'
-        $source | Should -Match 'desktopicon'
+        $source | Should -Match '\{autodesktop\}\\Codex 额度监控'
+        $source | Should -Not -Match 'Tasks:\s*desktopicon'
         $source | Should -Match '\[UninstallDelete\]'
         $source | Should -Match 'Type:\s*filesandordirs;\s*Name:\s*"\{app\}\\app"'
     }

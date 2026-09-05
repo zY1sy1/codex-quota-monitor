@@ -48,7 +48,6 @@ ChangesAssociations=no
 ChangesEnvironment=no
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: checkedonce
 Name: "startup"; Description: "Start Codex Quota Monitor when I sign in"; GroupDescription: "Startup:"; Flags: checkedonce
 Name: "launchafterinstall"; Description: "Launch Codex Quota Monitor after installation"; GroupDescription: "After installation:"; Flags: checkedonce
 
@@ -62,9 +61,12 @@ Source: "{#SourceRoot}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignorevers
 Source: "{#SourceRoot}\installer-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+; Desktop shortcut is created unconditionally (no task) so Inno recreates and
+; refreshes it on every install and upgrade; a task gated by `checkedonce` is
+; treated as unchecked on upgrade and would no longer refresh the shortcut.
 Name: "{group}\Codex 额度监控"; Filename: "{sys}\wscript.exe"; Parameters: "//B //NoLogo ""{app}\app\Start-CodexQuotaMonitor.vbs"" ""{app}\runtime\pwsh\pwsh.exe"" ""{app}\app\Start-CodexQuotaMonitor.ps1"""; WorkingDir: "{app}\app"; IconFilename: "{app}\assets\CodexQuotaMonitor.ico"
 Name: "{group}\卸载 Codex 额度监控"; Filename: "{uninstallexe}"; IconFilename: "{app}\assets\CodexQuotaMonitor.ico"
-Name: "{autodesktop}\Codex 额度监控"; Filename: "{sys}\wscript.exe"; Parameters: "//B //NoLogo ""{app}\app\Start-CodexQuotaMonitor.vbs"" ""{app}\runtime\pwsh\pwsh.exe"" ""{app}\app\Start-CodexQuotaMonitor.ps1"""; WorkingDir: "{app}\app"; IconFilename: "{app}\assets\CodexQuotaMonitor.ico"; Tasks: desktopicon
+Name: "{autodesktop}\Codex 额度监控"; Filename: "{sys}\wscript.exe"; Parameters: "//B //NoLogo ""{app}\app\Start-CodexQuotaMonitor.vbs"" ""{app}\runtime\pwsh\pwsh.exe"" ""{app}\app\Start-CodexQuotaMonitor.ps1"""; WorkingDir: "{app}\app"; IconFilename: "{app}\assets\CodexQuotaMonitor.ico"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\app"
