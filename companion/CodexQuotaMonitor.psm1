@@ -32,6 +32,9 @@ $privateFiles = @(
     'InteractionController.ps1'
     'SettingsView.ps1'
     'SettingsController.ps1'
+    'MonitorHealth.ps1'
+    'DeployActions.ps1'
+    'RuntimeControl.ps1'
 )
 
 foreach ($privateFile in $privateFiles) {
@@ -41,33 +44,6 @@ foreach ($privateFile in $privateFiles) {
 $installationPath = Join-Path $PSScriptRoot 'Private\Installation.ps1'
 if (Test-Path -LiteralPath $installationPath -PathType Leaf) {
     . $installationPath
-}
-
-function Write-MonitorRuntimeHealthFile {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path,
-
-        [Parameter(Mandatory)]
-        [Collections.IDictionary]$Health
-    )
-
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    $directory = Split-Path -Parent $fullPath
-    [IO.Directory]::CreateDirectory($directory) | Out-Null
-    $temporaryPath = "$fullPath.$PID.$([guid]::NewGuid().ToString('N')).tmp"
-    $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
-    try {
-        $json = ($Health | ConvertTo-Json -Depth 8) + [Environment]::NewLine
-        [IO.File]::WriteAllText($temporaryPath, $json, $utf8WithoutBom)
-        [IO.File]::Move($temporaryPath, $fullPath, $true)
-    }
-    finally {
-        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-            [IO.File]::Delete($temporaryPath)
-        }
-    }
 }
 
 function Invoke-CodexQuotaMonitorRuntime {
@@ -151,6 +127,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         StartRelayClient = ${function:Start-RelayScriptClient}
         StopRelayClient = ${function:Stop-RelayScriptClient}
         QueryRelay = ${function:Invoke-RelayScriptQuery}
+        StartRelayQuery = ${function:Start-RelayScriptQuery}
+        ReceiveRelayResponse = ${function:Receive-RelayClientResponse}
+        UpdateRelayStderr = ${function:Update-RelayClientStderr}
         NewRelayState = ${function:New-RelayProviderState}
         StartRelayAttempt = ${function:Start-RelayProviderAttempt}
         CompleteRelaySuccess = ${function:Complete-RelayProviderSuccess}
@@ -243,6 +222,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         RelayManualRefreshPending = [Collections.Generic.HashSet[string]]::new(
             [StringComparer]::OrdinalIgnoreCase
         )
+        RelayBatch = $null
+        RelayPendingQuery = $null
         RelayRows = @()
         CombinedRows = @()
         WindowView = $null
@@ -390,6 +371,8 @@ function Invoke-CodexQuotaMonitorRuntime {
     }.GetNewClosure()
 
     $stopRelayClient = {
+        $runtime.RelayPendingQuery = $null
+        $runtime.RelayBatch = $null
         if ($null -ne $runtime.RelayClient) {
             $stopFunction = $runtime.Functions.StopRelayClient
             try {
@@ -570,6 +553,152 @@ function Invoke-CodexQuotaMonitorRuntime {
             -OfficialRows $officialRows -RelayRows $runtime.RelayRows)
     }.GetNewClosure()
 
+    $applyRelayOutcome = {
+        param(
+            [Parameter(Mandatory)][string]$ProviderId,
+            [Parameter(Mandatory)][object]$Response,
+            [Parameter(Mandatory)][DateTimeOffset]$Now,
+            [Parameter(Mandatory)][bool]$Manual,
+            [Parameter(Mandatory)][int]$UnexecutedFrom
+        )
+        $schedulerCompleteFunction = $runtime.Functions.CompleteRelayScheduler
+        if ($null -ne $Response -and [bool]$Response.Ok) {
+            $successFunction = $runtime.Functions.CompleteRelaySuccess
+            $nextState = & $successFunction -State $runtime.RelayStates[$ProviderId] `
+                -Results ([object[]]@($Response.Results)) -Now $Now
+            $runtime.RelayStates[$ProviderId] = $nextState
+            if ($nextState.Status -eq 'Live') {
+                $runtime.RelayScheduler = & $schedulerCompleteFunction `
+                    -State $runtime.RelayScheduler -ProviderId $ProviderId `
+                    -Outcome Success -Now $Now
+                try { & $writeRelayLastGoodCache } catch {}
+            }
+            else {
+                $runtime.RelayScheduler = & $schedulerCompleteFunction `
+                    -State $runtime.RelayScheduler -ProviderId $ProviderId `
+                    -Outcome Failure -Category 'Authentication' -Now $Now
+            }
+            return
+        }
+
+        if ($null -eq $Response -or $null -eq $Response.Error) {
+            $Response = [pscustomobject]@{
+                Ok = $false
+                Error = [pscustomobject]@{
+                    Category = 'SidecarLifecycle'
+                    Message = '转发器没有返回结果。'
+                    HttpStatus = $null
+                    RetryAfterSeconds = $null
+                }
+            }
+        }
+        $category = [string]$Response.Error.Category
+        if ([string]::IsNullOrWhiteSpace($category)) {
+            $category = 'SidecarLifecycle'
+        }
+        $httpStatus = $Response.Error.HttpStatus
+        $retryAfter = $Response.Error.RetryAfterSeconds
+        $policyFunction = $runtime.Functions.RelayFailurePolicy
+        $policy = & $policyFunction -Category $category -HttpStatus $httpStatus
+        $stateCategory = if ($category -eq 'HttpStatus' -and [int]$httpStatus -eq 404) {
+            'EndpointNotFound'
+        }
+        elseif ($category -eq 'HttpStatus' -and [int]$httpStatus -eq 429) {
+            'RateLimit'
+        }
+        elseif ($policy -eq 'Authentication') {
+            'Authentication'
+        }
+        elseif ($policy -eq 'TrustRequired') {
+            'DestinationTrustRequired'
+        }
+        else {
+            $category
+        }
+        $failureFunction = $runtime.Functions.CompleteRelayFailure
+        $runtime.RelayStates[$ProviderId] = & $failureFunction `
+            -State $runtime.RelayStates[$ProviderId] -Category $stateCategory `
+            -Now $Now -RetryAfterSeconds $retryAfter
+        $runtime.RelayScheduler = & $schedulerCompleteFunction `
+            -State $runtime.RelayScheduler -ProviderId $ProviderId `
+            -Outcome Failure -Category $category -HttpStatus $httpStatus `
+            -RetryAfterSeconds $retryAfter -Now $Now
+
+        $clientUnavailable = $category -eq 'SidecarLifecycle'
+        try {
+            $clientUnavailable = $clientUnavailable -or [bool]$runtime.RelayClient.Disposed -or
+                [bool]$runtime.RelayClient.Process.HasExited
+        }
+        catch { $clientUnavailable = $true }
+        if ($clientUnavailable) {
+            $batch = $runtime.RelayBatch
+            $remainingCount = if ($null -ne $batch) {
+                [Math]::Max(0, [int]$batch.Actions.Count - $UnexecutedFrom)
+            }
+            else { 0 }
+            if (-not $Manual -and $remainingCount -gt 0) {
+                $unexecuted = [Collections.Generic.HashSet[string]]::new(
+                    [StringComparer]::OrdinalIgnoreCase
+                )
+                for ($index = $UnexecutedFrom; $index -lt [int]$batch.Actions.Count; $index++) {
+                    $null = $unexecuted.Add([string]$batch.Actions[$index].ProviderId)
+                }
+                $runtime.RelayScheduler = [pscustomobject][ordered]@{
+                    MaximumConcurrency = [int]$runtime.RelayScheduler.MaximumConcurrency
+                    Providers = [object[]]@(
+                        foreach ($entry in @($runtime.RelayScheduler.Providers)) {
+                            if ($unexecuted.Contains([string]$entry.ProviderId)) {
+                                [pscustomobject][ordered]@{
+                                    ProviderId = [string]$entry.ProviderId
+                                    Enabled = [bool]$entry.Enabled
+                                    IntervalMinutes = [int]$entry.IntervalMinutes
+                                    InFlight = $false
+                                    NextDueAt = [DateTimeOffset]$entry.NextDueAt
+                                    ConsecutiveFailures = [int]$entry.ConsecutiveFailures
+                                    PauseReason = $entry.PauseReason
+                                }
+                            }
+                            else {
+                                $entry
+                            }
+                        }
+                    )
+                }
+            }
+            & $stopRelayClient
+            $runtime.RelayHostState = 'Starting'
+            $runtime.NextRelayHostStartAt = $Now.AddSeconds(1)
+        }
+    }.GetNewClosure()
+
+    $newRelayBatch = {
+        param([Parameter(Mandatory)][DateTimeOffset]$Now)
+
+        $actionsFunction = $runtime.Functions.RelaySchedulerActions
+        $hasManualActions = $runtime.RelayManualRefreshPending.Count -gt 0
+        $schedulerInput = $runtime.RelayScheduler
+        if ($hasManualActions) {
+            $schedulerInput = [pscustomobject][ordered]@{
+                MaximumConcurrency = [int]$runtime.RelayScheduler.MaximumConcurrency
+                Providers = [object[]]@(
+                    $runtime.RelayScheduler.Providers | Where-Object {
+                        $runtime.RelayManualRefreshPending.Contains([string]$_.ProviderId)
+                    }
+                )
+            }
+        }
+        $scheduled = & $actionsFunction -State $schedulerInput -Now $Now `
+            -ManualRefresh:$hasManualActions
+        if (-not $hasManualActions) {
+            $runtime.RelayScheduler = $scheduled.State
+        }
+        [pscustomobject][ordered]@{
+            Actions = [object[]]@($scheduled.Actions)
+            Manual = [bool]$hasManualActions
+            NextIndex = 0
+        }
+    }.GetNewClosure()
+
     $runRelayTick = {
         param(
             [DateTimeOffset]$Now = [DateTimeOffset]::UtcNow,
@@ -597,186 +726,165 @@ function Invoke-CodexQuotaMonitorRuntime {
             return
         }
 
-        $actionsFunction = $runtime.Functions.RelaySchedulerActions
-        $hasManualActions = $runtime.RelayManualRefreshPending.Count -gt 0
-        $schedulerInput = $runtime.RelayScheduler
-        if ($hasManualActions) {
-            $schedulerInput = [pscustomobject][ordered]@{
-                MaximumConcurrency = [int]$runtime.RelayScheduler.MaximumConcurrency
-                Providers = [object[]]@(
-                    $runtime.RelayScheduler.Providers | Where-Object {
-                        $runtime.RelayManualRefreshPending.Contains([string]$_.ProviderId)
+        $pending = $runtime.RelayPendingQuery
+        if ($null -ne $pending) {
+            $client = $runtime.RelayClient
+            if ($null -ne $client) {
+                $response = $null
+                try {
+                    $response = & $runtime.Functions.ReceiveRelayResponse `
+                        -Client $client -ExpectedId ([string]$pending.CommandId)
+                }
+                catch { $response = $null }
+                if ($null -ne $response -and $response.PSObject.Properties['Invalid']) {
+                    $response = $null
+                }
+                if ($null -eq $response) {
+                    $hasExited = $true
+                    try { $hasExited = $client.Process.HasExited } catch { $hasExited = $true }
+                    if ($hasExited -and
+                        ($null -eq $client.OutputReadTask -or $client.OutputReadTask.IsCompleted)) {
+                        $response = [pscustomobject]@{
+                            Ok = $false
+                            Id = [string]$pending.CommandId
+                            Error = [pscustomobject]@{
+                                Category = 'SidecarLifecycle'
+                                Message = 'Relay script host exited unexpectedly.'
+                                HttpStatus = $null
+                                RetryAfterSeconds = $null
+                            }
+                        }
                     }
-                )
+                    elseif ($Now.ToUniversalTime() -ge
+                        ([DateTimeOffset]$pending.DeadlineUtc).ToUniversalTime()) {
+                        $response = [pscustomobject]@{
+                            Ok = $false
+                            Id = [string]$pending.CommandId
+                            Error = [pscustomobject]@{
+                                Category = 'Timeout'
+                                Message = 'Relay script host request timed out.'
+                                HttpStatus = $null
+                                RetryAfterSeconds = $null
+                            }
+                        }
+                    }
+                }
+                if ($null -ne $response) {
+                    $batch = $runtime.RelayBatch
+                    & $applyRelayOutcome `
+                        -ProviderId ([string]$pending.ProviderId) -Response $response -Now $Now `
+                        -Manual ([bool]$batch.Manual) `
+                        -UnexecutedFrom ([int]$batch.NextIndex)
+                    if ([object]::ReferenceEquals($runtime.RelayClient, $client)) {
+                        try { $null = $client.Gate.Release() } catch {}
+                    }
+                    $runtime.RelayPendingQuery = $null
+                    $pending.SanitizationSecrets = @()
+                    $pending = $null
+                }
+                else {
+                    try {
+                        & $runtime.Functions.UpdateRelayStderr `
+                            -Client $client -SecretValues ([object[]]$pending.SanitizationSecrets)
+                    }
+                    catch {}
+                    return
+                }
             }
         }
-        $scheduled = & $actionsFunction -State $schedulerInput -Now $Now `
-            -ManualRefresh:$hasManualActions
-        if (-not $hasManualActions) {
-            $runtime.RelayScheduler = $scheduled.State
-        }
-        $scheduledActions = [object[]]@($scheduled.Actions)
-        for ($actionIndex = 0; $actionIndex -lt $scheduledActions.Count; $actionIndex++) {
-            $action = $scheduledActions[$actionIndex]
-            if ($hasManualActions) {
-                $null = $runtime.RelayManualRefreshPending.Remove([string]$action.ProviderId)
-            }
-            $provider = @(
-                $runtime.RelayProviders | Where-Object Id -eq $action.ProviderId
-            ) | Select-Object -First 1
-            if ($null -eq $provider) {
-                continue
-            }
-            $providerId = [string]$provider.Id
-            $state = $runtime.RelayStates[$providerId]
-            $attemptFunction = $runtime.Functions.StartRelayAttempt
-            $runtime.RelayStates[$providerId] = & $attemptFunction -State $state -Now $Now
 
-            $apiKey = $null
-            $accessToken = $null
-            $userId = $null
-            $credentialsAvailable = $false
-            try {
-                $unprotectFunction = $runtime.Functions.UnprotectRelaySecret
-                $apiKey = & $unprotectFunction -CipherText ([string]$provider.Secrets.ApiKey)
-                $accessToken = & $unprotectFunction -CipherText ([string]$provider.Secrets.AccessToken)
-                $userId = & $unprotectFunction -CipherText ([string]$provider.Secrets.UserId)
-                $credentialsAvailable = $true
+        if ($null -eq $runtime.RelayPendingQuery) {
+            $batch = $runtime.RelayBatch
+            if ($null -eq $batch) {
+                $batch = & $newRelayBatch $Now
+                $runtime.RelayBatch = $batch
             }
-            catch {
-                $response = [pscustomobject]@{
-                    Ok = $false
-                    Error = [pscustomobject]@{
-                        Category = 'Authentication'
-                        Message = '请重新输入中转站凭据。'
-                        HttpStatus = $null
-                        RetryAfterSeconds = $null
-                    }
+            while ($null -ne $batch -and [int]$batch.NextIndex -lt [int]$batch.Actions.Count) {
+                $action = $batch.Actions[$batch.NextIndex]
+                $providerId = [string]$action.ProviderId
+                if ([bool]$batch.Manual) {
+                    $null = $runtime.RelayManualRefreshPending.Remove($providerId)
                 }
-            }
-            try {
-                if ($credentialsAvailable) {
-                    $queryFunction = $runtime.Functions.QueryRelay
-                    $response = & $queryFunction -Client $runtime.RelayClient -Provider $provider `
-                        -Secrets ([ordered]@{
-                            ApiKey = $apiKey
-                            AccessToken = $accessToken
-                            UserId = $userId
-                        })
+                $provider = @(
+                    $runtime.RelayProviders | Where-Object Id -eq $providerId
+                ) | Select-Object -First 1
+                if ($null -eq $provider) {
+                    $batch.NextIndex = [int]($batch.NextIndex + 1)
+                    continue
                 }
-            }
-            catch {
-                $response = [pscustomobject]@{
-                    Ok = $false
-                    Error = [pscustomobject]@{
-                        Category = 'SidecarLifecycle'
-                        Message = '中转站脚本主机不可用。'
-                        HttpStatus = $null
-                        RetryAfterSeconds = $null
-                    }
-                }
-            }
-            finally {
                 $apiKey = $null
                 $accessToken = $null
                 $userId = $null
-            }
-
-            $schedulerCompleteFunction = $runtime.Functions.CompleteRelayScheduler
-            if ($null -ne $response -and [bool]$response.Ok) {
-                $successFunction = $runtime.Functions.CompleteRelaySuccess
-                $nextState = & $successFunction -State $runtime.RelayStates[$providerId] `
-                    -Results ([object[]]@($response.Results)) -Now $Now
-                $runtime.RelayStates[$providerId] = $nextState
-                if ($nextState.Status -eq 'Live') {
-                    $runtime.RelayScheduler = & $schedulerCompleteFunction `
-                        -State $runtime.RelayScheduler -ProviderId $providerId `
-                        -Outcome Success -Now $Now
-                    try { & $writeRelayLastGoodCache } catch {}
+                $credentialsAvailable = $false
+                try {
+                    $unprotectFunction = $runtime.Functions.UnprotectRelaySecret
+                    $apiKey = & $unprotectFunction -CipherText ([string]$provider.Secrets.ApiKey)
+                    $accessToken = & $unprotectFunction -CipherText ([string]$provider.Secrets.AccessToken)
+                    $userId = & $unprotectFunction -CipherText ([string]$provider.Secrets.UserId)
+                    $credentialsAvailable = $true
                 }
-                else {
-                    $runtime.RelayScheduler = & $schedulerCompleteFunction `
-                        -State $runtime.RelayScheduler -ProviderId $providerId `
-                        -Outcome Failure -Category 'Authentication' -Now $Now
-                }
-                continue
-            }
-
-            $category = [string]$response.Error.Category
-            if ([string]::IsNullOrWhiteSpace($category)) {
-                $category = 'SidecarLifecycle'
-            }
-            $httpStatus = $response.Error.HttpStatus
-            $retryAfter = $response.Error.RetryAfterSeconds
-            $policyFunction = $runtime.Functions.RelayFailurePolicy
-            $policy = & $policyFunction -Category $category -HttpStatus $httpStatus
-            $stateCategory = if ($category -eq 'HttpStatus' -and [int]$httpStatus -eq 404) {
-                'EndpointNotFound'
-            }
-            elseif ($category -eq 'HttpStatus' -and [int]$httpStatus -eq 429) {
-                'RateLimit'
-            }
-            elseif ($policy -eq 'Authentication') {
-                'Authentication'
-            }
-            elseif ($policy -eq 'TrustRequired') {
-                'DestinationTrustRequired'
-            }
-            else {
-                $category
-            }
-            $failureFunction = $runtime.Functions.CompleteRelayFailure
-            $runtime.RelayStates[$providerId] = & $failureFunction `
-                -State $runtime.RelayStates[$providerId] -Category $stateCategory `
-                -Now $Now -RetryAfterSeconds $retryAfter
-            $runtime.RelayScheduler = & $schedulerCompleteFunction `
-                -State $runtime.RelayScheduler -ProviderId $providerId `
-                -Outcome Failure -Category $category -HttpStatus $httpStatus `
-                -RetryAfterSeconds $retryAfter -Now $Now
-
-            $clientUnavailable = $category -eq 'SidecarLifecycle'
-            try {
-                $clientUnavailable = $clientUnavailable -or [bool]$runtime.RelayClient.Disposed -or
-                    [bool]$runtime.RelayClient.Process.HasExited
-            }
-            catch { $clientUnavailable = $true }
-            if ($clientUnavailable) {
-                if (-not $hasManualActions -and $actionIndex + 1 -lt $scheduledActions.Count) {
-                    $unexecuted = [Collections.Generic.HashSet[string]]::new(
-                        [StringComparer]::OrdinalIgnoreCase
-                    )
-                    foreach ($pendingAction in @(
-                        $scheduledActions[($actionIndex + 1)..($scheduledActions.Count - 1)]
-                    )) {
-                        $null = $unexecuted.Add([string]$pendingAction.ProviderId)
+                catch {
+                    $started = [pscustomobject]@{
+                        Ok = $false
+                        Error = [pscustomobject]@{
+                            Category = 'Authentication'
+                            Message = '请重新输入中转站凭据。'
+                            HttpStatus = $null
+                            RetryAfterSeconds = $null
+                        }
                     }
-                    $runtime.RelayScheduler = [pscustomobject][ordered]@{
-                        MaximumConcurrency = [int]$runtime.RelayScheduler.MaximumConcurrency
-                        Providers = [object[]]@(
-                            foreach ($entry in @($runtime.RelayScheduler.Providers)) {
-                                if ($unexecuted.Contains([string]$entry.ProviderId)) {
-                                    [pscustomobject][ordered]@{
-                                        ProviderId = [string]$entry.ProviderId
-                                        Enabled = [bool]$entry.Enabled
-                                        IntervalMinutes = [int]$entry.IntervalMinutes
-                                        InFlight = $false
-                                        NextDueAt = [DateTimeOffset]$entry.NextDueAt
-                                        ConsecutiveFailures = [int]$entry.ConsecutiveFailures
-                                        PauseReason = $entry.PauseReason
-                                    }
-                                }
-                                else {
-                                    $entry
-                                }
+                }
+                if ($null -eq $started -and $credentialsAvailable) {
+                    try {
+                        $started = & $runtime.Functions.StartRelayQuery `
+                            -Client $runtime.RelayClient -Provider $provider -Secrets ([ordered]@{
+                                ApiKey = $apiKey
+                                AccessToken = $accessToken
+                                UserId = $userId
+                            })
+                    }
+                    catch {
+                        $started = [pscustomobject]@{
+                            Ok = $false
+                            Error = [pscustomobject]@{
+                                Category = 'SidecarLifecycle'
+                                Message = '中转站脚本主机不可用。'
+                                HttpStatus = $null
+                                RetryAfterSeconds = $null
                             }
-                        )
+                        }
                     }
                 }
-                & $stopRelayClient
-                $runtime.RelayHostState = 'Starting'
-                $runtime.NextRelayHostStartAt = $Now.AddSeconds(1)
-                break
+                if ($null -eq $started) {
+                    # Gate is held elsewhere (for example by the import dialog);
+                    # retry this action on a later tick without advancing.
+                    return
+                }
+                $pendingSecrets = [object[]]@($apiKey, $accessToken, $userId)
+                $apiKey = $null
+                $accessToken = $null
+                $userId = $null
+                if ($null -eq $started.PSObject.Properties['CommandId']) {
+                    & $applyRelayOutcome `
+                        -ProviderId $providerId -Response $started -Now $Now `
+                        -Manual ([bool]$batch.Manual) `
+                        -UnexecutedFrom ([int]($batch.NextIndex + 1))
+                    $batch.NextIndex = [int]($batch.NextIndex + 1)
+                    continue
+                }
+                $attemptFunction = $runtime.Functions.StartRelayAttempt
+                $runtime.RelayStates[$providerId] = & $attemptFunction `
+                    -State $runtime.RelayStates[$providerId] -Now $Now
+                $runtime.RelayPendingQuery = [pscustomobject]@{
+                    ProviderId = $providerId
+                    CommandId = [string]$started.CommandId
+                    DeadlineUtc = [DateTimeOffset]$started.DeadlineUtc
+                    SanitizationSecrets = $pendingSecrets
+                }
+                $batch.NextIndex = [int]($batch.NextIndex + 1)
+                return
             }
+            $runtime.RelayBatch = $null
         }
     }.GetNewClosure()
 
