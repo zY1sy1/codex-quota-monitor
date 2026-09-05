@@ -794,6 +794,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
 
         if ($null -eq $runtime.RelayPendingQuery) {
+            if ($null -eq $runtime.RelayClient) {
+                return
+            }
             $batch = $runtime.RelayBatch
             if ($null -eq $batch) {
                 $batch = & $newRelayBatch $Now
@@ -812,6 +815,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                     $batch.NextIndex = [int]($batch.NextIndex + 1)
                     continue
                 }
+                $started = $null
                 $apiKey = $null
                 $accessToken = $null
                 $userId = $null
@@ -870,6 +874,9 @@ function Invoke-CodexQuotaMonitorRuntime {
                         -Manual ([bool]$batch.Manual) `
                         -UnexecutedFrom ([int]($batch.NextIndex + 1))
                     $batch.NextIndex = [int]($batch.NextIndex + 1)
+                    if ($null -eq $runtime.RelayClient) {
+                        break
+                    }
                     continue
                 }
                 $attemptFunction = $runtime.Functions.StartRelayAttempt
