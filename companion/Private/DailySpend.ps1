@@ -360,7 +360,7 @@ function Resolve-RelayDailySpendRows {
         GroupLabel = '中转站额度'
         Label = '今日消耗'
         ValueText = Format-RelayPresentationAmount -Value $totalSpend -Unit 'USD'
-        SecondaryText = '按钱包余额下降估算'
+        SecondaryText = ''
         ProgressValue = $null
         Countdown = ''
         ResetTime = ''
