@@ -23,6 +23,9 @@ function New-SettingsController {
         [scriptblock]$ToggleStartup,
 
         [Parameter(Mandatory)]
+        [scriptblock]$ToggleTodaySpend,
+
+        [Parameter(Mandatory)]
         [scriptblock]$RequestRefresh,
 
         [Parameter()]
@@ -43,7 +46,8 @@ function New-SettingsController {
             -Theme ([string]$snapshot.Theme) `
             -FullLayout ([string]$snapshot.FullLayout) `
             -Topmost ([bool]$snapshot.Topmost) `
-            -Startup ([bool]$snapshot.Startup)
+            -Startup ([bool]$snapshot.Startup) `
+            -ShowTodaySpend ([bool]$snapshot.ShowTodaySpend)
     }.GetNewClosure()
 
     $completeSetting = {
@@ -117,6 +121,17 @@ function New-SettingsController {
         }
     }.GetNewClosure()
 
+    $todaySpendAction = {
+        if ($state.Disposed) { return }
+        try {
+            & $ToggleTodaySpend
+            & $completeSetting
+        }
+        catch {
+            & $failWith '无法切换今日消耗显示：' $_.Exception
+        }
+    }.GetNewClosure()
+
     $refreshAction = {
         if ($state.Disposed) { return }
         try {
@@ -158,7 +173,7 @@ function New-SettingsController {
         try {
             & $View.SetCallbacks `
                 -OnSetDisplayMode $null -OnSetTheme $null -OnSetFullLayout $null `
-                -OnToggleTopmost $null -OnToggleStartup $null `
+                -OnToggleTopmost $null -OnToggleStartup $null -OnToggleTodaySpend $null `
                 -OnRefresh $null `
                 -OnManageRelays $null -OnClosing $null
         }
@@ -172,6 +187,7 @@ function New-SettingsController {
         -OnSetFullLayout $setLayoutAction `
         -OnToggleTopmost $topmostAction `
         -OnToggleStartup $startupAction `
+        -OnToggleTodaySpend $todaySpendAction `
         -OnRefresh $refreshAction `
         -OnManageRelays $manageRelaysAction `
         -OnClosing $closingAction

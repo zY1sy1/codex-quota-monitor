@@ -13,6 +13,7 @@ Describe 'settings controller' {
             FullLayout = 'Overview'
             Topmost = $true
             Startup = $true
+            ShowTodaySpend = $true
         }
         $script:RefreshCalls = 0
         $script:ViewState = [pscustomobject][ordered]@{
@@ -27,7 +28,7 @@ Describe 'settings controller' {
         $viewState = $script:ViewState
         $script:View = [pscustomobject][ordered]@{
             SetSnapshot = {
-                param($Mode, $Theme, $FullLayout, $Topmost, $Startup)
+                param($Mode, $Theme, $FullLayout, $Topmost, $Startup, $ShowTodaySpend)
                 $viewState.RenderCalls++
                 $viewState.Snapshot = [pscustomobject][ordered]@{
                     Mode = $Mode
@@ -35,6 +36,7 @@ Describe 'settings controller' {
                     FullLayout = $FullLayout
                     Topmost = $Topmost
                     Startup = $Startup
+                    ShowTodaySpend = $ShowTodaySpend
                 }
                 $viewState.Status = '更改即时保存'
                 $viewState.StatusKind = 'Idle'
@@ -47,7 +49,7 @@ Describe 'settings controller' {
             SetCallbacks = {
                 param(
                     $OnSetDisplayMode, $OnSetTheme, $OnSetFullLayout,
-                    $OnToggleTopmost, $OnToggleStartup,
+                    $OnToggleTopmost, $OnToggleStartup, $OnToggleTodaySpend,
                     $OnRefresh, $OnManageRelays, $OnClosing
                 )
                 $viewState.Callbacks = [pscustomobject][ordered]@{}
@@ -68,6 +70,7 @@ Describe 'settings controller' {
             -SetFullLayout { param($value) $script:Snapshot.FullLayout = $value } `
             -ToggleTopmost { $script:Snapshot.Topmost = -not $script:Snapshot.Topmost } `
             -ToggleStartup { $script:Snapshot.Startup = -not $script:Snapshot.Startup } `
+            -ToggleTodaySpend { $script:Snapshot.ShowTodaySpend = -not $script:Snapshot.ShowTodaySpend } `
             -RequestRefresh { $script:RefreshCalls++ }
     }
 
@@ -81,9 +84,9 @@ Describe 'settings controller' {
         & $Controller.Show
 
         ($ViewState.Snapshot.PSObject.Properties.Name -join ',') |
-            Should -BeExactly 'Mode,Theme,FullLayout,Topmost,Startup'
+            Should -BeExactly 'Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend'
         ($ViewState.Callbacks.PSObject.Properties.Name -join ',') |
-            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnRefresh,OnManageRelays,OnClosing'
+            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnToggleTodaySpend,OnRefresh,OnManageRelays,OnClosing'
         $ViewState.RenderCalls | Should -Be 1
         $ViewState.ShowCalls | Should -Be 1
         $ViewState.StatusKind | Should -BeExactly 'Idle'
@@ -106,6 +109,35 @@ Describe 'settings controller' {
         $ViewState.StatusKind | Should -BeExactly 'Success'
     }
 
+    It 'toggles the today-spend preference and rerenders' {
+        & $ViewState.Callbacks.OnToggleTodaySpend
+
+        $ViewState.Snapshot.ShowTodaySpend | Should -BeFalse
+        $ViewState.Status | Should -BeExactly '设置已同步'
+        $ViewState.StatusKind | Should -BeExactly 'Success'
+    }
+
+    It 'restores the snapshot and reports an error when toggling today-spend fails' {
+        & $script:Controller.Dispose
+        $script:Controller = New-SettingsController `
+            -View $script:View `
+            -GetSnapshot { $script:Snapshot } `
+            -SetDisplayMode { param($value) } `
+            -SetTheme { param($value) } `
+            -SetFullLayout { param($value) } `
+            -ToggleTopmost { } `
+            -ToggleStartup { } `
+            -ToggleTodaySpend { throw 'today spend failed' } `
+            -RequestRefresh { }
+
+        & $ViewState.Callbacks.OnToggleTodaySpend
+
+        $ViewState.RenderCalls | Should -Be 1
+        $ViewState.Snapshot.ShowTodaySpend | Should -Be $true
+        $ViewState.Status | Should -BeExactly '无法切换今日消耗显示：today spend failed'
+        $ViewState.StatusKind | Should -BeExactly 'Error'
+    }
+
     It 'restores the snapshot and reports an error when a setting action fails' {
         & $script:Controller.Dispose
         $script:Controller = New-SettingsController `
@@ -116,6 +148,7 @@ Describe 'settings controller' {
             -SetFullLayout { param($value) } `
             -ToggleTopmost { } `
             -ToggleStartup { } `
+            -ToggleTodaySpend { } `
             -RequestRefresh { }
 
         & $ViewState.Callbacks.OnSetTheme 'Light'

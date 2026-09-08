@@ -39,6 +39,7 @@ function Get-MonitorPaths {
         RelayProviders = Join-Path $root 'data\relay-providers.json'
         RelayImportLinks = Join-Path $root 'data\relay-import-links.json'
         RelayCache = Join-Path $root 'data\relay-cache.json'
+        DailySpend = Join-Path $root 'data\daily-spend.json'
         RelayHost = Join-Path $app 'Bin\relay-quota-host.exe'
         RelayPresets = Join-Path $app 'Presets\relay-usage.json'
         StartupShortcut = Join-Path $Startup 'Codex Quota Monitor.lnk'
@@ -80,6 +81,7 @@ function New-DefaultSettings {
         }
         Relay = [ordered]@{
             AutoQueryIntervalMinutes = 10
+            ShowTodaySpend = $true
         }
         Startup = $true
     }
@@ -367,6 +369,7 @@ function ConvertTo-CanonicalMonitorSettings {
         }
 
         $relayAutoQueryIntervalMinutes = 10
+        $relayShowTodaySpend = $true
         if ($version -eq 3) {
             if (-not (Test-MonitorSettingsHasField -InputObject $Settings -Name 'Relay')) {
                 return $null
@@ -382,6 +385,13 @@ function ConvertTo-CanonicalMonitorSettings {
             if (-not (Test-MonitorSettingsInteger -Value $relayAutoQueryIntervalMinutes `
                 -Minimum 0 -Maximum 1440)) {
                 return $null
+            }
+            if (Test-MonitorSettingsHasField -InputObject $relay -Name 'ShowTodaySpend') {
+                $showTodaySpend = Get-MonitorSettingsField -InputObject $relay -Name 'ShowTodaySpend'
+                if ($showTodaySpend -isnot [bool]) {
+                    return $null
+                }
+                $relayShowTodaySpend = [bool]$showTodaySpend
             }
         }
         if (-not (Test-MonitorSettingsRequiredFields -InputObject $appearance `
@@ -462,6 +472,7 @@ function ConvertTo-CanonicalMonitorSettings {
             Compact = [ordered]@{ FocusMetric = $focusMetric }
             Relay = [ordered]@{
                 AutoQueryIntervalMinutes = [int]$relayAutoQueryIntervalMinutes
+                ShowTodaySpend = [bool]$relayShowTodaySpend
             }
             Startup = [bool]$startup
         }

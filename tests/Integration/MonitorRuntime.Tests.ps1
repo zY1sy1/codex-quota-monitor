@@ -79,6 +79,7 @@ Describe 'Codex quota monitor production composition' {
             SetTheme = { param($Theme) }
             SetFullLayout = { param($Layout) }
             ToggleStartup = { }
+            ToggleTodaySpend = { }
             Refresh = { }
             ManageRelays = { }
             Dispose = { }
@@ -239,7 +240,7 @@ Describe 'Codex quota monitor production composition' {
             NewSettingsController = {
                 param(
                     $View, $GetSnapshot, $SetDisplayMode, $SetTheme, $SetFullLayout,
-                    $ToggleTopmost, $ToggleStartup, $RequestRefresh, $ManageRelays
+                    $ToggleTopmost, $ToggleStartup, $ToggleTodaySpend, $RequestRefresh, $ManageRelays
                 )
                 $View | Should -Be $settingsView
                 $GetSnapshot | Should -BeOfType ([scriptblock])
@@ -248,6 +249,7 @@ Describe 'Codex quota monitor production composition' {
                 $SetFullLayout | Should -BeOfType ([scriptblock])
                 $ToggleTopmost | Should -BeOfType ([scriptblock])
                 $ToggleStartup | Should -BeOfType ([scriptblock])
+                $ToggleTodaySpend | Should -BeOfType ([scriptblock])
                 $RequestRefresh | Should -BeOfType ([scriptblock])
                 $ManageRelays | Should -BeOfType ([scriptblock])
                 $settingsSnapshots.Add(
@@ -338,7 +340,7 @@ Describe 'Codex quota monitor production composition' {
         )
         $relayCacheWrites.Count | Should -Be 1
         @($relayCacheWrites[0].Providers).Count | Should -Be 0
-        @($settingsSnapshots) | Should -Be @('Mode,Theme,FullLayout,Topmost,Startup')
+        @($settingsSnapshots) | Should -Be @('Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend')
         @($schedulerCreations).Count | Should -BeGreaterOrEqual 2
         foreach ($creation in $schedulerCreations) {
             @($creation.EntryIntervals) | Should -Be @(15)

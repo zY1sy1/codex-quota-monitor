@@ -11,6 +11,7 @@ $privateFiles = @(
     'RelayScriptClient.ps1'
     'RelayScheduler.ps1'
     'RelayPresentation.ps1'
+    'DailySpend.ps1'
     'WindowPlacement.ps1'
     'Logging.ps1'
     'AppServerProcess.ps1'
@@ -122,6 +123,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         WriteRelayImportTransaction = ${function:Write-RelayProviderImportTransaction}
         ReadRelayCache = ${function:Read-RelayCache}
         WriteRelayCache = ${function:Write-RelayCache}
+        ReadDailySpend = ${function:Read-DailySpendStore}
+        WriteDailySpend = ${function:Write-DailySpendStore}
+        ResolveDailySpend = ${function:Resolve-RelayDailySpendRows}
         ProtectRelaySecret = ${function:Protect-RelaySecret}
         UnprotectRelaySecret = ${function:Unprotect-RelaySecret}
         StartRelayClient = ${function:Start-RelayScriptClient}
@@ -213,6 +217,7 @@ function Invoke-CodexQuotaMonitorRuntime {
         Session = & $functions.NewSession
         RelayProviders = @()
         RelayCache = $null
+        DailySpend = $null
         RelayStates = [ordered]@{}
         RelayScheduler = $null
         RelayClient = $null
@@ -534,6 +539,33 @@ function Invoke-CodexQuotaMonitorRuntime {
             }
             foreach ($row in @(& $relayPresentationFunction -Provider $provider -State $state)) {
                 if ($null -ne $row) { $relayRows.Add($row) }
+            }
+        }
+
+        $showTodaySpend = $false
+        try {
+            $showTodaySpend = [bool]$runtime.Settings.Relay.ShowTodaySpend
+        }
+        catch { $showTodaySpend = $false }
+        $dailySpendFunction = $runtime.Functions.ResolveDailySpend
+        if ($null -ne $dailySpendFunction) {
+            $dailyResult = & $dailySpendFunction `
+                -States $runtime.RelayStates `
+                -Document $runtime.DailySpend `
+                -Now $Now `
+                -ShowEnabled $showTodaySpend
+            if ($null -ne $dailyResult) {
+                $runtime.DailySpend = $dailyResult.Store
+                if ([bool]$dailyResult.Changed) {
+                    try {
+                        & $runtime.Functions.WriteDailySpend `
+                            -Path $runtime.Paths.DailySpend -Document $dailyResult.Store
+                    }
+                    catch { }
+                }
+                foreach ($row in @($dailyResult.Rows)) {
+                    if ($null -ne $row) { $relayRows.Insert(0, $row) }
+                }
             }
         }
         $runtime.RelayRows = [object[]]$relayRows.ToArray()
@@ -1107,6 +1139,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         $runtime.RelayProviders = [object[]]@($relayProviderDocument.Providers)
         $readRelayCacheFunction = $functions.ReadRelayCache
         $runtime.RelayCache = & $readRelayCacheFunction -Path $paths.RelayCache
+        $readDailySpendFunction = $functions.ReadDailySpend
+        $runtime.DailySpend = & $readDailySpendFunction -Path $paths.DailySpend
         $runtime.RelayStates = [ordered]@{}
         $newRelayStateFunction = $functions.NewRelayState
         foreach ($provider in @($runtime.RelayProviders)) {
@@ -1418,6 +1452,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                     FullLayout = [string]$runtime.DisplayController.State.FullLayout
                     Topmost = [bool]$runtime.DisplayController.State.Topmost
                     Startup = [bool]$runtime.Settings.Startup
+                    ShowTodaySpend = [bool]$runtime.Settings.Relay.ShowTodaySpend
                 }
             }.GetNewClosure()
             $newSettingsControllerFunction = $functions.NewSettingsController
@@ -1429,6 +1464,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -SetFullLayout $runtime.Interaction.SetFullLayout `
                 -ToggleTopmost $runtime.Interaction.ToggleTopmost `
                 -ToggleStartup $runtime.Interaction.ToggleStartup `
+                -ToggleTodaySpend $runtime.Interaction.ToggleTodaySpend `
                 -RequestRefresh $runtime.Interaction.Refresh `
                 -ManageRelays $manageRelaysAction
 
