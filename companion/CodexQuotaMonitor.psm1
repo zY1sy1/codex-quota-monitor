@@ -118,6 +118,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         ReadRelayProviders = ${function:Read-RelayProviderStore}
         WriteRelayProviders = ${function:Write-RelayProviderStore}
         DiscoverCcSwitch = ${function:Invoke-CcSwitchUsageDiscovery}
+        ReadCcSwitchCurrent = ${function:Read-CcSwitchCurrentProviders}
+        GetCcSwitchDatabasePath = ${function:Get-DefaultCcSwitchDatabasePath}
         ReadRelayImportLinks = ${function:Read-RelayImportLinkStore}
         WriteRelayImportLinks = ${function:Write-RelayImportLinkStore}
         WriteRelayImportTransaction = ${function:Write-RelayProviderImportTransaction}
@@ -231,6 +233,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         RelayPendingQuery = $null
         RelayRows = @()
         CombinedRows = @()
+        CcSwitchCurrentProviders = @()
+        NextCcSwitchCurrentReadAt = [DateTimeOffset]::MinValue
         WindowView = $null
         CompactBarView = $null
         OrbView = $null
@@ -582,7 +586,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         $officialRows = @(& $officialFunction -QuotaWindows $displayWindows -Now $Now)
         $mergeFunction = $runtime.Functions.MergePresentationRows
         $runtime.CombinedRows = @(& $mergeFunction `
-            -OfficialRows $officialRows -RelayRows $runtime.RelayRows)
+            -OfficialRows $officialRows -RelayRows $runtime.RelayRows `
+            -CurrentProviders $runtime.CcSwitchCurrentProviders)
     }.GetNewClosure()
 
     $applyRelayOutcome = {
@@ -984,6 +989,26 @@ function Invoke-CodexQuotaMonitorRuntime {
         }
         if ($runtime.Instance.ActivateEvent.WaitOne(0) -and $null -ne $runtime.Interaction) {
             & $runtime.Interaction.ShowAndActivate
+        }
+
+        if ($now -ge $runtime.NextCcSwitchCurrentReadAt -and -not [string]::IsNullOrWhiteSpace([string]$runtime.Paths.RelayHost)) {
+            $runtime.NextCcSwitchCurrentReadAt = $now.AddSeconds(60)
+            try {
+                $readCurrentFunction = $runtime.Functions.ReadCcSwitchCurrent
+                $dbPathFunction = $runtime.Functions.GetCcSwitchDatabasePath
+                if ($null -ne $readCurrentFunction -and $null -ne $dbPathFunction) {
+                    $databasePath = & $dbPathFunction
+                    if (-not [string]::IsNullOrWhiteSpace($databasePath)) {
+                        $runtime.CcSwitchCurrentProviders = [object[]]@(
+                            & $readCurrentFunction -ExecutablePath $runtime.Paths.RelayHost `
+                                -DatabasePath $databasePath
+                        )
+                    }
+                }
+            }
+            catch {
+                $runtime.CcSwitchCurrentProviders = @()
+            }
         }
 
         if ($null -eq $runtime.Transport) {

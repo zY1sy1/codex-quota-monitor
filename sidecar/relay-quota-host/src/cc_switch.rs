@@ -38,6 +38,16 @@ ORDER BY app_type, name, id
 LIMIT 129
 "#;
 
+const CURRENT_PROVIDER_QUERY: &str = r#"
+SELECT app_type, id, name
+FROM providers
+WHERE is_current = 1
+ORDER BY app_type, id
+LIMIT 16
+"#;
+
+const MAX_CURRENT_PROVIDERS: usize = 16;
+
 const ENDPOINT_QUERY: &str = r#"
 SELECT provider_id, app_type, url
 FROM provider_endpoints
@@ -70,6 +80,14 @@ pub struct CcSwitchProviderDescriptor {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CcSwitchCurrentProvider {
+    pub app_type: String,
+    pub provider_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CcSwitchDiscoveryError {
     pub category: &'static str,
     pub message: &'static str,
@@ -80,6 +98,7 @@ pub struct CcSwitchDiscoveryError {
 pub struct CcSwitchDiscoveryResponse {
     pub ok: bool,
     pub providers: Vec<CcSwitchProviderDescriptor>,
+    pub current_providers: Vec<CcSwitchCurrentProvider>,
     pub error: Option<CcSwitchDiscoveryError>,
 }
 
@@ -148,6 +167,7 @@ fn discovery_failure(category: &'static str, message: &'static str) -> CcSwitchD
     CcSwitchDiscoveryResponse {
         ok: false,
         providers: Vec::new(),
+        current_providers: Vec::new(),
         error: Some(CcSwitchDiscoveryError { category, message }),
     }
 }
@@ -172,6 +192,43 @@ fn sql_error_details(error: &SqlError) -> (&'static str, &'static str) {
 fn map_sql_error(error: &SqlError) -> CcSwitchDiscoveryResponse {
     let (category, message) = sql_error_details(error);
     discovery_failure(category, message)
+}
+
+fn read_current_providers(connection: &Connection) -> Vec<CcSwitchCurrentProvider> {
+    // Best-effort: an older CC Switch schema without an `is_current` column (or a
+    // transient DB error) must not break usage-script discovery. It simply yields
+    // no current-provider markers, which the monitor treats as "unknown".
+    let mut current = Vec::new();
+    let mut statement = match connection.prepare(CURRENT_PROVIDER_QUERY) {
+        Ok(value) => value,
+        Err(_) => return current,
+    };
+    let rows = match statement.query_map([], |row| {
+        Ok(CcSwitchCurrentProvider {
+            app_type: row.get(0)?,
+            provider_id: row.get(1)?,
+            name: row.get(2)?,
+        })
+    }) {
+        Ok(value) => value,
+        Err(_) => return current,
+    };
+    for row in rows {
+        let provider = match row {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if !valid_text(&provider.app_type)
+            || !valid_text(&provider.provider_id)
+            || !valid_text(&provider.name)
+        {
+            continue;
+        }
+        if current.len() < MAX_CURRENT_PROVIDERS {
+            current.push(provider);
+        }
+    }
+    current
 }
 
 fn valid_text(value: &str) -> bool {
@@ -383,6 +440,7 @@ pub fn inspect_cc_switch_database(path: &Path) -> CcSwitchDiscoveryResponse {
     CcSwitchDiscoveryResponse {
         ok: true,
         providers,
+        current_providers: read_current_providers(&connection),
         error: None,
     }
 }

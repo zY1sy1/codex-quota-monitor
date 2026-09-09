@@ -218,22 +218,84 @@ function Copy-MonitorPresentationRow {
     }
 }
 
+function Test-CcSwitchOfficialCurrentProvider {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Provider)
+    if ($null -eq $Provider) {
+        return $false
+    }
+    $name = [string](Get-ObjectField $Provider 'Name')
+    $providerId = [string](Get-ObjectField $Provider 'ProviderId')
+    return [string]::Equals($name, 'default', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($providerId, 'default', [StringComparison]::OrdinalIgnoreCase) -or
+        ($name -match 'official')
+}
+
 function Merge-MonitorPresentationRows {
     [CmdletBinding()]
     param(
         [AllowEmptyCollection()][object[]]$OfficialRows = @(),
-        [AllowEmptyCollection()][object[]]$RelayRows = @()
+        [AllowEmptyCollection()][object[]]$RelayRows = @(),
+        [AllowEmptyCollection()][object[]]$CurrentProviders = @()
     )
-    $rows = [Collections.Generic.List[object]]::new()
-    foreach ($row in @($OfficialRows)) {
-        if ($null -ne $row) {
-            $rows.Add((ConvertTo-OfficialMonitorPresentationRow -Row $row))
+
+    $codexCurrent = [Collections.Generic.List[object]]::new()
+    foreach ($current in @($CurrentProviders)) {
+        if ([string](Get-ObjectField $current 'AppType') -ieq 'codex') {
+            $codexCurrent.Add($current)
         }
     }
-    foreach ($row in @($RelayRows)) {
-        if ($null -ne $row) {
-            $rows.Add((Copy-MonitorPresentationRow $row))
+
+    $currentNames = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $officialCurrent = $false
+    foreach ($current in $codexCurrent) {
+        if (Test-CcSwitchOfficialCurrentProvider -Provider $current) {
+            $officialCurrent = $true
         }
+        else {
+            $null = $currentNames.Add([string](Get-ObjectField $current 'Name'))
+        }
+    }
+
+    $relayRowsOut = [Collections.Generic.List[object]]::new()
+    foreach ($raw in @($RelayRows)) {
+        if ($null -eq $raw) {
+            continue
+        }
+        $row = Copy-MonitorPresentationRow $raw
+        $sourceLabel = [string](Get-ObjectField $row 'SourceLabel')
+        $planName = [string](Get-ObjectField $row 'Label')
+        $inUse = $currentNames.Contains($sourceLabel) -or $currentNames.Contains($planName)
+        $row | Add-Member -NotePropertyName InUse -NotePropertyValue ([bool]$inUse) -Force
+        $relayRowsOut.Add($row)
+    }
+    $anyRelayMatched = @($relayRowsOut | Where-Object {
+        [bool](Get-ObjectField $_ 'InUse')
+    }).Count -gt 0
+
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($raw in @($OfficialRows)) {
+        if ($null -eq $raw) {
+            continue
+        }
+        $row = ConvertTo-OfficialMonitorPresentationRow -Row $raw
+        # Identify the five-hour window by the duration encoded in its normalized
+        # key (limitId|windowKind|duration|resetsAt), not by the localized label.
+        $key = [string](Get-ObjectField $row 'Key')
+        $parts = $key.Split('|')
+        $isFiveHour = $false
+        [int]$duration = 0
+        if ($parts.Length -ge 3 -and [int]::TryParse($parts[2], [ref]$duration)) {
+            $isFiveHour = $duration -ge 270 -and $duration -le 330
+        }
+        $inUse = $officialCurrent -and $isFiveHour -and (-not $anyRelayMatched)
+        $row | Add-Member -NotePropertyName InUse -NotePropertyValue ([bool]$inUse) -Force
+        $rows.Add($row)
+    }
+    foreach ($row in $relayRowsOut) {
+        $rows.Add($row)
     }
     return [object[]]$rows.ToArray()
 }

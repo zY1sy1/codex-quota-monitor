@@ -244,9 +244,89 @@ Describe 'mixed source presentation selection' {
             'official:weekly', 'relay:two:0', 'relay:one:0'
         )
         ($rows[0].PSObject.Properties.Name -join ',') | Should -BeExactly `
-            'Key,SourceKind,SourceId,SourceLabel,GroupLabel,Label,ValueText,SecondaryText,ProgressValue,Countdown,ResetTime,IsStale,UpdatedAt,State'
+            'Key,SourceKind,SourceId,SourceLabel,GroupLabel,Label,ValueText,SecondaryText,ProgressValue,Countdown,ResetTime,IsStale,UpdatedAt,State,InUse'
         $rows[0].SourceKind | Should -BeExactly 'Official'
         $rows[0].SourceLabel | Should -BeExactly 'Codex 官方'
+        $rows[0].InUse | Should -BeFalse
+    }
+
+    It 'marks only the relay row that matches the current CC Switch provider' {
+        $official = [pscustomobject][ordered]@{
+            Key = 'official:5h'
+            Label = '5h'
+            RemainingText = '47%'
+            ProgressValue = [double]47
+            CountdownText = '01:00:00'
+            ResetTimeText = '重置时间：2026-09-09 18:05'
+        }
+        $relay = New-TestSharedRow -Key 'relay:wkk:0' -SourceKind Relay `
+            -ProgressValue ([double]42) -ValueText '$42 USD' -Label 'Wallet'
+        $current = [pscustomobject][ordered]@{
+            AppType = 'codex'
+            ProviderId = 'cs-wkk'
+            Name = 'Wakaka'
+        }
+
+        $rows = Merge-MonitorPresentationRows -OfficialRows @($official) -RelayRows @($relay) `
+            -CurrentProviders @($current)
+
+        ($rows | Where-Object { $_.SourceKind -eq 'Relay' }).InUse | Should -BeTrue
+        ($rows | Where-Object { $_.SourceKind -eq 'Official' }).InUse | Should -BeFalse
+    }
+
+    It 'marks the five-hour official row when the CC Switch provider is default' {
+        $official5h = [pscustomobject][ordered]@{
+            Key = 'codex|primary|300|1788963920'
+            Label = '5 小时额度'
+            RemainingText = '47%'
+            ProgressValue = [double]47
+            CountdownText = '01:00:00'
+            ResetTimeText = '重置时间：2026-09-09 18:05'
+        }
+        $officialWeek = [pscustomobject][ordered]@{
+            Key = 'codex|secondary|10080|1789467695'
+            Label = '周额度'
+            RemainingText = '87%'
+            ProgressValue = [double]87
+            CountdownText = '02:00:00'
+            ResetTimeText = '重置时间：2026-09-16 09:01'
+        }
+        $relay = New-TestSharedRow -Key 'relay:wkk:0' -SourceKind Relay `
+            -ProgressValue ([double]42) -ValueText '$42 USD' -Label 'Wallet'
+        $current = [pscustomobject][ordered]@{
+            AppType = 'codex'
+            ProviderId = 'default'
+            Name = 'default'
+        }
+
+        $rows = Merge-MonitorPresentationRows -OfficialRows @($official5h, $officialWeek) `
+            -RelayRows @($relay) -CurrentProviders @($current)
+
+        ($rows | Where-Object { $_.SourceKind -eq 'Official' -and $_.Label -eq '5 小时额度' }).InUse | Should -BeTrue
+        ($rows | Where-Object { $_.SourceKind -eq 'Official' -and $_.Label -eq '周额度' }).InUse | Should -BeFalse
+    }
+
+    It 'leaves rows unmarked when the current provider is an unmonitored relay' {
+        $official = [pscustomobject][ordered]@{
+            Key = 'official:5h'
+            Label = '5h'
+            RemainingText = '47%'
+            ProgressValue = [double]47
+            CountdownText = '01:00:00'
+            ResetTimeText = '重置时间：2026-09-09 18:05'
+        }
+        $relay = New-TestSharedRow -Key 'relay:wkk:0' -SourceKind Relay `
+            -ProgressValue ([double]42) -ValueText '$42 USD' -Label 'Wallet'
+        $current = [pscustomobject][ordered]@{
+            AppType = 'codex'
+            ProviderId = 'cs-other'
+            Name = 'DeepSeek'
+        }
+
+        $rows = Merge-MonitorPresentationRows -OfficialRows @($official) -RelayRows @($relay) `
+            -CurrentProviders @($current)
+
+        @($rows | Where-Object { [bool]$_.InUse }) | Should -HaveCount 0
     }
 
     It 'chooses the lowest percentage automatically and honors an absolute pinned row' {

@@ -123,6 +123,13 @@ function New-WpfQuotaCard {
         $heading.ColumnDefinitions.Add($column)
     }
 
+    $inUse = [bool](Get-WpfPresentationField -PresentationRow $PresentationRow -Name 'InUse')
+
+    $headingText = [Windows.Controls.StackPanel]::new()
+    $headingText.Orientation = [Windows.Controls.Orientation]::Horizontal
+    $headingText.VerticalAlignment = [Windows.VerticalAlignment]::Center
+    $headingText.IsHitTestVisible = $false
+
     $label = [Windows.Controls.TextBlock]::new()
     $label.Text = [string](Get-WpfPresentationField $PresentationRow 'Label')
     $label.Foreground = & $brush $Palette.TextPrimary
@@ -133,8 +140,24 @@ function New-WpfQuotaCard {
     $label.Margin = [Windows.Thickness]::new(0, 0, 8, 0)
     $label.Tag = 'QuotaLabel'
     [Windows.Automation.AutomationProperties]::SetName($label, "额度名称：$($label.Text)")
-    [Windows.Controls.Grid]::SetColumn($label, 0)
-    $heading.Children.Add($label) | Out-Null
+
+    $dotColor = if ($null -ne $Palette.PSObject.Properties['Success']) { $Palette.Success } else { $Palette.Accent }
+    $inUseDot = [Windows.Shapes.Ellipse]::new()
+    $inUseDot.Width = 8
+    $inUseDot.Height = 8
+    $inUseDot.Margin = [Windows.Thickness]::new(0, 0, 5, 0)
+    $inUseDot.VerticalAlignment = [Windows.VerticalAlignment]::Center
+    $inUseDot.HorizontalAlignment = [Windows.HorizontalAlignment]::Center
+    $inUseDot.Fill = & $brush $dotColor
+    $inUseDot.Tag = 'QuotaInUseDot'
+    $inUseDot.Visibility = $(if ($inUse) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed })
+    [Windows.Automation.AutomationProperties]::SetName($inUseDot, '正在使用')
+
+    $headingText.Children.Add($inUseDot) | Out-Null
+    $headingText.Children.Add($label) | Out-Null
+    [Windows.Controls.Grid]::SetColumn($headingText, 0)
+    $heading.Children.Add($headingText) | Out-Null
+    $card.Resources['InUseDot'] = $inUseDot
 
     $remainingText = Get-WpfPresentationField $PresentationRow 'ValueText'
     if ($null -eq $remainingText) {
@@ -611,6 +634,20 @@ function New-QuotaWindowView {
         if ([string]$label.Text -cne $labelText) {
             $label.Text = $labelText
             [Windows.Automation.AutomationProperties]::SetName($label, "额度名称：$labelText")
+        }
+
+        $inUseDot = $Card.Resources['InUseDot']
+        if ($null -ne $inUseDot) {
+            $inUse = [bool](& $state.GetPresentationField $Row -Name 'InUse')
+            $inUseTarget = if ($inUse) {
+                [Windows.Visibility]::Visible
+            }
+            else {
+                [Windows.Visibility]::Collapsed
+            }
+            if ($inUseDot.Visibility -ne $inUseTarget) {
+                $inUseDot.Visibility = $inUseTarget
+            }
         }
 
         $remainingValue = & $state.GetPresentationField $Row -Name 'ValueText'

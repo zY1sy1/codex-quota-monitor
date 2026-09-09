@@ -154,15 +154,60 @@ function Get-CcSwitchBuiltInBalanceScript {
 }})'
 }
 
+function ConvertTo-CcSwitchCurrentProviders {
+    [CmdletBinding()]
+    param([AllowNull()][object]$InputObject)
+
+    $max = 16
+    $result = [Collections.Generic.List[object]]::new()
+    if ($null -eq $InputObject) {
+        return [object[]]@()
+    }
+    if (-not (Test-CcSwitchImportCollection $InputObject)) {
+        return [object[]]@()
+    }
+    $values = @($InputObject)
+    if ($values.Count -gt $max) {
+        return [object[]]@()
+    }
+    foreach ($value in $values) {
+        if (-not (Test-CcSwitchImportExactFields -InputObject $value -Expected @(
+            'appType', 'providerId', 'name'
+        ))) {
+            return [object[]]@()
+        }
+        $appType = (Get-CcSwitchImportProperty $value 'appType').Value
+        $providerId = (Get-CcSwitchImportProperty $value 'providerId').Value
+        $name = (Get-CcSwitchImportProperty $value 'name').Value
+        if (-not (Test-CcSwitchImportText -Value $appType -MaximumBytes 4096) -or
+            -not (Test-CcSwitchImportText -Value $providerId -MaximumBytes 4096) -or
+            -not (Test-CcSwitchImportText -Value $name -MaximumBytes 4096)) {
+            return [object[]]@()
+        }
+        $result.Add([pscustomobject][ordered]@{
+            AppType = [string]$appType
+            ProviderId = [string]$providerId
+            Name = [string]$name
+        })
+    }
+    return [object[]]$result.ToArray()
+}
+
 function ConvertTo-CcSwitchDiscoveryResponse {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowNull()][object]$InputObject)
 
     $invalidMessage = 'CC Switch discovery response is invalid.'
-    if (-not (Test-CcSwitchImportExactFields -InputObject $InputObject -Expected @(
-        'ok', 'providers', 'error'
-    ))) {
-        throw $invalidMessage
+    $names = @(Get-CcSwitchImportPropertyNames $InputObject)
+    foreach ($requiredName in @('ok', 'providers', 'error')) {
+        if ($names -cnotcontains $requiredName) {
+            throw $invalidMessage
+        }
+    }
+    foreach ($name in $names) {
+        if ($name -cnotin @('ok', 'providers', 'currentProviders', 'error')) {
+            throw $invalidMessage
+        }
     }
     $ok = (Get-CcSwitchImportProperty $InputObject 'ok').Value
     $rawProviders = (Get-CcSwitchImportProperty $InputObject 'providers').Value
@@ -174,6 +219,9 @@ function ConvertTo-CcSwitchDiscoveryResponse {
     if ($providerValues.Count -gt 128) {
         throw $invalidMessage
     }
+    $currentProperty = $InputObject.PSObject.Properties['currentProviders']
+    $rawCurrent = if ($null -ne $currentProperty) { $currentProperty.Value } else { $null }
+    $currentProviders = @(ConvertTo-CcSwitchCurrentProviders -InputObject $rawCurrent)
 
     if (-not $ok) {
         if ($providerValues.Count -ne 0 -or -not (Test-CcSwitchImportExactFields `
@@ -190,6 +238,7 @@ function ConvertTo-CcSwitchDiscoveryResponse {
         return [pscustomobject][ordered]@{
             Ok = $false
             Providers = [object[]]@()
+            CurrentProviders = [object[]]@()
             Error = [pscustomobject][ordered]@{
                 Category = [string]$category
                 Message = [string]$message
@@ -299,6 +348,7 @@ function ConvertTo-CcSwitchDiscoveryResponse {
     return [pscustomobject][ordered]@{
         Ok = $true
         Providers = [object[]]$providers.ToArray()
+        CurrentProviders = [object[]]$currentProviders
         Error = $null
     }
 }
@@ -377,6 +427,76 @@ function Invoke-CcSwitchUsageDiscovery {
     }
     catch {
         return New-CcSwitchDiscoveryFailure
+    }
+    finally {
+        $deadline.Stop()
+        if ($null -ne $process) {
+            try { $process.StandardOutput.Dispose() } catch {}
+            try { $process.StandardError.Dispose() } catch {}
+            $process.Dispose()
+        }
+    }
+}
+
+function Read-CcSwitchCurrentProviders {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ExecutablePath,
+        [Parameter(Mandatory)][string]$DatabasePath,
+        [ValidateRange(100, 30000)][int]$TimeoutMilliseconds = 3000
+    )
+
+    $process = $null
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = [IO.Path]::GetFullPath($ExecutablePath)
+        $startInfo.ArgumentList.Add('--inspect-cc-switch')
+        $startInfo.ArgumentList.Add([IO.Path]::GetFullPath($DatabasePath))
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            return [object[]]@()
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $remaining = $TimeoutMilliseconds - [int]$deadline.ElapsedMilliseconds
+        if ($remaining -le 0 -or -not $process.WaitForExit($remaining)) {
+            try { $process.Kill($true) } catch {}
+            return [object[]]@()
+        }
+        $remaining = $TimeoutMilliseconds - [int]$deadline.ElapsedMilliseconds
+        $drainTask = [Threading.Tasks.Task]::WhenAll(
+            [Threading.Tasks.Task[]]@($stdoutTask, $stderrTask)
+        )
+        if ($remaining -le 0 -or -not $drainTask.Wait($remaining)) {
+            return [object[]]@()
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        if ([Text.Encoding]::UTF8.GetByteCount($stdout) -gt 1048576 -or
+            -not $stdout.EndsWith("`n", [StringComparison]::Ordinal) -or
+            ([regex]::Matches($stdout, "`n")).Count -ne 1) {
+            return [object[]]@()
+        }
+        $raw = ($stdout.Substring(0, $stdout.Length - 1)) |
+            ConvertFrom-Json -Depth 12 -ErrorAction Stop
+        $currentProperty = $null
+        if ($null -ne $raw) {
+            $currentProperty = $raw.PSObject.Properties['currentProviders']
+        }
+        if ($null -eq $currentProperty) {
+            return [object[]]@()
+        }
+        return ConvertTo-CcSwitchCurrentProviders -InputObject $currentProperty.Value
+    }
+    catch {
+        return [object[]]@()
     }
     finally {
         $deadline.Stop()
