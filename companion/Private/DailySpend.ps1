@@ -306,9 +306,18 @@ function Resolve-RelayDailySpendRows {
         }
     }
 
-    $store = ConvertTo-CanonicalDailySpendDocument $Document
-    if ($null -eq $store) {
-        $store = New-EmptyDailySpendDocument
+    # The runtime holds an already-canonical store. Re-canonicalizing on the
+    # 1 s presentation tick would re-validate a tiny document every second for
+    # no benefit; only rebuild when the document is missing or malformed.
+    if ($null -eq $Document -or
+        -not (Test-DailySpendFields $Document @('SchemaVersion', 'Date', 'Providers'))) {
+        $store = ConvertTo-CanonicalDailySpendDocument $Document
+        if ($null -eq $store) {
+            $store = New-EmptyDailySpendDocument
+        }
+    }
+    else {
+        $store = $Document
     }
 
     $localToday = $Now.ToLocalTime().ToString('yyyy-MM-dd')

@@ -1,3 +1,27 @@
+function Test-MonitorWindowsSupport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [AllowNull()]
+        [object]$OsVersion = $null
+    )
+
+    if ($null -eq $OsVersion) {
+        $OsVersion = [Environment]::OSVersion.Version
+    }
+    $major = [int]$OsVersion.Major
+    $build = [int]$OsVersion.Build
+    $isWindows10 = $major -eq 10 -and $build -ge 19041 -and $build -lt 22000
+    $isWindows11 = $major -eq 10 -and $build -ge 22000
+    [pscustomobject][ordered]@{
+        Supported = [bool]($isWindows10 -or $isWindows11)
+        Major = [int]$major
+        Build = [int]$build
+        IsWindows10 = [bool]$isWindows10
+        IsWindows11 = [bool]$isWindows11
+    }
+}
+
 function Assert-MonitorDesktopPrerequisites {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$PwshPath)
@@ -6,6 +30,13 @@ function Assert-MonitorDesktopPrerequisites {
         $PSVersionTable.PSVersion -lt [version]'7.4') {
         throw [PlatformNotSupportedException]::new(
             'Codex quota monitor installation requires PowerShell 7.4 or later on Windows.'
+        )
+    }
+
+    $osSupport = Test-MonitorWindowsSupport
+    if (-not $osSupport.Supported) {
+        throw [PlatformNotSupportedException]::new(
+            'Codex quota monitor requires Windows 10 (build 19041 or later) or Windows 11.'
         )
     }
 
