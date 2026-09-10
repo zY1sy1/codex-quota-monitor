@@ -55,6 +55,26 @@ Describe 'Codex quota monitor production composition' {
             TrustedDestination = 'https://relay.example:443'
             Secrets = [pscustomobject]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
         }
+        # A second disabled provider so the settings page has something to move.
+        $secondRelayProvider = [pscustomobject][ordered]@{
+            Id = '22222222-2222-2222-2222-222222222222'
+            Name = 'Second relay'
+            Enabled = $false
+            BaseUrl = 'https://relay.example'
+            ProviderKind = 'Generic'
+            RequestDefinition = [pscustomobject][ordered]@{
+                Method = 'GET'; Path = '/usage'; Query = [pscustomobject][ordered]@{}
+                Headers = [pscustomobject][ordered]@{}; Body = $null
+            }
+            ExtractorScript = 'function(response){return {remaining:response.balance};}'
+            TimeoutSeconds = 10
+            IntervalMinutes = 15
+            TrustedDestination = 'https://relay.example:443'
+            Secrets = [pscustomobject]@{ ApiKey = ''; AccessToken = ''; UserId = '' }
+        }
+        $moveSchedulerCreations = [Collections.Generic.List[int]]::new()
+        $moveResults = [Collections.Generic.List[bool]]::new()
+        $moveErrors = [Collections.Generic.List[string]]::new()
         $settingsPath = Join-Path $localAppData 'CodexQuotaMonitor\data\settings.json'
         New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
         $settingsJson = '{"SchemaVersion":3,"Appearance":{"Theme":"Dark","DisplayMode":"Full","FullLayout":"Overview","RememberLastMode":true},"Window":{"Full":{"Left":null,"Top":null,"Width":420,"Height":560,"Topmost":true,"Visible":true},"CompactBar":{"Left":null,"Top":null},"Orb":{"Left":null,"Top":null}},"Compact":{"FocusMetric":"Auto"},"Relay":{"AutoQueryIntervalMinutes":7},"Startup":true}'
@@ -117,7 +137,10 @@ Describe 'Codex quota monitor production composition' {
         $overrides = [ordered]@{
             ReadRelayProviders = {
                 param($Path)
-                [pscustomobject]@{ SchemaVersion = 2; Providers = @($existingRelayProvider) }
+                [pscustomobject]@{
+                    SchemaVersion = 2
+                    Providers = @($existingRelayProvider, $secondRelayProvider)
+                }
             }.GetNewClosure()
             DiscoverCcSwitch = {
                 param($ExecutablePath, $DatabasePath)
@@ -194,7 +217,8 @@ Describe 'Codex quota monitor production composition' {
                     Kind = 'None'; Link = $null; ProviderId = $null
                 })
                 $null = & $ImportProvider @()
-                & $ApplyProviders @($existingRelayProvider) @($existingRelayProvider.Id) @() $false
+                & $ApplyProviders @($existingRelayProvider, $secondRelayProvider) `
+                    @($existingRelayProvider.Id) @() $false
                 $calls.Add('new-relay-manager-controller') | Out-Null
                 Write-Output -NoEnumerate $relayManagerController
             }.GetNewClosure()
@@ -256,6 +280,17 @@ Describe 'Codex quota monitor production composition' {
                 $MoveRelay | Should -BeOfType ([scriptblock])
                 $settingsSnapshots.Add(
                     ((& $GetSnapshot).PSObject.Properties.Name -join ',')
+                ) | Out-Null
+                # Drive the settings-page reorder while the runtime is live.
+                $schedulersBeforeMove = $schedulerCreations.Count
+                try {
+                    $moveResults.Add([bool](& $MoveRelay $secondRelayProvider.Id -1)) | Out-Null
+                }
+                catch {
+                    $moveErrors.Add($_.Exception.Message) | Out-Null
+                }
+                $moveSchedulerCreations.Add(
+                    $schedulerCreations.Count - $schedulersBeforeMove
                 ) | Out-Null
                 $calls.Add('new-settings-controller') | Out-Null
                 Write-Output -NoEnumerate $settingsController
@@ -333,12 +368,25 @@ Describe 'Codex quota monitor production composition' {
         @($relayImportLinkReads) | Should -Be @(
             [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-import-links.json')
         )
-        $relayImportTransactions.Count | Should -Be 1
+        @($moveErrors) | Should -Be @()
+        @($moveResults) | Should -Be @($true)
+        @($moveSchedulerCreations) | Should -Be @(0)
+        $relayImportTransactions.Count | Should -Be 2
         $relayImportTransactions[0].ProviderPath | Should -BeExactly (
             [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-providers.json')
         )
         $relayImportTransactions[0].LinkPath | Should -BeExactly (
             [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'data', 'relay-import-links.json')
+        )
+        # The settings reorder rewrote the store in the new order, without
+        # touching any provider definition or rebuilding the scheduler.
+        $moved = $relayImportTransactions[-1]
+        $moved.Mutation.Kind | Should -BeExactly 'None'
+        @($moved.ProviderDocument.Providers.Id) | Should -Be @(
+            $secondRelayProvider.Id, $existingRelayProvider.Id
+        )
+        @($moved.ProviderDocument.Providers.Name) | Should -Be @(
+            $secondRelayProvider.Name, $existingRelayProvider.Name
         )
         $relayCacheWrites.Count | Should -Be 1
         @($relayCacheWrites[0].Providers).Count | Should -Be 0
@@ -346,7 +394,7 @@ Describe 'Codex quota monitor production composition' {
             Should -Be @('Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend,Relays')
         @($schedulerCreations).Count | Should -BeGreaterOrEqual 2
         foreach ($creation in $schedulerCreations) {
-            @($creation.EntryIntervals) | Should -Be @(15)
+            @($creation.EntryIntervals) | Should -Be @(15, 15)
         }
         (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).Relay.AutoQueryIntervalMinutes |
             Should -Be 7
