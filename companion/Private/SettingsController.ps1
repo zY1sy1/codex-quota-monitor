@@ -168,14 +168,6 @@ function New-SettingsController {
             & $failWith '无法调整中转站顺序：' $_.Exception
         }
     }.GetNewClosure()
-    $moveRelayUpAction = {
-        param([string]$ProviderId)
-        & $moveRelayAction $ProviderId -1
-    }.GetNewClosure()
-    $moveRelayDownAction = {
-        param([string]$ProviderId)
-        & $moveRelayAction $ProviderId 1
-    }.GetNewClosure()
 
     $closingAction = { }.GetNewClosure()
 
@@ -199,7 +191,7 @@ function New-SettingsController {
                 -OnSetDisplayMode $null -OnSetTheme $null -OnSetFullLayout $null `
                 -OnToggleTopmost $null -OnToggleStartup $null -OnToggleTodaySpend $null `
                 -OnRefresh $null `
-                -OnManageRelays $null -OnMoveRelayUp $null -OnMoveRelayDown $null `
+                -OnManageRelays $null -OnMoveRelay $null `
                 -OnClosing $null
         }
         catch { }
@@ -215,8 +207,7 @@ function New-SettingsController {
         -OnToggleTodaySpend $todaySpendAction `
         -OnRefresh $refreshAction `
         -OnManageRelays $manageRelaysAction `
-        -OnMoveRelayUp $moveRelayUpAction `
-        -OnMoveRelayDown $moveRelayDownAction `
+        -OnMoveRelay $moveRelayAction `
         -OnClosing $closingAction
 
     return [pscustomobject][ordered]@{

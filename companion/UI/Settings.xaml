@@ -294,7 +294,6 @@
 
         <Style x:Key="OrderRowStyle" TargetType="Border">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="CornerRadius" Value="4" />
             <Setter Property="Padding" Value="10,6" />
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
@@ -630,7 +629,7 @@
                                 Background="{DynamicResource SettingsSeparatorBrush}" />
                         <StackPanel Margin="0,16,0,0">
                             <TextBlock Text="显示顺序" Style="{StaticResource SettingTitleStyle}" />
-                            <TextBlock Text="调整中转站在悬浮窗里的先后；越靠上越先显示。停用的中转站不出现在悬浮窗中。"
+                            <TextBlock Text="按住一行拖动即可调整顺序，也可以用右侧箭头微调；越靠上越先显示。停用的中转站不出现在悬浮窗中。"
                                        MaxWidth="420"
                                        Style="{StaticResource SettingDescriptionStyle}" />
                         </StackPanel>

@@ -58,7 +58,7 @@ Describe 'settings controller' {
                 param(
                     $OnSetDisplayMode, $OnSetTheme, $OnSetFullLayout,
                     $OnToggleTopmost, $OnToggleStartup, $OnToggleTodaySpend,
-                    $OnRefresh, $OnManageRelays, $OnMoveRelayUp, $OnMoveRelayDown, $OnClosing
+                    $OnRefresh, $OnManageRelays, $OnMoveRelay, $OnClosing
                 )
                 $viewState.Callbacks = [pscustomobject][ordered]@{}
                 foreach ($entry in $PSBoundParameters.GetEnumerator()) {
@@ -95,7 +95,7 @@ Describe 'settings controller' {
         ($ViewState.Snapshot.PSObject.Properties.Name -join ',') |
             Should -BeExactly 'Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend'
         ($ViewState.Callbacks.PSObject.Properties.Name -join ',') |
-            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnToggleTodaySpend,OnRefresh,OnManageRelays,OnMoveRelayUp,OnMoveRelayDown,OnClosing'
+            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnToggleTodaySpend,OnRefresh,OnManageRelays,OnMoveRelay,OnClosing'
         $ViewState.RenderCalls | Should -Be 1
         $ViewState.ShowCalls | Should -Be 1
         $ViewState.StatusKind | Should -BeExactly 'Idle'
@@ -192,11 +192,13 @@ Describe 'settings controller' {
         $ViewState.RelayOrderCalls | Should -Be 2
     }
 
-    It 'moves a relay through the injected action using the row offset' {
-        & $ViewState.Callbacks.OnMoveRelayUp 'relay-a'
-        & $ViewState.Callbacks.OnMoveRelayDown 'relay-a'
+    It 'moves a relay by the offset the view computed' {
+        # the arrows pass a single step; a drag passes however far it travelled
+        & $ViewState.Callbacks.OnMoveRelay 'relay-a' -1
+        & $ViewState.Callbacks.OnMoveRelay 'relay-a' 1
+        & $ViewState.Callbacks.OnMoveRelay 'relay-a' 3
 
-        @($script:MoveRelayCalls) | Should -Be @('relay-a/-1', 'relay-a/1')
+        @($script:MoveRelayCalls) | Should -Be @('relay-a/-1', 'relay-a/1', 'relay-a/3')
     }
 
     It 'reports an error and restores the snapshot when a relay move fails' {
@@ -213,7 +215,7 @@ Describe 'settings controller' {
             -RequestRefresh { } `
             -MoveRelay { param($ProviderId, $Offset) throw 'store is read-only' }
 
-        & $ViewState.Callbacks.OnMoveRelayUp 'relay-a'
+        & $ViewState.Callbacks.OnMoveRelay 'relay-a' 1
 
         $ViewState.Status | Should -BeExactly '无法调整中转站顺序：store is read-only'
         $ViewState.StatusKind | Should -BeExactly 'Error'
@@ -233,7 +235,7 @@ Describe 'settings controller' {
             -ToggleTodaySpend { } `
             -RequestRefresh { }
 
-        { & $ViewState.Callbacks.OnMoveRelayUp 'relay-a' } | Should -Not -Throw
+        { & $ViewState.Callbacks.OnMoveRelay 'relay-a' 1 } | Should -Not -Throw
         $ViewState.RenderCalls | Should -Be 0
     }
 

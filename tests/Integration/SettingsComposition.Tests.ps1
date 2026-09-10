@@ -24,14 +24,17 @@ BeforeAll {
         param($Row)
         $grid = $Row.Child
         [pscustomobject]@{
-            Ordinal = @(
+            Grip = @(
                 $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 0 }
             )[0]
-            Label = @(
+            Ordinal = @(
                 $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 1 }
             )[0]
-            Buttons = @(
+            Label = @(
                 $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 2 }
+            )[0]
+            Buttons = @(
+                $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 3 }
             )[0]
         }
     }
@@ -49,8 +52,7 @@ Describe 'settings window composition' {
             -OnToggleStartup { $script:Calls.Add('startup') } `
             -OnRefresh { $script:Calls.Add('refresh') } `
             -OnManageRelays { $script:Calls.Add('relays') } `
-            -OnMoveRelayUp { param($value) $script:Calls.Add("relay-up:$value") } `
-            -OnMoveRelayDown { param($value) $script:Calls.Add("relay-down:$value") } `
+            -OnMoveRelay { param($value, $offset) $script:Calls.Add("relay:$value/$offset") } `
             -OnClosing { $script:Calls.Add('closing') }
     }
 
@@ -271,14 +273,16 @@ Describe 'settings window composition' {
 
         $View.Controls.RelayOrderSurface.Visibility | Should -Be ([Windows.Visibility]::Visible)
         $View.Controls.RelayOrderEmptyText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
-        # three rows plus two separating hairlines
-        $View.Controls.RelayOrderList.Children.Count | Should -Be 5
+        # one child per provider; rows carry their own hairline
+        $View.Controls.RelayOrderList.Children.Count | Should -Be 3
 
         $rows = @(Get-RelayOrderRow -Panel $View.Controls.RelayOrderList)
         $rows.Count | Should -Be 3
         foreach ($row in $rows) {
             $row.Style | Should -Be $View.Window.Resources['OrderRowStyle']
         }
+        # every row but the last draws the separating hairline
+        @($rows | ForEach-Object { $_.BorderThickness.Bottom }) | Should -Be @(1, 1, 0)
 
         $first = Get-RelayOrderRowParts -Row $rows[0]
         $middle = Get-RelayOrderRowParts -Row $rows[1]
@@ -301,7 +305,28 @@ Describe 'settings window composition' {
         $middle.Label.Children[1].Child.Text | Should -BeExactly '已停用'
     }
 
-    It 'routes relay order buttons to their callbacks with the provider id' {
+    It 'makes every relay row a drag handle' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
+        )
+
+        $rows = @(Get-RelayOrderRow -Panel $View.Controls.RelayOrderList)
+        foreach ($row in $rows) {
+            $row.Cursor | Should -Be ([Windows.Input.Cursors]::SizeAll)
+            $row.ToolTip | Should -BeLike '拖动*调整顺序'
+            $parts = Get-RelayOrderRowParts -Row $row
+            # the grip is decoration only, so presses reach the row
+            $parts.Grip | Should -BeOfType ([Windows.Shapes.Path])
+            $parts.Grip.IsHitTestVisible | Should -BeFalse
+        }
+        # two buttons plus the row press handler per row
+        $View.State.RelayOrderHandlers.Count | Should -Be 6
+        @($View.State.RelayOrderHandlers.Kind | Group-Object | ForEach-Object { $_.Name }) |
+            Should -Be @('Click', 'Mouse')
+    }
+
+    It 'routes relay order buttons to their callbacks with the provider id and offset' {
         & $View.SetRelayOrder @(
             [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
             [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
@@ -318,7 +343,7 @@ Describe 'settings window composition' {
             [Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent)
         )
 
-        @($script:Calls) | Should -Be @('relay-up:b', 'relay-down:b')
+        @($script:Calls) | Should -Be @('relay:b/-1', 'relay:b/1')
     }
 
     It 'replaces the relay order rows instead of accumulating their handlers' {
@@ -329,8 +354,8 @@ Describe 'settings window composition' {
         & $View.SetRelayOrder $providers
         & $View.SetRelayOrder $providers
 
-        $View.State.RelayOrderHandlers.Count | Should -Be 4
-        $View.Controls.RelayOrderList.Children.Count | Should -Be 3
+        $View.State.RelayOrderHandlers.Count | Should -Be 6
+        $View.Controls.RelayOrderList.Children.Count | Should -Be 2
     }
 
     It 'shows an empty hint instead of an empty relay surface' {
@@ -340,6 +365,135 @@ Describe 'settings window composition' {
         $View.Controls.RelayOrderEmptyText.Visibility | Should -Be ([Windows.Visibility]::Visible)
         $View.Controls.RelayOrderList.Children.Count | Should -Be 0
         $View.State.RelayOrderHandlers.Count | Should -Be 0
+    }
+
+    It 'computes the drag drop index from row centers' -ForEach @(
+        # four rows with centers at 20/60/100/140: the dragged row lands after
+        # whichever midpoints the cursor has passed.
+        @{ Centers = @(20, 60, 100, 140); Cursor = 5;   Dragged = 0; Expected = 0 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 30;  Dragged = 0; Expected = 0 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 70;  Dragged = 0; Expected = 1 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 110; Dragged = 0; Expected = 2 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 500; Dragged = 0; Expected = 3 }
+        # dragging the last row up
+        @{ Centers = @(20, 60, 100, 140); Cursor = 500; Dragged = 3; Expected = 3 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 110; Dragged = 3; Expected = 3 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 30;  Dragged = 3; Expected = 1 }
+        @{ Centers = @(20, 60, 100, 140); Cursor = 10;  Dragged = 3; Expected = 0 }
+        # a single row can never move
+        @{ Centers = @(20);              Cursor = 5;   Dragged = 0; Expected = 0 }
+        @{ Centers = @(20);              Cursor = 900; Dragged = 0; Expected = 0 }
+    ) {
+        Get-RelayOrderDropIndex -RowCenters $Centers -CursorY $Cursor -DraggedIndex $Dragged |
+            Should -Be $Expected
+    }
+
+    It 'keeps the dragged row in place while the cursor stays inside its own slot' {
+        # the cursor has not reached the neighbour's midpoint yet
+        Get-RelayOrderDropIndex -RowCenters @(20, 60, 100) -CursorY 65 -DraggedIndex 1 |
+            Should -Be 1
+        Get-RelayOrderDropIndex -RowCenters @(20, 60, 100) -CursorY 90 -DraggedIndex 1 |
+            Should -Be 1
+    }
+
+    It 'persists the offset of a completed drag and clears the drag visuals' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
+            [pscustomobject]@{ Id = 'c'; Name = 'relay-c'; Enabled = $true }
+        )
+        $panel = $View.Controls.RelayOrderList
+        $rows = @(Get-RelayOrderRow -Panel $panel)
+        $dragged = $rows[0]
+
+        # the press and move handlers had picked row 0 up and carried it down
+        $View.State.DragRow = $dragged
+        $View.State.DragProviderId = 'a'
+        $View.State.DragFromIndex = 0
+        $View.State.DragActive = $true
+        $dragged.Opacity = 0.55
+        $dragged.BorderBrush = $View.Window.Resources['SettingsAccentBrush']
+        $panel.Children.RemoveAt(0)
+        $panel.Children.Insert(2, $dragged)
+
+        $mouseUp = [Windows.Input.MouseButtonEventArgs]::new(
+            [Windows.Input.Mouse]::PrimaryDevice, 0, [Windows.Input.MouseButton]::Left
+        )
+        $View.State.Delegates.RelayOrderMouseUp.Invoke($panel, $mouseUp)
+
+        @($script:Calls) | Should -Be @('relay:a/2')
+        $View.State.DragRow | Should -BeNullOrEmpty
+        $View.State.DragActive | Should -BeFalse
+        $dragged.Opacity | Should -Be 1
+        $dragged.BorderBrush.ToString() |
+            Should -BeExactly $View.Window.Resources['SettingsSeparatorBrush'].ToString()
+    }
+
+    It 'notifies nobody when a drag ends where it began' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
+        )
+        $panel = $View.Controls.RelayOrderList
+        $rows = @(Get-RelayOrderRow -Panel $panel)
+
+        $View.State.DragRow = $rows[0]
+        $View.State.DragProviderId = 'a'
+        $View.State.DragFromIndex = 0
+        $View.State.DragActive = $true
+
+        $mouseUp = [Windows.Input.MouseButtonEventArgs]::new(
+            [Windows.Input.Mouse]::PrimaryDevice, 0, [Windows.Input.MouseButton]::Left
+        )
+        $View.State.Delegates.RelayOrderMouseUp.Invoke($panel, $mouseUp)
+
+        @($script:Calls) | Should -Be @()
+        $View.State.DragRow | Should -BeNullOrEmpty
+    }
+
+    It 'drops a drag that never passed the movement threshold' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
+        )
+        $panel = $View.Controls.RelayOrderList
+        $rows = @(Get-RelayOrderRow -Panel $panel)
+
+        # a plain click records the press but never activates the drag
+        $View.State.DragRow = $rows[0]
+        $View.State.DragProviderId = 'a'
+        $View.State.DragFromIndex = 0
+        $View.State.DragActive = $false
+
+        $mouseUp = [Windows.Input.MouseButtonEventArgs]::new(
+            [Windows.Input.Mouse]::PrimaryDevice, 0, [Windows.Input.MouseButton]::Left
+        )
+        $View.State.Delegates.RelayOrderMouseUp.Invoke($panel, $mouseUp)
+
+        @($script:Calls) | Should -Be @()
+        $View.State.DragRow | Should -BeNullOrEmpty
+    }
+
+    It 'abandons the drag when the panel loses mouse capture' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+        )
+        $panel = $View.Controls.RelayOrderList
+        $rows = @(Get-RelayOrderRow -Panel $panel)
+        $View.State.DragRow = $rows[0]
+        $View.State.DragProviderId = 'a'
+        $View.State.DragFromIndex = 0
+        $View.State.DragActive = $true
+        $rows[0].Opacity = 0.55
+
+        $View.State.Delegates.RelayOrderLostCapture.Invoke(
+            $panel,
+            [Windows.Input.MouseEventArgs]::new([Windows.Input.Mouse]::PrimaryDevice, 0)
+        )
+
+        $View.State.DragRow | Should -BeNullOrEmpty
+        $rows[0].Opacity | Should -Be 1
+        @($script:Calls) | Should -Be @()
     }
 
     It 'cancels ordinary closing and hides the window for reuse' {

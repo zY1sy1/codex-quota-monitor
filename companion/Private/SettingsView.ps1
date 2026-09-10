@@ -5,6 +5,38 @@ if (-not (Get-Command Set-SettingsWindowTheme -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'Theme.ps1')
 }
 
+# Drag-to-reorder arithmetic, kept pure so it can be tested without a mouse.
+# RowCenters are the vertical midpoints of the rows in their current on-screen
+# order. The dragged row lands wherever the cursor has passed the midpoint of
+# the row above it, so the answer is simply how many *other* rows the cursor has
+# moved past — which is already the index to insert at once the dragged row has
+# been removed from the panel.
+function Get-RelayOrderDropIndex {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()][double[]]$RowCenters,
+        [Parameter(Mandatory)][double]$CursorY,
+        [Parameter(Mandatory)][int]$DraggedIndex
+    )
+    $target = 0
+    for ($index = 0; $index -lt $RowCenters.Count; $index++) {
+        if ($index -eq $DraggedIndex) { continue }
+        if ($RowCenters[$index] -lt $CursorY) { $target++ }
+    }
+    return $target
+}
+
+function Test-SettingsOrderPressOnButton {
+    param([AllowNull()][object]$Source)
+    $current = $Source
+    while ($null -ne $current) {
+        if ($current -is [Windows.Controls.Button]) { return $true }
+        if ($current -isnot [Windows.Media.Visual]) { return $false }
+        $current = [Windows.Media.VisualTreeHelper]::GetParent($current)
+    }
+    return $false
+}
+
 function New-SettingsView {
     [CmdletBinding()]
     param(
@@ -82,6 +114,11 @@ function New-SettingsView {
         CurrentPage = 'Appearance'
         Delegates = [ordered]@{}
         RelayOrderHandlers = [Collections.Generic.List[object]]::new()
+        DragRow = $null
+        DragProviderId = $null
+        DragFromIndex = -1
+        DragStartY = 0
+        DragActive = $false
     }
 
     # A local reader keeps this view loadable on its own, the same way the
@@ -242,17 +279,62 @@ function New-SettingsView {
             $state.Window.Resources['SettingsTextSecondaryBrush']
     }.GetNewClosure()
 
+    # Rows carry their own bottom hairline so the panel children map one-to-one
+    # onto providers; that identity is what makes the drag index math trivial.
+    $applyOrderSeparators = {
+        $panel = $state.Controls.RelayOrderList
+        $children = @($panel.Children)
+        for ($index = 0; $index -lt $children.Count; $index++) {
+            $target = if ($index -lt ($children.Count - 1)) {
+                [Windows.Thickness]::new(0, 0, 0, 1)
+            }
+            else {
+                [Windows.Thickness]::new(0)
+            }
+            if ($children[$index].BorderThickness -ne $target) {
+                $children[$index].BorderThickness = $target
+            }
+        }
+    }.GetNewClosure()
+
+    $resetRelayDrag = {
+        if ($null -ne $state.DragRow) {
+            try { $state.DragRow.Opacity = 1 } catch { }
+            try {
+                $state.DragRow.SetResourceReference(
+                    [Windows.Controls.Border]::BorderBrushProperty, 'SettingsSeparatorBrush'
+                )
+            }
+            catch { }
+        }
+        $state.DragRow = $null
+        $state.DragProviderId = $null
+        $state.DragFromIndex = -1
+        $state.DragStartY = 0
+        $state.DragActive = $false
+    }.GetNewClosure()
+
     $detachRelayOrderHandlers = {
         foreach ($entry in @($state.RelayOrderHandlers)) {
-            try { $entry.Control.Remove_Click($entry.Handler) } catch { }
+            try {
+                if ($entry.Kind -eq 'Mouse') {
+                    $entry.Control.Remove_MouseLeftButtonDown($entry.Handler)
+                }
+                else {
+                    $entry.Control.Remove_Click($entry.Handler)
+                }
+            }
+            catch { }
         }
         $state.RelayOrderHandlers.Clear()
+        & $resetRelayDrag
         $state.Controls.RelayOrderList.Children.Clear()
     }.GetNewClosure()
 
     # One styled row per provider, in display order. The label carries the
     # 已停用 tag because a disabled provider is invisible in the floating
-    # window, so this list is the only place the state shows up.
+    # window, so this list is the only place the state shows up. Rows are
+    # dragged to reorder, with the arrows kept for precise and keyboard use.
     $setRelayOrder = {
         param([AllowEmptyCollection()][object[]]$Providers)
         if ($state.Disposed) { return }
@@ -279,13 +361,6 @@ function New-SettingsView {
         $panel = $state.Controls.RelayOrderList
         for ($index = 0; $index -lt $items.Count; $index++) {
             $provider = $items[$index]
-            if ($index -gt 0) {
-                $separator = [Windows.Controls.Border]::new()
-                $separator.Height = 1
-                $separator.Background = $resources['SettingsSeparatorBrush']
-                $null = $panel.Children.Add($separator)
-            }
-
             $providerId = [string](& $getField $provider 'Id')
             $displayName = [string](& $getField $provider 'Name')
             if ([string]::IsNullOrWhiteSpace($displayName)) { $displayName = $providerId }
@@ -293,23 +368,57 @@ function New-SettingsView {
 
             $row = [Windows.Controls.Border]::new()
             $row.Style = $resources['OrderRowStyle']
+            # Dynamic references rather than captured brush objects, so the rows
+            # re-theme with the window instead of freezing the colours they were
+            # built with.
+            $row.SetResourceReference(
+                [Windows.Controls.Border]::BorderBrushProperty, 'SettingsSeparatorBrush'
+            )
+            $row.Cursor = [Windows.Input.Cursors]::SizeAll
+            $row.ToolTip = "拖动「$displayName」调整顺序"
+            [Windows.Automation.AutomationProperties]::SetName(
+                $row, "中转站第 $($index + 1) 位：$displayName"
+            )
             $grid = [Windows.Controls.Grid]::new()
+            $gripColumn = [Windows.Controls.ColumnDefinition]::new()
+            $gripColumn.Width = [Windows.GridLength]::Auto
             $ordinalColumn = [Windows.Controls.ColumnDefinition]::new()
             $ordinalColumn.Width = [Windows.GridLength]::new([double]22)
             $labelColumn = [Windows.Controls.ColumnDefinition]::new()
             $labelColumn.Width = [Windows.GridLength]::new([double]1, [Windows.GridUnitType]::Star)
             $buttonColumn = [Windows.Controls.ColumnDefinition]::new()
             $buttonColumn.Width = [Windows.GridLength]::Auto
-            foreach ($column in @($ordinalColumn, $labelColumn, $buttonColumn)) {
+            foreach ($column in @($gripColumn, $ordinalColumn, $labelColumn, $buttonColumn)) {
                 $grid.ColumnDefinitions.Add($column)
             }
+
+            $grip = [Windows.Shapes.Path]::new()
+            $grip.Data = [Windows.Media.Geometry]::Parse(
+                'M1,2 H3.4 M1,5 H3.4 M1,8 H3.4 M6.6,2 H9 M6.6,5 H9 M6.6,8 H9'
+            )
+            $grip.StrokeThickness = 1.3
+            $grip.StrokeStartLineCap = [Windows.Media.PenLineCap]::Round
+            $grip.StrokeEndLineCap = [Windows.Media.PenLineCap]::Round
+            $grip.SetResourceReference(
+                [Windows.Shapes.Shape]::StrokeProperty, 'SettingsTextSecondaryBrush'
+            )
+            $grip.Width = 10
+            $grip.Height = 10
+            $grip.Margin = [Windows.Thickness]::new(0, 0, 8, 0)
+            $grip.Opacity = 0.65
+            $grip.VerticalAlignment = [Windows.VerticalAlignment]::Center
+            $grip.IsHitTestVisible = $false
+            [Windows.Controls.Grid]::SetColumn($grip, 0)
+            $null = $grid.Children.Add($grip)
 
             $ordinal = [Windows.Controls.TextBlock]::new()
             $ordinal.Text = [string]($index + 1)
             $ordinal.FontSize = 11
-            $ordinal.Foreground = $resources['SettingsTextSecondaryBrush']
+            $ordinal.SetResourceReference(
+                [Windows.Controls.TextBlock]::ForegroundProperty, 'SettingsTextSecondaryBrush'
+            )
             $ordinal.VerticalAlignment = [Windows.VerticalAlignment]::Center
-            [Windows.Controls.Grid]::SetColumn($ordinal, 0)
+            [Windows.Controls.Grid]::SetColumn($ordinal, 1)
             $null = $grid.Children.Add($ordinal)
 
             $label = [Windows.Controls.TextBlock]::new()
@@ -317,12 +426,14 @@ function New-SettingsView {
             $label.FontSize = 13
             $label.TextTrimming = [Windows.TextTrimming]::CharacterEllipsis
             $label.VerticalAlignment = [Windows.VerticalAlignment]::Center
-            $label.Foreground = $resources[$(if ($isEnabled) {
-                'SettingsTextPrimaryBrush'
-            }
-            else {
-                'SettingsTextSecondaryBrush'
-            })]
+            $label.SetResourceReference(
+                [Windows.Controls.TextBlock]::ForegroundProperty, $(if ($isEnabled) {
+                    'SettingsTextPrimaryBrush'
+                }
+                else {
+                    'SettingsTextSecondaryBrush'
+                })
+            )
             $labelRow = [Windows.Controls.StackPanel]::new()
             $labelRow.Orientation = [Windows.Controls.Orientation]::Horizontal
             $null = $labelRow.Children.Add($label)
@@ -332,30 +443,36 @@ function New-SettingsView {
                 $tag.Padding = [Windows.Thickness]::new(6, 1, 6, 1)
                 $tag.CornerRadius = [Windows.CornerRadius]::new(3)
                 $tag.BorderThickness = [Windows.Thickness]::new(1)
-                $tag.BorderBrush = $resources['SettingsSeparatorBrush']
-                $tag.Background = $resources['SettingsSidebarBrush']
+                $tag.SetResourceReference(
+                    [Windows.Controls.Border]::BorderBrushProperty, 'SettingsSeparatorBrush'
+                )
+                $tag.SetResourceReference(
+                    [Windows.Controls.Border]::BackgroundProperty, 'SettingsSidebarBrush'
+                )
                 $tag.VerticalAlignment = [Windows.VerticalAlignment]::Center
                 $tagText = [Windows.Controls.TextBlock]::new()
                 $tagText.Text = '已停用'
                 $tagText.FontSize = 10
-                $tagText.Foreground = $resources['SettingsTextSecondaryBrush']
+                $tagText.SetResourceReference(
+                    [Windows.Controls.TextBlock]::ForegroundProperty, 'SettingsTextSecondaryBrush'
+                )
                 $tag.Child = $tagText
                 $null = $labelRow.Children.Add($tag)
             }
-            [Windows.Controls.Grid]::SetColumn($labelRow, 1)
+            [Windows.Controls.Grid]::SetColumn($labelRow, 2)
             $null = $grid.Children.Add($labelRow)
 
             $buttons = [Windows.Controls.StackPanel]::new()
             $buttons.Orientation = [Windows.Controls.Orientation]::Horizontal
             $buttons.VerticalAlignment = [Windows.VerticalAlignment]::Center
             foreach ($definition in @(
-                @{ Callback = 'OnMoveRelayUp'; Action = '上移'; Data = 'M2.6,7.4 L5.8,4.2 L9,7.4'
+                @{ Action = '上移'; Offset = -1; Data = 'M2.6,7.4 L5.8,4.2 L9,7.4'
                    Enabled = ($index -gt 0) }
-                @{ Callback = 'OnMoveRelayDown'; Action = '下移'; Data = 'M2.6,4.6 L5.8,7.8 L9,4.6'
+                @{ Action = '下移'; Offset = 1; Data = 'M2.6,4.6 L5.8,7.8 L9,4.6'
                    Enabled = ($index -lt ($items.Count - 1)) }
             )) {
-                $callbackName = [string]$definition.Callback
                 $actionName = [string]$definition.Action
+                $rowOffset = [int]$definition.Offset
                 $button = [Windows.Controls.Button]::new()
                 $button.Style = $resources['OrderMoveButtonStyle']
                 $button.IsEnabled = [bool]$definition.Enabled
@@ -369,21 +486,100 @@ function New-SettingsView {
                 $button.Content = $icon
                 $handler = [Windows.RoutedEventHandler]{
                     param($sender, $args)
-                    $null = & $invokeForRows $callbackName @($providerId)
+                    $null = & $invokeForRows 'OnMoveRelay' @($providerId, $rowOffset)
                 }.GetNewClosure()
-                $state.RelayOrderHandlers.Add(
-                    [pscustomobject][ordered]@{ Control = $button; Handler = $handler }
-                )
+                $state.RelayOrderHandlers.Add([pscustomobject][ordered]@{
+                    Control = $button; Handler = $handler; Kind = 'Click'
+                })
                 $button.Add_Click($handler)
                 $null = $buttons.Children.Add($button)
             }
-            [Windows.Controls.Grid]::SetColumn($buttons, 2)
+            [Windows.Controls.Grid]::SetColumn($buttons, 3)
             $null = $grid.Children.Add($buttons)
 
             $row.Child = $grid
+            $pressHandler = [Windows.Input.MouseButtonEventHandler]{
+                param($sender, $eventArgs)
+                if ($state.Disposed -or $null -ne $state.DragRow) { return }
+                # ButtonBase marks its own press handled, but a future layout
+                # change could put a press back on the row; never drag from it.
+                if (Test-SettingsOrderPressOnButton -Source $eventArgs.OriginalSource) { return }
+                $state.DragRow = $row
+                $state.DragProviderId = $providerId
+                $state.DragFromIndex = $index
+                $state.DragStartY = $eventArgs.GetPosition($panel).Y
+                $state.DragActive = $false
+                $null = $panel.CaptureMouse()
+                $eventArgs.Handled = $true
+            }.GetNewClosure()
+            $state.RelayOrderHandlers.Add([pscustomobject][ordered]@{
+                Control = $row; Handler = $pressHandler; Kind = 'Mouse'
+            })
+            $row.Add_MouseLeftButtonDown($pressHandler)
             $null = $panel.Children.Add($row)
         }
+        & $applyOrderSeparators
     }.GetNewClosure()
+
+    $relayOrderMouseMove = [Windows.Input.MouseEventHandler]{
+        param($sender, $eventArgs)
+        if ($state.Disposed -or $null -eq $state.DragRow) { return }
+        $panel = $state.Controls.RelayOrderList
+        $position = $eventArgs.GetPosition($panel)
+        if (-not $state.DragActive) {
+            if ([Math]::Abs($position.Y - $state.DragStartY) -lt 4) { return }
+            $state.DragActive = $true
+            $state.DragRow.Opacity = 0.55
+            $state.DragRow.SetResourceReference(
+                [Windows.Controls.Border]::BorderBrushProperty, 'SettingsAccentBrush'
+            )
+        }
+        $current = $panel.Children.IndexOf($state.DragRow)
+        if ($current -lt 0) { return }
+        $children = @($panel.Children)
+        $centers = [Collections.Generic.List[double]]::new()
+        for ($index = 0; $index -lt $children.Count; $index++) {
+            $top = $children[$index].TranslatePoint([Windows.Point]::new(0, 0), $panel).Y
+            $centers.Add($top + ($children[$index].ActualHeight / 2))
+        }
+        $target = Get-RelayOrderDropIndex -RowCenters $centers.ToArray() `
+            -CursorY $position.Y -DraggedIndex $current
+        if ($target -ne $current -and $target -ge 0 -and $target -lt $children.Count) {
+            $panel.Children.RemoveAt($current)
+            $panel.Children.Insert($target, $state.DragRow)
+            & $applyOrderSeparators
+        }
+    }.GetNewClosure()
+
+    $relayOrderMouseUp = [Windows.Input.MouseButtonEventHandler]{
+        param($sender, $eventArgs)
+        if ($state.Disposed) { return }
+        if ($null -eq $state.DragRow) { return }
+        $panel = $state.Controls.RelayOrderList
+        if ($panel.IsMouseCaptured) { $panel.ReleaseMouseCapture() }
+        $row = $state.DragRow
+        $providerId = [string]$state.DragProviderId
+        $fromIndex = [int]$state.DragFromIndex
+        $wasDragging = [bool]$state.DragActive
+        $toIndex = $panel.Children.IndexOf($row)
+        & $resetRelayDrag
+        if ($wasDragging -and $toIndex -ge 0 -and $toIndex -ne $fromIndex) {
+            $null = & $invoke 'OnMoveRelay' @($providerId, ($toIndex - $fromIndex))
+        }
+    }.GetNewClosure()
+
+    $relayOrderLostCapture = [Windows.Input.MouseEventHandler]{
+        param($sender, $eventArgs)
+        if ($state.Disposed) { return }
+        & $resetRelayDrag
+    }.GetNewClosure()
+
+    $state.Delegates.RelayOrderMouseMove = $relayOrderMouseMove
+    $state.Delegates.RelayOrderMouseUp = $relayOrderMouseUp
+    $state.Delegates.RelayOrderLostCapture = $relayOrderLostCapture
+    $controls.RelayOrderList.Add_MouseMove($relayOrderMouseMove)
+    $controls.RelayOrderList.Add_MouseLeftButtonUp($relayOrderMouseUp)
+    $controls.RelayOrderList.Add_LostMouseCapture($relayOrderLostCapture)
 
     $setStatus = {
         param(
@@ -416,8 +612,7 @@ function New-SettingsView {
             [Parameter()][AllowNull()][scriptblock]$OnToggleTodaySpend,
             [Parameter()][AllowNull()][scriptblock]$OnRefresh,
             [Parameter()][AllowNull()][scriptblock]$OnManageRelays,
-            [Parameter()][AllowNull()][scriptblock]$OnMoveRelayUp,
-            [Parameter()][AllowNull()][scriptblock]$OnMoveRelayDown,
+            [Parameter()][AllowNull()][scriptblock]$OnMoveRelay,
             [Parameter()][AllowNull()][scriptblock]$OnClosing
         )
         if ($state.Disposed) { return }
@@ -430,8 +625,7 @@ function New-SettingsView {
             OnToggleTodaySpend = $OnToggleTodaySpend
             OnRefresh = $OnRefresh
             OnManageRelays = $OnManageRelays
-            OnMoveRelayUp = $OnMoveRelayUp
-            OnMoveRelayDown = $OnMoveRelayDown
+            OnMoveRelay = $OnMoveRelay
             OnClosing = $OnClosing
         }
     }.GetNewClosure()
@@ -440,6 +634,15 @@ function New-SettingsView {
         if ($state.Disposed) { return }
         $state.Disposed = $true
         try { & $detachRelayOrderHandlers } catch { }
+        try { $controls.RelayOrderList.Remove_MouseMove($state.Delegates.RelayOrderMouseMove) } catch { }
+        try {
+            $controls.RelayOrderList.Remove_MouseLeftButtonUp($state.Delegates.RelayOrderMouseUp)
+        }
+        catch { }
+        try {
+            $controls.RelayOrderList.Remove_LostMouseCapture($state.Delegates.RelayOrderLostCapture)
+        }
+        catch { }
         try { $window.remove_Closing($state.Delegates.Closing) } catch { }
         foreach ($name in @($state.Delegates.Keys)) {
             if ($name -eq 'Closing') { continue }
