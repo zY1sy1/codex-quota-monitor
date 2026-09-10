@@ -138,6 +138,42 @@ function Test-RelayManagerDestinationFingerprint {
     return $Fingerprint -ceq $canonical
 }
 
+# Provider display order is the array order in relay-providers.json, so a move
+# is pure list arithmetic. Callers own the store write and the refresh.
+function Get-RelayProviderReorder {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()][object[]]$Providers,
+        [AllowNull()][string]$ProviderId,
+        [Parameter(Mandatory)][int]$Offset
+    )
+    $items = [Collections.Generic.List[object]]::new()
+    foreach ($provider in @($Providers)) {
+        if ($null -ne $provider) { $items.Add($provider) }
+    }
+    $index = -1
+    for ($position = 0; $position -lt $items.Count; $position++) {
+        if ([string](Get-MonitorInteractionField $items[$position] 'Id') -ceq [string]$ProviderId) {
+            $index = $position
+            break
+        }
+    }
+    $target = $index + $Offset
+    if ($index -lt 0 -or $target -lt 0 -or $target -ge $items.Count) {
+        return [pscustomobject][ordered]@{
+            Moved = $false
+            Providers = [object[]]$items.ToArray()
+        }
+    }
+    $moved = $items[$index]
+    $items.RemoveAt($index)
+    $items.Insert($target, $moved)
+    [pscustomobject][ordered]@{
+        Moved = $true
+        Providers = [object[]]$items.ToArray()
+    }
+}
+
 function New-RelayManagerController {
     [CmdletBinding()]
     param(
@@ -170,6 +206,7 @@ function New-RelayManagerController {
     $newLinkMutation = ${function:New-RelayImportLinkMutation}
     $canonicalizeProvider = ${function:ConvertTo-CanonicalRelayProvider}
     $canonicalizeDocument = ${function:ConvertTo-CanonicalRelayProviderDocument}
+    $reorderProviders = ${function:Get-RelayProviderReorder}
 
     $findProvider = {
         param([AllowNull()][string]$ProviderId)
@@ -496,22 +533,11 @@ function New-RelayManagerController {
     $move = {
         param([string]$ProviderId, [int]$Offset)
         if ($state.Disposed) { return $false }
-        $items = [Collections.Generic.List[object]]::new()
-        foreach ($provider in @($state.Providers)) { $items.Add($provider) }
-        $index = -1
-        for ($position = 0; $position -lt $items.Count; $position++) {
-            if ([string](& $get $items[$position] 'Id') -ceq [string]$ProviderId) {
-                $index = $position
-                break
-            }
-        }
-        $target = $index + $Offset
-        if ($index -lt 0 -or $target -lt 0 -or $target -ge $items.Count) { return $false }
-        $moved = $items[$index]
-        $items.RemoveAt($index)
-        $items.Insert($target, $moved)
+        $reorder = & $reorderProviders -Providers $state.Providers `
+            -ProviderId $ProviderId -Offset $Offset
+        if (-not [bool]$reorder.Moved) { return $false }
         $document = & $canonicalizeDocument ([ordered]@{
-            SchemaVersion = 2; Providers = [object[]]$items.ToArray()
+            SchemaVersion = 2; Providers = [object[]]$reorder.Providers
         })
         if ($null -eq $document) {
             & $View.SetTestState $false $false '无法调整中转站顺序。'

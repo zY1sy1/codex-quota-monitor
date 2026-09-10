@@ -16,6 +16,7 @@ Describe 'settings controller' {
             ShowTodaySpend = $true
         }
         $script:RefreshCalls = 0
+        $script:MoveRelayCalls = [Collections.Generic.List[string]]::new()
         $script:ViewState = [pscustomobject][ordered]@{
             Snapshot = $null
             Status = ''
@@ -24,6 +25,8 @@ Describe 'settings controller' {
             RenderCalls = 0
             ShowCalls = 0
             DisposeCalls = 0
+            RelayOrder = @()
+            RelayOrderCalls = 0
         }
         $viewState = $script:ViewState
         $script:View = [pscustomobject][ordered]@{
@@ -41,6 +44,11 @@ Describe 'settings controller' {
                 $viewState.Status = '更改即时保存'
                 $viewState.StatusKind = 'Idle'
             }.GetNewClosure()
+            SetRelayOrder = {
+                param($Providers)
+                $viewState.RelayOrderCalls++
+                $viewState.RelayOrder = @($Providers)
+            }.GetNewClosure()
             SetStatus = {
                 param($Message, $Kind)
                 $viewState.Status = $Message
@@ -50,7 +58,7 @@ Describe 'settings controller' {
                 param(
                     $OnSetDisplayMode, $OnSetTheme, $OnSetFullLayout,
                     $OnToggleTopmost, $OnToggleStartup, $OnToggleTodaySpend,
-                    $OnRefresh, $OnManageRelays, $OnClosing
+                    $OnRefresh, $OnManageRelays, $OnMoveRelayUp, $OnMoveRelayDown, $OnClosing
                 )
                 $viewState.Callbacks = [pscustomobject][ordered]@{}
                 foreach ($entry in $PSBoundParameters.GetEnumerator()) {
@@ -71,7 +79,8 @@ Describe 'settings controller' {
             -ToggleTopmost { $script:Snapshot.Topmost = -not $script:Snapshot.Topmost } `
             -ToggleStartup { $script:Snapshot.Startup = -not $script:Snapshot.Startup } `
             -ToggleTodaySpend { $script:Snapshot.ShowTodaySpend = -not $script:Snapshot.ShowTodaySpend } `
-            -RequestRefresh { $script:RefreshCalls++ }
+            -RequestRefresh { $script:RefreshCalls++ } `
+            -MoveRelay { param($ProviderId, $Offset) $script:MoveRelayCalls.Add("$ProviderId/$Offset") }
     }
 
     AfterEach {
@@ -86,7 +95,7 @@ Describe 'settings controller' {
         ($ViewState.Snapshot.PSObject.Properties.Name -join ',') |
             Should -BeExactly 'Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend'
         ($ViewState.Callbacks.PSObject.Properties.Name -join ',') |
-            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnToggleTodaySpend,OnRefresh,OnManageRelays,OnClosing'
+            Should -BeExactly 'OnSetDisplayMode,OnSetTheme,OnSetFullLayout,OnToggleTopmost,OnToggleStartup,OnToggleTodaySpend,OnRefresh,OnManageRelays,OnMoveRelayUp,OnMoveRelayDown,OnClosing'
         $ViewState.RenderCalls | Should -Be 1
         $ViewState.ShowCalls | Should -Be 1
         $ViewState.StatusKind | Should -BeExactly 'Idle'
@@ -165,6 +174,67 @@ Describe 'settings controller' {
         $script:RefreshCalls | Should -Be 1
         $ViewState.Status | Should -BeExactly '已请求刷新。'
         $ViewState.StatusKind | Should -BeExactly 'Success'
+    }
+
+    It 'publishes the relay display order from the snapshot and rerenders it on Refresh' {
+        $script:Snapshot | Add-Member -NotePropertyName Relays -NotePropertyValue @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $false }
+        ) -Force
+
+        & $Controller.Show
+        @($ViewState.RelayOrder.Id) | Should -Be @('a', 'b')
+
+        $script:Snapshot.Relays = @([pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $false })
+        & $Controller.Refresh
+
+        @($ViewState.RelayOrder.Id) | Should -Be @('b')
+        $ViewState.RelayOrderCalls | Should -Be 2
+    }
+
+    It 'moves a relay through the injected action using the row offset' {
+        & $ViewState.Callbacks.OnMoveRelayUp 'relay-a'
+        & $ViewState.Callbacks.OnMoveRelayDown 'relay-a'
+
+        @($script:MoveRelayCalls) | Should -Be @('relay-a/-1', 'relay-a/1')
+    }
+
+    It 'reports an error and restores the snapshot when a relay move fails' {
+        & $script:Controller.Dispose
+        $script:Controller = New-SettingsController `
+            -View $script:View `
+            -GetSnapshot { $script:Snapshot } `
+            -SetDisplayMode { param($value) } `
+            -SetTheme { param($value) } `
+            -SetFullLayout { param($value) } `
+            -ToggleTopmost { } `
+            -ToggleStartup { } `
+            -ToggleTodaySpend { } `
+            -RequestRefresh { } `
+            -MoveRelay { param($ProviderId, $Offset) throw 'store is read-only' }
+
+        & $ViewState.Callbacks.OnMoveRelayUp 'relay-a'
+
+        $ViewState.Status | Should -BeExactly '无法调整中转站顺序：store is read-only'
+        $ViewState.StatusKind | Should -BeExactly 'Error'
+        $ViewState.RenderCalls | Should -Be 1
+    }
+
+    It 'ignores relay moves when no move action was injected' {
+        & $script:Controller.Dispose
+        $script:Controller = New-SettingsController `
+            -View $script:View `
+            -GetSnapshot { $script:Snapshot } `
+            -SetDisplayMode { param($value) } `
+            -SetTheme { param($value) } `
+            -SetFullLayout { param($value) } `
+            -ToggleTopmost { } `
+            -ToggleStartup { } `
+            -ToggleTodaySpend { } `
+            -RequestRefresh { }
+
+        { & $ViewState.Callbacks.OnMoveRelayUp 'relay-a' } | Should -Not -Throw
+        $ViewState.RenderCalls | Should -Be 0
     }
 
     It 'clears every active callback before disposing the view' {

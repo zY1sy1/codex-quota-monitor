@@ -65,6 +65,11 @@ $captured = [Collections.Generic.List[string]]::new()
 foreach ($theme in @('Light', 'Dark')) {
     $view = New-SettingsView
     try {
+        & $view.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'aaaaaaa1-1111-1111-1111-111111111111'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'aaaaaaa2-2222-2222-2222-222222222222'; Name = '备用中转站'; Enabled = $false }
+            [pscustomobject]@{ Id = 'aaaaaaa3-3333-3333-3333-333333333333'; Name = 'relay-three'; Enabled = $true }
+        )
         foreach ($scale in @(1.0, 1.5)) {
             $dpi = if ($scale -eq 1.0) { '100' } else { '150' }
             foreach ($case in @(

@@ -30,7 +30,11 @@ function New-SettingsController {
 
         [Parameter()]
         [AllowNull()]
-        [scriptblock]$ManageRelays
+        [scriptblock]$ManageRelays,
+
+        [Parameter()]
+        [AllowNull()]
+        [scriptblock]$MoveRelay
     )
 
     $state = [pscustomobject][ordered]@{
@@ -48,6 +52,7 @@ function New-SettingsController {
             -Topmost ([bool]$snapshot.Topmost) `
             -Startup ([bool]$snapshot.Startup) `
             -ShowTodaySpend ([bool]$snapshot.ShowTodaySpend)
+        & $View.SetRelayOrder ([object[]]@($snapshot.Relays))
     }.GetNewClosure()
 
     $completeSetting = {
@@ -153,6 +158,25 @@ function New-SettingsController {
         }
     }.GetNewClosure()
 
+    $moveRelayAction = {
+        param([string]$ProviderId, [int]$Offset)
+        if ($state.Disposed -or $null -eq $MoveRelay) { return }
+        try {
+            $null = & $MoveRelay $ProviderId $Offset
+        }
+        catch {
+            & $failWith '无法调整中转站顺序：' $_.Exception
+        }
+    }.GetNewClosure()
+    $moveRelayUpAction = {
+        param([string]$ProviderId)
+        & $moveRelayAction $ProviderId -1
+    }.GetNewClosure()
+    $moveRelayDownAction = {
+        param([string]$ProviderId)
+        & $moveRelayAction $ProviderId 1
+    }.GetNewClosure()
+
     $closingAction = { }.GetNewClosure()
 
     $show = {
@@ -175,7 +199,8 @@ function New-SettingsController {
                 -OnSetDisplayMode $null -OnSetTheme $null -OnSetFullLayout $null `
                 -OnToggleTopmost $null -OnToggleStartup $null -OnToggleTodaySpend $null `
                 -OnRefresh $null `
-                -OnManageRelays $null -OnClosing $null
+                -OnManageRelays $null -OnMoveRelayUp $null -OnMoveRelayDown $null `
+                -OnClosing $null
         }
         catch { }
         try { & $View.Dispose } catch { }
@@ -190,11 +215,14 @@ function New-SettingsController {
         -OnToggleTodaySpend $todaySpendAction `
         -OnRefresh $refreshAction `
         -OnManageRelays $manageRelaysAction `
+        -OnMoveRelayUp $moveRelayUpAction `
+        -OnMoveRelayDown $moveRelayDownAction `
         -OnClosing $closingAction
 
     return [pscustomobject][ordered]@{
         State = $state
         Show = $show
+        Refresh = $render
         Dispose = $dispose
     }
 }

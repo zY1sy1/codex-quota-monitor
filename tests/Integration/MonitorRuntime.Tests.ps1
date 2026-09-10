@@ -240,7 +240,8 @@ Describe 'Codex quota monitor production composition' {
             NewSettingsController = {
                 param(
                     $View, $GetSnapshot, $SetDisplayMode, $SetTheme, $SetFullLayout,
-                    $ToggleTopmost, $ToggleStartup, $ToggleTodaySpend, $RequestRefresh, $ManageRelays
+                    $ToggleTopmost, $ToggleStartup, $ToggleTodaySpend, $RequestRefresh, $ManageRelays,
+                    $MoveRelay
                 )
                 $View | Should -Be $settingsView
                 $GetSnapshot | Should -BeOfType ([scriptblock])
@@ -252,6 +253,7 @@ Describe 'Codex quota monitor production composition' {
                 $ToggleTodaySpend | Should -BeOfType ([scriptblock])
                 $RequestRefresh | Should -BeOfType ([scriptblock])
                 $ManageRelays | Should -BeOfType ([scriptblock])
+                $MoveRelay | Should -BeOfType ([scriptblock])
                 $settingsSnapshots.Add(
                     ((& $GetSnapshot).PSObject.Properties.Name -join ',')
                 ) | Out-Null
@@ -340,7 +342,8 @@ Describe 'Codex quota monitor production composition' {
         )
         $relayCacheWrites.Count | Should -Be 1
         @($relayCacheWrites[0].Providers).Count | Should -Be 0
-        @($settingsSnapshots) | Should -Be @('Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend')
+        @($settingsSnapshots) |
+            Should -Be @('Mode,Theme,FullLayout,Topmost,Startup,ShowTodaySpend,Relays')
         @($schedulerCreations).Count | Should -BeGreaterOrEqual 2
         foreach ($creation in $schedulerCreations) {
             @($creation.EntryIntervals) | Should -Be @(15)

@@ -5,6 +5,46 @@ BeforeAll {
     }
 }
 
+Describe 'relay provider reordering' {
+    It 'moves an entry by offset and reports the new order' {
+        $providers = @(
+            [pscustomobject]@{ Id = 'a' }
+            [pscustomobject]@{ Id = 'b' }
+            [pscustomobject]@{ Id = 'c' }
+        )
+
+        $up = Get-RelayProviderReorder -Providers $providers -ProviderId 'c' -Offset -1
+        $up.Moved | Should -BeTrue
+        @($up.Providers.Id) | Should -Be @('a', 'c', 'b')
+
+        $down = Get-RelayProviderReorder -Providers @($up.Providers) -ProviderId 'a' -Offset 1
+        $down.Moved | Should -BeTrue
+        @($down.Providers.Id) | Should -Be @('c', 'a', 'b')
+    }
+
+    It 'refuses to move past either end and leaves the input untouched' {
+        $providers = @([pscustomobject]@{ Id = 'a' }, [pscustomobject]@{ Id = 'b' })
+
+        foreach ($case in @(
+            @{ Id = 'a'; Offset = -1 }
+            @{ Id = 'b'; Offset = 1 }
+            @{ Id = 'missing'; Offset = 1 }
+        )) {
+            $result = Get-RelayProviderReorder -Providers $providers `
+                -ProviderId $case.Id -Offset $case.Offset
+            $result.Moved | Should -BeFalse
+            @($result.Providers.Id) | Should -Be @('a', 'b')
+        }
+    }
+
+    It 'tolerates an empty provider list' {
+        $result = Get-RelayProviderReorder -Providers @() -ProviderId 'a' -Offset 1
+
+        $result.Moved | Should -BeFalse
+        @($result.Providers).Count | Should -Be 0
+    }
+}
+
 Describe 'monitor interaction controller with a display controller' {
     BeforeEach {
         $script:DisplayCalls = [Collections.Generic.List[string]]::new()

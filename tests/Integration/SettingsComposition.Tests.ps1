@@ -10,6 +10,31 @@ BeforeAll {
     if (Test-Path -LiteralPath $script:ThemePath -PathType Leaf) { . $script:ThemePath }
     if (Test-Path -LiteralPath $script:IconPath -PathType Leaf) { . $script:IconPath }
     if (Test-Path -LiteralPath $script:ViewPath -PathType Leaf) { . $script:ViewPath }
+
+    function Get-RelayOrderRow {
+        param($Panel)
+        return @(
+            $Panel.Children | Where-Object {
+                $_ -is [Windows.Controls.Border] -and $null -ne $_.Child
+            }
+        )
+    }
+
+    function Get-RelayOrderRowParts {
+        param($Row)
+        $grid = $Row.Child
+        [pscustomobject]@{
+            Ordinal = @(
+                $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 0 }
+            )[0]
+            Label = @(
+                $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 1 }
+            )[0]
+            Buttons = @(
+                $grid.Children | Where-Object { [Windows.Controls.Grid]::GetColumn($_) -eq 2 }
+            )[0]
+        }
+    }
 }
 
 Describe 'settings window composition' {
@@ -24,6 +49,8 @@ Describe 'settings window composition' {
             -OnToggleStartup { $script:Calls.Add('startup') } `
             -OnRefresh { $script:Calls.Add('refresh') } `
             -OnManageRelays { $script:Calls.Add('relays') } `
+            -OnMoveRelayUp { param($value) $script:Calls.Add("relay-up:$value") } `
+            -OnMoveRelayDown { param($value) $script:Calls.Add("relay-down:$value") } `
             -OnClosing { $script:Calls.Add('closing') }
     }
 
@@ -233,6 +260,86 @@ Describe 'settings window composition' {
         )) {
             $View.Controls[$name].FocusVisualStyle | Should -Be $focusStyle
         }
+    }
+
+    It 'renders the relay display order with edge-aware move buttons and a disabled tag' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $false }
+            [pscustomobject]@{ Id = 'c'; Name = 'relay-c'; Enabled = $true }
+        )
+
+        $View.Controls.RelayOrderSurface.Visibility | Should -Be ([Windows.Visibility]::Visible)
+        $View.Controls.RelayOrderEmptyText.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        # three rows plus two separating hairlines
+        $View.Controls.RelayOrderList.Children.Count | Should -Be 5
+
+        $rows = @(Get-RelayOrderRow -Panel $View.Controls.RelayOrderList)
+        $rows.Count | Should -Be 3
+        foreach ($row in $rows) {
+            $row.Style | Should -Be $View.Window.Resources['OrderRowStyle']
+        }
+
+        $first = Get-RelayOrderRowParts -Row $rows[0]
+        $middle = Get-RelayOrderRowParts -Row $rows[1]
+        $last = Get-RelayOrderRowParts -Row $rows[2]
+        @($first.Label.Children[0].Text, $middle.Label.Children[0].Text, $last.Label.Children[0].Text) |
+            Should -Be @('wakaka', 'relay-b', 'relay-c')
+        @($first.Ordinal.Text, $middle.Ordinal.Text, $last.Ordinal.Text) |
+            Should -Be @('1', '2', '3')
+        @($first.Buttons.Children | ForEach-Object IsEnabled) | Should -Be @($false, $true)
+        @($middle.Buttons.Children | ForEach-Object IsEnabled) | Should -Be @($true, $true)
+        @($last.Buttons.Children | ForEach-Object IsEnabled) | Should -Be @($true, $false)
+        foreach ($button in @($first.Buttons.Children) + @($last.Buttons.Children)) {
+            $button.Style | Should -Be $View.Window.Resources['OrderMoveButtonStyle']
+            $button.Content | Should -BeOfType ([Windows.Shapes.Path])
+        }
+
+        # the enabled provider carries no tag; the disabled one is called out
+        $first.Label.Children.Count | Should -Be 1
+        $middle.Label.Children.Count | Should -Be 2
+        $middle.Label.Children[1].Child.Text | Should -BeExactly '已停用'
+    }
+
+    It 'routes relay order buttons to their callbacks with the provider id' {
+        & $View.SetRelayOrder @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
+        )
+        $rows = @(Get-RelayOrderRow -Panel $View.Controls.RelayOrderList)
+        $parts = Get-RelayOrderRowParts -Row $rows[1]
+        [Windows.Automation.AutomationProperties]::GetName($parts.Buttons.Children[0]) |
+            Should -BeExactly '上移中转站：relay-b'
+
+        $parts.Buttons.Children[0].RaiseEvent(
+            [Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent)
+        )
+        $parts.Buttons.Children[1].RaiseEvent(
+            [Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent)
+        )
+
+        @($script:Calls) | Should -Be @('relay-up:b', 'relay-down:b')
+    }
+
+    It 'replaces the relay order rows instead of accumulating their handlers' {
+        $providers = @(
+            [pscustomobject]@{ Id = 'a'; Name = 'wakaka'; Enabled = $true }
+            [pscustomobject]@{ Id = 'b'; Name = 'relay-b'; Enabled = $true }
+        )
+        & $View.SetRelayOrder $providers
+        & $View.SetRelayOrder $providers
+
+        $View.State.RelayOrderHandlers.Count | Should -Be 4
+        $View.Controls.RelayOrderList.Children.Count | Should -Be 3
+    }
+
+    It 'shows an empty hint instead of an empty relay surface' {
+        & $View.SetRelayOrder @()
+
+        $View.Controls.RelayOrderSurface.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        $View.Controls.RelayOrderEmptyText.Visibility | Should -Be ([Windows.Visibility]::Visible)
+        $View.Controls.RelayOrderList.Children.Count | Should -Be 0
+        $View.State.RelayOrderHandlers.Count | Should -Be 0
     }
 
     It 'cancels ordinary closing and hides the window for reuse' {

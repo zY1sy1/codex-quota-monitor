@@ -1391,6 +1391,31 @@ function Invoke-CodexQuotaMonitorRuntime {
                     $null = & $startRelayHost ([DateTimeOffset]::UtcNow)
                 }
                 & $refreshCombinedPresentation ([DateTimeOffset]::UtcNow)
+                # Any relay mutation (save, delete, reorder) changes the list the
+                # settings page shows, so refresh it while it is on screen.
+                if ($null -ne $runtime.SettingsController -and
+                    [bool]$runtime.SettingsController.State.Showing) {
+                    try { & $runtime.SettingsController.Refresh } catch { }
+                }
+            }.GetNewClosure()
+            $reorderRelayProvidersFunction = ${function:Get-RelayProviderReorder}
+            $canonicalRelayDocumentFunction = ${function:ConvertTo-CanonicalRelayProviderDocument}
+            $noneLinkMutationFunction = ${function:New-RelayImportLinkMutation}
+            $moveRelayProviderAction = {
+                param([string]$ProviderId, [int]$Offset)
+                $reorder = & $reorderRelayProvidersFunction `
+                    -Providers $runtime.RelayProviders -ProviderId $ProviderId -Offset $Offset
+                if (-not [bool]$reorder.Moved) { return $false }
+                $document = & $canonicalRelayDocumentFunction ([ordered]@{
+                    SchemaVersion = 2; Providers = [object[]]$reorder.Providers
+                })
+                if ($null -eq $document) { return $false }
+                & $writeRelayStateAction $document (& $noneLinkMutationFunction -Kind None)
+                & $applyRelayProvidersAction `
+                    -Providers $document.Providers `
+                    -ChangedProviderIds @() -RemovedProviderIds @() `
+                    -TestPassed $false -PreserveSchedule $true
+                return $true
             }.GetNewClosure()
             $confirmRelayDeleteAction = {
                 param($Provider)
@@ -1483,6 +1508,7 @@ function Invoke-CodexQuotaMonitorRuntime {
                     Topmost = [bool]$runtime.DisplayController.State.Topmost
                     Startup = [bool]$runtime.Settings.Startup
                     ShowTodaySpend = [bool]$runtime.Settings.Relay.ShowTodaySpend
+                    Relays = [object[]]@($runtime.RelayProviders)
                 }
             }.GetNewClosure()
             $newSettingsControllerFunction = $functions.NewSettingsController
@@ -1496,7 +1522,8 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -ToggleStartup $runtime.Interaction.ToggleStartup `
                 -ToggleTodaySpend $runtime.Interaction.ToggleTodaySpend `
                 -RequestRefresh $runtime.Interaction.Refresh `
-                -ManageRelays $manageRelaysAction
+                -ManageRelays $manageRelaysAction `
+                -MoveRelay $moveRelayProviderAction
 
             $initializeDesktopFunction = $functions.InitializeDesktop
             & $initializeDesktopFunction `
