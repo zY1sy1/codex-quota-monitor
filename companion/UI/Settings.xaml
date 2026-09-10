@@ -542,7 +542,7 @@
                             <StackPanel>
                                 <TextBlock Text="中转站管理器"
                                            Style="{StaticResource SettingTitleStyle}" />
-                                <TextBlock Text="添加、测试和配置中转站；每个中转站可设置自己的查询间隔"
+                                <TextBlock Text="添加、测试和排序中转站；每个中转站可设置自己的查询间隔和启用状态"
                                            MaxWidth="360"
                                            Style="{StaticResource SettingDescriptionStyle}" />
                             </StackPanel>

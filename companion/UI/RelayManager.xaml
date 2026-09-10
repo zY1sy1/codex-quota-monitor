@@ -76,6 +76,8 @@
                 <Button x:Name="EditButton" Content="编辑" AutomationProperties.Name="编辑中转站" />
                 <Button x:Name="DuplicateButton" Content="复制" AutomationProperties.Name="复制中转站" />
                 <Button x:Name="DeleteButton" Content="删除" AutomationProperties.Name="删除中转站" />
+                <Button x:Name="MoveUpButton" Content="上移" AutomationProperties.Name="上移中转站" />
+                <Button x:Name="MoveDownButton" Content="下移" AutomationProperties.Name="下移中转站" />
             </UniformGrid>
             <Button x:Name="ImportButton"
                     Grid.Row="3"

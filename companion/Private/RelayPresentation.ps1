@@ -113,6 +113,12 @@ function ConvertTo-RelayPresentationRow {
         [Parameter(Mandatory)][object]$Provider,
         [Parameter(Mandatory)][object]$State
     )
+    # A disabled provider contributes no rows at all, so it leaves the panel
+    # entirely and returns as soon as it is enabled again.
+    $enabled = Get-ObjectField -InputObject $Provider -Name 'Enabled'
+    if ($null -ne $enabled -and -not [bool]$enabled) {
+        return
+    }
     $providerId = [string](Get-ObjectField -InputObject $Provider -Name 'Id')
     $providerName = [string](Get-ObjectField -InputObject $Provider -Name 'Name')
     $status = [string](Get-ObjectField -InputObject $State -Name 'Status')

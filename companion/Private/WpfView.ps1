@@ -840,6 +840,17 @@ function New-QuotaWindowView {
         & $updatePanel $state.Controls.RelayRows $state.RelayRows
         & $updatePanel $state.Controls.OfficialTabRows $state.OfficialRows
         & $updatePanel $state.Controls.RelayTabRows $state.RelayRows
+        # With every relay disabled (or none configured) the whole group is
+        # hidden instead of leaving an empty card behind.
+        $relayGroupTarget = if ($state.RelayRows.Count -eq 0) {
+            [Windows.Visibility]::Collapsed
+        }
+        else {
+            [Windows.Visibility]::Visible
+        }
+        if ($state.Controls.RelayExpander.Visibility -ne $relayGroupTarget) {
+            $state.Controls.RelayExpander.Visibility = $relayGroupTarget
+        }
         $state.Controls.RootBorder.InvalidateMeasure()
     }.GetNewClosure()
 

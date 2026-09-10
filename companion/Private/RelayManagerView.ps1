@@ -156,6 +156,7 @@ function New-RelayManagerView {
 
     $controlNames = @(
         'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton', 'ImportButton',
+        'MoveUpButton', 'MoveDownButton',
         'EnabledCheckBox', 'NameTextBox', 'ProviderKindComboBox', 'BaseUrlTextBox',
         'AdvancedRequestExpander', 'MethodComboBox', 'PathTextBox', 'QueryTextBox',
         'HeadersTextBox', 'BodyTextBox', 'ExtractorScriptTextBox', 'MigrationWarningText',
@@ -247,11 +248,41 @@ function New-RelayManagerView {
     $controls.ProviderKindComboBox.Add_SelectionChanged($selectionChanged)
     $controls.MethodComboBox.Add_SelectionChanged($selectionChanged)
 
+    $getSelectedProviderIndex = {
+        if ($state.Disposed) { return -1 }
+        $selected = $state.Controls.ProviderList.SelectedItem
+        if ($null -eq $selected) { return -1 }
+        $selectedId = [string](& $getField $selected 'Id')
+        $index = 0
+        foreach ($provider in @($state.Providers)) {
+            if ([string](& $getField $provider 'Id') -ceq $selectedId) { return $index }
+            $index++
+        }
+        return -1
+    }.GetNewClosure()
+
+    $updateMoveButtons = {
+        if ($state.Disposed) { return }
+        $index = & $getSelectedProviderIndex
+        $count = @($state.Providers).Count
+        $state.Controls.MoveUpButton.IsEnabled = $index -gt 0
+        $state.Controls.MoveDownButton.IsEnabled = $index -ge 0 -and $index -lt ($count - 1)
+    }.GetNewClosure()
+
+    $providerSelectionChanged = [Windows.Controls.SelectionChangedEventHandler]{
+        param($sender, $args)
+        & $updateMoveButtons
+    }.GetNewClosure()
+    $state.Delegates.ProviderSelectionChanged = $providerSelectionChanged
+    $controls.ProviderList.Add_SelectionChanged($providerSelectionChanged)
+
     foreach ($definition in @(
         @{ Control = 'AddButton'; Callback = 'OnAdd'; UsesSelection = $false; HideOnTrue = $false },
         @{ Control = 'EditButton'; Callback = 'OnEdit'; UsesSelection = $true; HideOnTrue = $false },
         @{ Control = 'DuplicateButton'; Callback = 'OnDuplicate'; UsesSelection = $true; HideOnTrue = $false },
         @{ Control = 'DeleteButton'; Callback = 'OnDelete'; UsesSelection = $true; HideOnTrue = $false },
+        @{ Control = 'MoveUpButton'; Callback = 'OnMoveUp'; UsesSelection = $true; HideOnTrue = $false },
+        @{ Control = 'MoveDownButton'; Callback = 'OnMoveDown'; UsesSelection = $true; HideOnTrue = $false },
         @{ Control = 'ImportButton'; Callback = 'OnImport'; UsesSelection = $false; HideOnTrue = $false },
         @{ Control = 'TestButton'; Callback = 'OnTest'; UsesSelection = $false; HideOnTrue = $false },
         @{ Control = 'SaveButton'; Callback = 'OnSave'; UsesSelection = $false; HideOnTrue = $true },
@@ -290,6 +321,9 @@ function New-RelayManagerView {
     $setProviders = {
         param([AllowEmptyCollection()][object[]]$Providers)
         if ($state.Disposed) { return }
+        $selectedId = $null
+        $selected = $state.Controls.ProviderList.SelectedItem
+        if ($null -ne $selected) { $selectedId = [string](& $getField $selected 'Id') }
         $safe = [Collections.Generic.List[object]]::new()
         foreach ($provider in @($Providers)) {
             $name = [string](& $getField $provider 'Name')
@@ -300,6 +334,17 @@ function New-RelayManagerView {
         }
         $state.Providers = [object[]]$safe.ToArray()
         $state.Controls.ProviderList.ItemsSource = $state.Providers
+        # Keeping the selection on the same provider lets the user nudge one
+        # entry repeatedly with 上移/下移 instead of re-selecting it each time.
+        if (-not [string]::IsNullOrEmpty($selectedId)) {
+            $restored = @(
+                $state.Providers | Where-Object { [string]$_.Id -ceq $selectedId }
+            )
+            if ($restored.Count -gt 0) {
+                $state.Controls.ProviderList.SelectedItem = $restored[0]
+            }
+        }
+        & $updateMoveButtons
     }.GetNewClosure()
 
     $readDraft = {
@@ -432,9 +477,9 @@ function New-RelayManagerView {
     }.GetNewClosure()
 
     $setCallbacks = {
-        param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnImport, $OnTest, $OnSave, $OnCancel)
+        param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnImport, $OnTest, $OnSave, $OnCancel, $OnMoveUp, $OnMoveDown)
         if (-not $state.Disposed) {
-            $state.Callbacks = [pscustomobject][ordered]@{ OnAdd=$OnAdd; OnEdit=$OnEdit; OnDuplicate=$OnDuplicate; OnDelete=$OnDelete; OnImport=$OnImport; OnTest=$OnTest; OnSave=$OnSave; OnCancel=$OnCancel }
+            $state.Callbacks = [pscustomobject][ordered]@{ OnAdd=$OnAdd; OnEdit=$OnEdit; OnDuplicate=$OnDuplicate; OnDelete=$OnDelete; OnImport=$OnImport; OnTest=$OnTest; OnSave=$OnSave; OnCancel=$OnCancel; OnMoveUp=$OnMoveUp; OnMoveDown=$OnMoveDown }
         }
     }.GetNewClosure()
 
@@ -446,7 +491,8 @@ function New-RelayManagerView {
         }
         $controls.ProviderKindComboBox.Remove_SelectionChanged($state.Delegates.SelectionChanged)
         $controls.MethodComboBox.Remove_SelectionChanged($state.Delegates.SelectionChanged)
-        foreach ($name in @('AddButton','EditButton','DuplicateButton','DeleteButton','ImportButton','TestButton','SaveButton','CancelButton')) {
+        $controls.ProviderList.Remove_SelectionChanged($state.Delegates.ProviderSelectionChanged)
+        foreach ($name in @('AddButton','EditButton','DuplicateButton','DeleteButton','MoveUpButton','MoveDownButton','ImportButton','TestButton','SaveButton','CancelButton')) {
             $controls[$name].Remove_Click($state.Delegates[$name])
         }
         $window.Remove_Closing($state.Delegates.Closing)
@@ -459,6 +505,7 @@ function New-RelayManagerView {
     $controls.QueryTextBox.Text = '{}'
     $controls.HeadersTextBox.Text = '{}'
     & $updateTestButton
+    & $updateMoveButtons
     return [pscustomobject][ordered]@{
         Window = $window; Controls = $controls; State = $state; ShowDialog = $showDialog
         SetProviders = $setProviders; ReadDraft = $readDraft; SetDraft = $setDraft

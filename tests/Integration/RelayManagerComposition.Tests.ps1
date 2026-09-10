@@ -116,7 +116,7 @@ BeforeAll {
                 return [bool]$state.TrustAnswer
             }.GetNewClosure()
             SetCallbacks = {
-                param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnImport, $OnTest, $OnSave, $OnCancel)
+                param($OnAdd, $OnEdit, $OnDuplicate, $OnDelete, $OnImport, $OnTest, $OnSave, $OnCancel, $OnMoveUp, $OnMoveDown)
                 $state.Callbacks = [pscustomobject]$PSBoundParameters
             }.GetNewClosure()
             Dispose = { $state.Disposed = $true }.GetNewClosure()
@@ -142,6 +142,7 @@ Describe 'relay manager WPF adapter contract' {
 
         foreach ($name in @(
             'ProviderList', 'AddButton', 'EditButton', 'DuplicateButton', 'DeleteButton', 'ImportButton',
+            'MoveUpButton', 'MoveDownButton',
             'EnabledCheckBox', 'NameTextBox', 'ProviderKindComboBox', 'BaseUrlTextBox',
             'AdvancedRequestExpander', 'MethodComboBox', 'PathTextBox', 'QueryTextBox',
             'HeadersTextBox', 'BodyTextBox', 'ExtractorScriptTextBox', 'MigrationWarningText',
@@ -167,7 +168,7 @@ Describe 'relay manager WPF adapter contract' {
         foreach ($expected in @(
             'Title="中转站额度管理"', 'AutomationProperties.Name="中转站额度管理器"',
             'Text="中转站列表"', 'Content="新增"', 'Content="编辑"', 'Content="复制"',
-            'Content="删除"', 'Content="启用"', 'Text="名称"', 'Text="类型"',
+            'Content="删除"', 'Content="上移"', 'Content="下移"', 'Content="启用"', 'Text="名称"', 'Text="类型"',
             'Content="通用配置"', 'Content="自定义脚本"', 'Text="基础地址"',
             'Header="高级请求"', 'Text="请求方法"', 'Text="请求路径"',
             'Text="查询参数 JSON"', 'Text="请求头 JSON"', 'Text="请求体（可选字符串）"',
@@ -483,6 +484,77 @@ Describe 'relay manager interaction controller' {
 
     AfterEach {
         if ($null -ne $script:Controller) { & $script:Controller.Dispose }
+    }
+
+    It 'reorders providers in the stored document without rescheduling queries' {
+        $first = New-TestRelayDraft -Id '11111111-1111-1111-1111-111111111111'
+        $second = New-TestRelayDraft -Id '22222222-2222-2222-2222-222222222222'
+        $view = New-FakeRelayManagerView
+        $saved = [Collections.Generic.List[object]]::new()
+        $applied = [Collections.Generic.List[object]]::new()
+        $script:Controller = $null
+        $script:Controller = New-RelayManagerController `
+            -View $view -Providers @($first, $second) `
+            -WriteRelayState { param($Document, $Mutation) $saved.Add([pscustomobject]@{ Document = $Document; Mutation = $Mutation }) } `
+            -ImportProvider { param($Providers) $null } `
+            -ProtectSecret { param($Value) $Value } `
+            -UnprotectSecret { param($Value) $Value } `
+            -QueryProvider { param($Provider, $Secrets) $null } `
+            -ApplyProviders {
+                param($Providers, $ChangedProviderIds, $RemovedProviderIds, $TestPassed, $PreserveSchedule)
+                $applied.Add([pscustomobject]@{
+                    Providers = @($Providers)
+                    Changed = @($ChangedProviderIds)
+                    PreserveSchedule = [bool]$PreserveSchedule
+                })
+            } `
+            -RemoveProviderArtifacts { param($ProviderId) } `
+            -ConfirmDelete { param($Provider) $true }
+
+        @($view.TestState.Providers.Id) | Should -Be @($first.Id, $second.Id)
+
+        & $view.TestState.Callbacks.OnMoveUp $second.Id
+
+        @($view.TestState.Providers.Id) | Should -Be @($second.Id, $first.Id)
+        @($saved[-1].Document.Providers.Id) | Should -Be @($second.Id, $first.Id)
+        $saved[-1].Mutation.Kind | Should -BeExactly 'None'
+        $applied[-1].Changed.Count | Should -Be 0
+        $applied[-1].PreserveSchedule | Should -BeTrue
+
+        & $view.TestState.Callbacks.OnMoveDown $second.Id
+
+        @($view.TestState.Providers.Id) | Should -Be @($first.Id, $second.Id)
+        $saved.Count | Should -Be 2
+    }
+
+    It 'ignores a move that would leave the provider list' {
+        & $script:View.TestState.Callbacks.OnMoveUp $script:Existing.Id
+        & $script:View.TestState.Callbacks.OnMoveDown $script:Existing.Id
+
+        $script:SavedDocuments.Count | Should -Be 0
+        $script:Applied.Count | Should -Be 0
+        @($script:Controller.State.Providers.Id) | Should -Be @($script:Existing.Id)
+    }
+
+    It 'keeps the provider list unchanged when the reorder transaction fails' {
+        $second = New-TestRelayDraft -Id '22222222-2222-2222-2222-222222222222'
+        $view = New-FakeRelayManagerView
+        $script:Controller = $null
+        $script:Controller = New-RelayManagerController `
+            -View $view -Providers @($script:Existing, $second) `
+            -WriteRelayState { param($Document, $Mutation) throw 'simulated transaction failure' } `
+            -ImportProvider { param($Providers) $null } `
+            -ProtectSecret { param($Value) $Value } `
+            -UnprotectSecret { param($Value) $Value } `
+            -QueryProvider { param($Provider, $Secrets) $null } `
+            -ApplyProviders { param($Providers) throw 'apply must not run' } `
+            -RemoveProviderArtifacts { param($ProviderId) } `
+            -ConfirmDelete { param($Provider) $true }
+
+        & $view.TestState.Callbacks.OnMoveDown $script:Existing.Id
+
+        @($view.TestState.Providers.Id) | Should -Be @($script:Existing.Id, $second.Id)
+        $view.TestState.TestStates[-1].Message | Should -BeExactly '无法调整中转站顺序。'
     }
 
     It 'starts every new provider with a five-minute interval' {

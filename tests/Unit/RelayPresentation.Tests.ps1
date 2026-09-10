@@ -174,6 +174,15 @@ Describe 'relay presentation rows' {
         $row.IsStale | Should -BeFalse
     }
 
+    It 'produces no rows at all for a disabled provider' {
+        $disabled = [pscustomobject]@{ Id = 'relay'; Name = 'Relay'; Enabled = $false }
+        $enabled = [pscustomobject]@{ Id = 'relay'; Name = 'Relay'; Enabled = $true }
+        $state = New-TestRelayPresentationState -Status 'Disabled' -Results @()
+
+        @(ConvertTo-RelayPresentationRow -Provider $disabled -State $state).Count | Should -Be 0
+        @(ConvertTo-RelayPresentationRow -Provider $enabled -State $state).Count | Should -Be 1
+    }
+
     It 'shows the precise sanitized failure reason' -ForEach @(
         @{ Category='EndpointNotFound'; Expected='余额接口不存在' }
         @{ Category='InvalidJson'; Expected='返回内容不是 JSON' }

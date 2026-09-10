@@ -596,6 +596,27 @@ Describe 'WPF floating window composition' {
         $scroll.MaxHeight | Should -BeLessOrEqual 560
     }
 
+    It 'hides the whole relay group while no relay rows remain' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official')) `
+            -RelayRows @((New-TestPresentationRow -Key 'relay' -SourceLabel 'Wakaka' -Label '账户余额'))
+
+        $View.Controls.RelayExpander.Visibility | Should -Be ([Windows.Visibility]::Visible)
+
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official')) -RelayRows @()
+
+        $View.Controls.RelayExpander.Visibility | Should -Be ([Windows.Visibility]::Collapsed)
+        $View.Controls.OfficialExpander.Visibility | Should -Be ([Windows.Visibility]::Visible)
+
+        & $View.RenderGroups `
+            -OfficialRows @((New-TestPresentationRow -Key 'official')) `
+            -RelayRows @((New-TestPresentationRow -Key 'relay' -SourceLabel 'Wakaka' -Label '账户余额'))
+
+        $View.Controls.RelayExpander.Visibility | Should -Be ([Windows.Visibility]::Visible)
+    }
+
     It 'cancels ordinary closing, permits explicit exit, and disposes idempotently' {
         $closeCalls = 0
         $script:View = New-QuotaWindowView -XamlPath $XamlPath -OnCloseRequested { $script:closeCalls++ }

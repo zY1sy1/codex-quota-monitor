@@ -490,6 +490,55 @@ function New-RelayManagerController {
         $state.TestedDraftFingerprint = $null
         return $true
     }.GetNewClosure()
+
+    # Provider order is the array order inside relay-providers.json, so a move is
+    # an ordinary document write; no provider id or field changes.
+    $move = {
+        param([string]$ProviderId, [int]$Offset)
+        if ($state.Disposed) { return $false }
+        $items = [Collections.Generic.List[object]]::new()
+        foreach ($provider in @($state.Providers)) { $items.Add($provider) }
+        $index = -1
+        for ($position = 0; $position -lt $items.Count; $position++) {
+            if ([string](& $get $items[$position] 'Id') -ceq [string]$ProviderId) {
+                $index = $position
+                break
+            }
+        }
+        $target = $index + $Offset
+        if ($index -lt 0 -or $target -lt 0 -or $target -ge $items.Count) { return $false }
+        $moved = $items[$index]
+        $items.RemoveAt($index)
+        $items.Insert($target, $moved)
+        $document = & $canonicalizeDocument ([ordered]@{
+            SchemaVersion = 2; Providers = [object[]]$items.ToArray()
+        })
+        if ($null -eq $document) {
+            & $View.SetTestState $false $false '无法调整中转站顺序。'
+            return $false
+        }
+        try {
+            & $WriteRelayState $document (& $newLinkMutation -Kind None)
+            $state.Providers = [object[]]@($document.Providers)
+            & $ApplyProviders -Providers $state.Providers -ChangedProviderIds @() `
+                -RemovedProviderIds @() -TestPassed $false -PreserveSchedule $true
+            & $publishProviders
+            return $true
+        }
+        catch {
+            & $View.SetTestState $false $false '无法调整中转站顺序。'
+            return $false
+        }
+    }.GetNewClosure()
+    $moveUp = {
+        param([string]$ProviderId)
+        & $move $ProviderId -1
+    }.GetNewClosure()
+    $moveDown = {
+        param([string]$ProviderId)
+        & $move $ProviderId 1
+    }.GetNewClosure()
+
     $show = {
         if ($state.Disposed -or $state.Showing) { return }
         $state.Showing = $true
@@ -510,12 +559,14 @@ function New-RelayManagerController {
         $state.TestedDraftId = $null
         $state.TestedDraftFingerprint = $null
         & $View.SetCallbacks -OnAdd $null -OnEdit $null -OnDuplicate $null -OnDelete $null `
-            -OnImport $null -OnTest $null -OnSave $null -OnCancel $null
+            -OnImport $null -OnTest $null -OnSave $null -OnCancel $null `
+            -OnMoveUp $null -OnMoveDown $null
         & $View.Dispose
     }.GetNewClosure()
 
     & $View.SetCallbacks -OnAdd $add -OnEdit $edit -OnDuplicate $duplicate -OnDelete $delete `
-        -OnImport $import -OnTest $test -OnSave $save -OnCancel $cancel
+        -OnImport $import -OnTest $test -OnSave $save -OnCancel $cancel `
+        -OnMoveUp $moveUp -OnMoveDown $moveDown
     & $publishProviders
     return [pscustomobject][ordered]@{
         State = $state

@@ -1334,7 +1334,8 @@ function Invoke-CodexQuotaMonitorRuntime {
                     [AllowEmptyCollection()][object[]]$Providers,
                     [AllowEmptyCollection()][string[]]$ChangedProviderIds = @(),
                     [AllowEmptyCollection()][string[]]$RemovedProviderIds = @(),
-                    [bool]$TestPassed = $false
+                    [bool]$TestPassed = $false,
+                    [bool]$PreserveSchedule = $false
                 )
                 $changed = [Collections.Generic.HashSet[string]]::new(
                     [StringComparer]::OrdinalIgnoreCase
@@ -1373,11 +1374,15 @@ function Invoke-CodexQuotaMonitorRuntime {
                     }
                 }
                 $runtime.RelayStates = $newStates
-                $runtime.RelayManualRefreshPending.Clear()
-                $newSchedulerFunction = $runtime.Functions.NewRelayScheduler
-                $runtime.RelayScheduler = & $newSchedulerFunction `
-                    -Providers $runtime.RelayProviders -Now ([DateTimeOffset]::UtcNow) `
-                    -MaximumConcurrency 2
+                # Reordering keeps every provider definition untouched, so the
+                # existing due times survive and a move never forces a re-query.
+                if (-not $PreserveSchedule) {
+                    $runtime.RelayManualRefreshPending.Clear()
+                    $newSchedulerFunction = $runtime.Functions.NewRelayScheduler
+                    $runtime.RelayScheduler = & $newSchedulerFunction `
+                        -Providers $runtime.RelayProviders -Now ([DateTimeOffset]::UtcNow) `
+                        -MaximumConcurrency 2
+                }
                 if (@($runtime.RelayProviders | Where-Object Enabled).Count -eq 0) {
                     & $stopRelayClient
                     $runtime.RelayHostState = 'Disabled'

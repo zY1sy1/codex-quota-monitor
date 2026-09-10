@@ -464,6 +464,28 @@ Describe 'relay runtime composition' {
         @($run.Result.RelayStates.Status) | Should -Be @('Disabled')
     }
 
+    It 'drops a disabled provider from the presentation rows and keeps the enabled ones' {
+        $enabled = New-TestRuntimeRelayProvider 'enabled'
+        $disabled = New-TestRuntimeRelayProvider 'disabled' -Enabled $false
+        $response = [pscustomobject]@{
+            Id = 'ignored'
+            Ok = $true
+            Results = @((New-TestRuntimeRelayResult -Remaining 42 -PlanName 'Wallet'))
+            Meta = [pscustomobject]@{ HttpStatus = 200; DestinationHost = 'fixture.invalid'; DurationMs = 1 }
+        }
+
+        $run = Invoke-TestRelayRuntime -Providers @($enabled, $disabled) `
+            -Cache (New-TestRuntimeCache) -Responses @{ enabled = $response }
+
+        @($run.Result.RelayRows | ForEach-Object { $_.SourceId }) | Should -Be @('enabled')
+        @(
+            $run.Result.CombinedRows |
+                Where-Object { $_.SourceKind -eq 'Relay' } |
+                ForEach-Object { $_.SourceId }
+        ) | Should -Be @('enabled')
+        @($run.QueryCalls) | Should -Be @('enabled')
+    }
+
     It 'does not stop the official App Server when a relay query crashes' {
         $provider = New-TestRuntimeRelayProvider 'crash' -IntervalMinutes 0
         $success = [pscustomobject]@{
