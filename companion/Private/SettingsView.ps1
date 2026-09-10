@@ -60,6 +60,7 @@ function New-SettingsView {
         'ThemeGroup', 'LightThemeRadio', 'DarkThemeRadio',
         'FullLayoutGroup', 'OverviewLayoutRadio', 'TabsLayoutRadio',
         'LayoutAvailabilityText', 'TopmostCheckBox', 'StartupCheckBox',
+        'TodaySpendCheckBox',
         'RefreshButton', 'ManageRelaysButton', 'StatusText'
     )
     $controls = [ordered]@{}
@@ -142,6 +143,7 @@ function New-SettingsView {
     foreach ($definition in @(
         @{ Control = 'TopmostCheckBox'; Callback = 'OnToggleTopmost' }
         @{ Control = 'StartupCheckBox'; Callback = 'OnToggleStartup' }
+        @{ Control = 'TodaySpendCheckBox'; Callback = 'OnToggleTodaySpend' }
         @{ Control = 'RefreshButton'; Callback = 'OnRefresh' }
         @{ Control = 'ManageRelaysButton'; Callback = 'OnManageRelays' }
     )) {
@@ -177,7 +179,8 @@ function New-SettingsView {
             [string]$Theme,
             [string]$FullLayout,
             [bool]$Topmost,
-            [bool]$Startup
+            [bool]$Startup,
+            [bool]$ShowTodaySpend = $true
         )
         if ($state.Disposed) { return }
 
@@ -212,6 +215,7 @@ function New-SettingsView {
         $layoutControl.IsChecked = $true
         $state.Controls.TopmostCheckBox.IsChecked = $Topmost
         $state.Controls.StartupCheckBox.IsChecked = $Startup
+        $state.Controls.TodaySpendCheckBox.IsChecked = $ShowTodaySpend
 
         $layoutEnabled = ($Mode -eq 'Full')
         $state.Controls.OverviewLayoutRadio.IsEnabled = $layoutEnabled
@@ -251,6 +255,7 @@ function New-SettingsView {
             [Parameter()][AllowNull()][scriptblock]$OnSetFullLayout,
             [Parameter()][AllowNull()][scriptblock]$OnToggleTopmost,
             [Parameter()][AllowNull()][scriptblock]$OnToggleStartup,
+            [Parameter()][AllowNull()][scriptblock]$OnToggleTodaySpend,
             [Parameter()][AllowNull()][scriptblock]$OnRefresh,
             [Parameter()][AllowNull()][scriptblock]$OnManageRelays,
             [Parameter()][AllowNull()][scriptblock]$OnClosing
@@ -262,6 +267,7 @@ function New-SettingsView {
             OnSetFullLayout = $OnSetFullLayout
             OnToggleTopmost = $OnToggleTopmost
             OnToggleStartup = $OnToggleStartup
+            OnToggleTodaySpend = $OnToggleTodaySpend
             OnRefresh = $OnRefresh
             OnManageRelays = $OnManageRelays
             OnClosing = $OnClosing

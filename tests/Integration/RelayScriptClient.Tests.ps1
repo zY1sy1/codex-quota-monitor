@@ -205,3 +205,74 @@ Describe 'relay script host JSONL client' {
         $client.Disposed | Should -BeTrue
     }
 }
+
+Describe 'non-blocking relay query start' {
+    AfterEach {
+        foreach ($client in @($script:Clients)) {
+            Stop-RelayScriptClient -Client $client -TimeoutMilliseconds 300
+        }
+        $script:Clients.Clear()
+    }
+
+    It 'writes the command and returns an id and deadline without waiting' {
+        $client = Start-TestRelayClient
+
+        $started = Start-RelayScriptQuery -Client $client -Provider (New-TestRelayProvider) -Secrets @{}
+
+        $started.CommandId | Should -Not -BeNullOrEmpty
+        $started.DeadlineUtc | Should -BeOfType ([DateTimeOffset])
+        ($started.DeadlineUtc - [DateTimeOffset]::UtcNow).TotalSeconds | Should -BeGreaterOrEqual 3.5
+        $client.LastCommand.id | Should -BeExactly $started.CommandId
+
+        $response = $null
+        for ($attempt = 0; $attempt -lt 200 -and $null -eq $response; $attempt++) {
+            $response = Receive-RelayClientResponse -Client $client -ExpectedId $started.CommandId
+            if ($null -eq $response) {
+                Start-Sleep -Milliseconds 20
+            }
+        }
+        $response.Ok | Should -BeTrue
+        $response.Results[0].Remaining | Should -Be 7
+    }
+
+    It 'returns null while another query holds the gate and works again after release' {
+        $client = Start-TestRelayClient
+        $null = $client.Gate.Wait(0)
+
+        $busy = Start-RelayScriptQuery -Client $client -Provider (New-TestRelayProvider) -Secrets @{}
+        $busy | Should -BeNullOrEmpty
+
+        $null = $client.Gate.Release()
+        $started = Start-RelayScriptQuery -Client $client -Provider (New-TestRelayProvider) -Secrets @{}
+        $started.CommandId | Should -Not -BeNullOrEmpty
+        $null = $client.Gate.Release()
+    }
+
+    It 'returns a validation failure and releases the gate when the provider kind is invalid' {
+        $client = Start-TestRelayClient
+        $provider = New-TestRelayProvider
+        $provider.ProviderKind = 'Bogus'
+
+        $invalid = Start-RelayScriptQuery -Client $client -Provider $provider -Secrets @{}
+        $invalid.Ok | Should -BeFalse
+        $invalid.Error.Category | Should -BeExactly 'RequestValidation'
+
+        $started = Start-RelayScriptQuery -Client $client -Provider (New-TestRelayProvider) -Secrets @{}
+        $started.CommandId | Should -Not -BeNullOrEmpty
+        $null = $client.Gate.Release()
+    }
+
+    It 'returns instantly on a slow host and exposes the timeout-plus-two deadline' {
+        $client = Start-TestRelayClient
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+
+        $started = Start-RelayScriptQuery -Client $client -Provider (New-TestRelayProvider -Script 'delayed-success' -TimeoutSeconds 2) -Secrets @{}
+        $watch.Stop()
+
+        $watch.Elapsed.TotalSeconds | Should -BeLessThan 1
+        $started.CommandId | Should -Not -BeNullOrEmpty
+        ($started.DeadlineUtc - [DateTimeOffset]::UtcNow).TotalSeconds | Should -BeGreaterOrEqual 3.5
+        ($started.DeadlineUtc - [DateTimeOffset]::UtcNow).TotalSeconds | Should -BeLessThan 5
+        $null = $client.Gate.Release()
+    }
+}

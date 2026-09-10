@@ -12,7 +12,7 @@ CodexQuotaMonitor-Setup-<version>-x64.exe
 
 1. 接收者先自行安装 Codex，并使用自己的账户登录。
 2. 双击 `CodexQuotaMonitor-Setup-<version>-x64.exe`。
-3. 按需保留桌面快捷方式、开机启动和安装后启动选项。
+3. 安装器会**自动在桌面创建快捷方式**；可按需选择开机启动和安装后启动选项。
 4. 安装完成后从桌面、开始菜单或托盘使用监视器。
 
 Codex 未安装、未登录 ChatGPT、仅使用 API key 或使用 Bedrock 时，程序仍可安装和运行，但不会伪造 ChatGPT 订阅额度。安装包不会打包构建电脑上的凭据、Token、`auth.json`、中转站配置、设置、健康状态、缓存或日志。
@@ -21,7 +21,7 @@ Codex 未安装、未登录 ChatGPT、仅使用 API key 或使用 Bedrock 时，
 
 ## 升级与卸载
 
-稳定的产品 AppId 让新版本安装包覆盖升级同一产品。升级前安装器会请求现有进程正常退出；升级保留 `%LOCALAPPDATA%\CodexQuotaMonitor` 下的数据、日志、窗口偏好、DPAPI 加密的中转站配置和缓存。私有运行时与程序文件会被新版本替换，不影响系统 PowerShell。
+稳定的产品 AppId 让新版本安装包覆盖升级同一产品。升级前安装器会请求现有进程正常退出；升级保留 `%LOCALAPPDATA%\CodexQuotaMonitor` 下的数据、日志、窗口偏好、DPAPI 加密的中转站配置和缓存。私有运行时与程序文件会被新版本替换，不影响系统 PowerShell；桌面快捷方式会在每次升级时重新生成并刷新（目标与图标随版本更新）。
 
 卸载会删除程序文件、私有 PowerShell、开始菜单/桌面快捷方式、开机启动项和“已安装的应用”登记。卸载器会询问是否保留个人设置和日志，默认选择保留数据；选择完全删除时才删除 `data` 和 `logs`。卸载不会删除 Codex、系统 PowerShell、环境变量或其他用户的文件。
 

@@ -96,6 +96,9 @@ BeforeAll {
         $crashedQueryProviders = [Collections.Generic.HashSet[string]]::new(
             [StringComparer]::OrdinalIgnoreCase
         )
+        $delivered = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
         $providerDocument = [pscustomobject]@{
             SchemaVersion = 1
             Providers = [object[]]$Providers
@@ -156,7 +159,7 @@ BeforeAll {
                     throw [InvalidOperationException]::new('private relay stop detail')
                 }
             }.GetNewClosure()
-            QueryRelay = {
+            StartRelayQuery = {
                 param($Client, $Provider, $Secrets)
                 $providerId = [string]$Provider.Id
                 $queryCalls.Add($providerId) | Out-Null
@@ -164,8 +167,20 @@ BeforeAll {
                     $crashedQueryProviders.Add($providerId)) {
                     throw [IO.IOException]::new('private sidecar crash detail')
                 }
-                return $Responses[$providerId]
+                [pscustomobject][ordered]@{
+                    CommandId = "cmd-$providerId"
+                    DeadlineUtc = [DateTimeOffset]::UtcNow.AddSeconds(10)
+                }
             }.GetNewClosure()
+            ReceiveRelayResponse = {
+                param($Client, $ExpectedId)
+                $providerId = [string]($ExpectedId -replace '^cmd-', '')
+                if ($delivered.Add($providerId) -and $Responses.ContainsKey($providerId)) {
+                    return $Responses[$providerId]
+                }
+                return $null
+            }.GetNewClosure()
+            UpdateRelayStderr = { param($Client, $SecretValues) }.GetNewClosure()
             StopProcess = {
                 param($Transport, $TimeoutMilliseconds)
                 $lifecycleCalls.Add('official-stop') | Out-Null

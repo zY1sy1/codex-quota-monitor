@@ -51,6 +51,7 @@ Describe 'settings window composition' {
             'ThemeGroup', 'LightThemeRadio', 'DarkThemeRadio',
             'FullLayoutGroup', 'OverviewLayoutRadio', 'TabsLayoutRadio',
             'LayoutAvailabilityText', 'TopmostCheckBox', 'StartupCheckBox',
+            'TodaySpendCheckBox',
             'RefreshButton', 'ManageRelaysButton', 'StatusText'
         )) {
             $View.Controls[$name] | Should -Not -BeNullOrEmpty
@@ -175,7 +176,7 @@ Describe 'settings window composition' {
             'FullModeRadio', 'CompactBarModeRadio', 'OrbModeRadio',
             'LightThemeRadio', 'DarkThemeRadio',
             'OverviewLayoutRadio', 'TabsLayoutRadio',
-            'TopmostCheckBox', 'StartupCheckBox',
+            'TopmostCheckBox', 'StartupCheckBox', 'TodaySpendCheckBox',
             'RefreshButton', 'ManageRelaysButton'
         )) {
             $node = $xaml.SelectSingleNode("//*[@x:Name='$name']", $manager)

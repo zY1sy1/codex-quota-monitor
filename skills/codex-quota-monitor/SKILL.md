@@ -1,6 +1,6 @@
 ---
 name: codex-quota-monitor
-description: Use when a Windows user asks to install, show, start, stop, repair, diagnose, check, or remove the Codex quota monitor, desktop floating window, tray icon, quota display, or reset countdown.
+description: Use when a Windows user asks to install, start, check, repair, or uninstall the Codex quota monitor or its quota display.
 ---
 
 # Codex Quota Monitor

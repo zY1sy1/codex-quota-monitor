@@ -69,9 +69,8 @@ function New-MonitorTrayIconResource {
 
     $bitmap = $null
     $graphics = $null
-    $backgroundBrush = $null
-    $accentBrush = $null
-    $outlinePen = $null
+    $dotBrush = $null
+    $rimPen = $null
     $icon = $null
     $handle = [IntPtr]::Zero
 
@@ -85,13 +84,13 @@ function New-MonitorTrayIconResource {
         $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $graphics.Clear([Drawing.Color]::Transparent)
 
-        $backgroundBrush = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 15, 23, 42))
-        $accentBrush = [Drawing.SolidBrush]::new($AccentColor)
-        $outlinePen = [Drawing.Pen]::new([Drawing.Color]::FromArgb(230, 255, 255, 255), 1.25)
+        # A full-size accent dot with a soft dark rim keeps the state color
+        # readable on both light and dark taskbars.
+        $dotBrush = [Drawing.SolidBrush]::new($AccentColor)
+        $graphics.FillEllipse($dotBrush, 3, 3, 26, 26)
 
-        $graphics.FillEllipse($backgroundBrush, 2, 2, 28, 28)
-        $graphics.DrawEllipse($outlinePen, 2.5, 2.5, 27, 27)
-        $graphics.FillEllipse($accentBrush, 8, 8, 16, 16)
+        $rimPen = [Drawing.Pen]::new([Drawing.Color]::FromArgb(190, 30, 41, 59), 2.0)
+        $graphics.DrawEllipse($rimPen, 3, 3, 26, 26)
 
         $handle = $bitmap.GetHicon()
         if ($handle -eq [IntPtr]::Zero) {
@@ -118,14 +117,11 @@ function New-MonitorTrayIconResource {
         throw
     }
     finally {
-        if ($null -ne $outlinePen) {
-            $outlinePen.Dispose()
+        if ($null -ne $rimPen) {
+            $rimPen.Dispose()
         }
-        if ($null -ne $accentBrush) {
-            $accentBrush.Dispose()
-        }
-        if ($null -ne $backgroundBrush) {
-            $backgroundBrush.Dispose()
+        if ($null -ne $dotBrush) {
+            $dotBrush.Dispose()
         }
         if ($null -ne $graphics) {
             $graphics.Dispose()

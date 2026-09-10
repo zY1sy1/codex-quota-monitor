@@ -67,13 +67,47 @@ Describe 'CC Switch usage discovery client' {
     It 'accepts only the exact sanitized discovery shape' {
         $response = ConvertTo-CcSwitchDiscoveryResponse (New-TestCcSwitchDiscoveryResponse)
 
-        ($response.PSObject.Properties.Name -join ',') | Should -BeExactly 'Ok,Providers,Error'
+        ($response.PSObject.Properties.Name -join ',') | Should -BeExactly 'Ok,Providers,CurrentProviders,Error'
         ($response.Providers[0].PSObject.Properties.Name -join ',') |
             Should -BeExactly 'SourceProviderId,SourceAppType,Name,EndpointCandidates,Language,Code,TimeoutSeconds,TemplateType,AutoQueryIntervalMinutes,ImportStatus'
         $response.Ok | Should -BeTrue
         $response.Providers[0].Name | Should -BeExactly 'wakaka'
         $response.Providers[0].Code | Should -Match '/v1/usage'
         $response.Providers[0].ImportStatus | Should -BeExactly 'Ready'
+        $response.CurrentProviders | Should -HaveCount 0
+    }
+
+    It 'parses sanitized current providers and tolerates their absence' {
+        $withCurrent = ConvertTo-CcSwitchDiscoveryResponse ([pscustomobject][ordered]@{
+            ok = $true
+            providers = @()
+            currentProviders = @(
+                [pscustomobject][ordered]@{
+                    appType = 'codex'
+                    providerId = 'default'
+                    name = 'default'
+                }
+                [pscustomobject][ordered]@{
+                    appType = 'claude'
+                    providerId = 'source-abc'
+                    name = 'OpenCode Go'
+                }
+            )
+            error = $null
+        })
+        $withCurrent.Ok | Should -BeTrue
+        $withCurrent.CurrentProviders | Should -HaveCount 2
+        $withCurrent.CurrentProviders[0].AppType | Should -BeExactly 'codex'
+        $withCurrent.CurrentProviders[0].Name | Should -BeExactly 'default'
+        $withCurrent.CurrentProviders[1].ProviderId | Should -BeExactly 'source-abc'
+
+        $without = ConvertTo-CcSwitchDiscoveryResponse ([pscustomobject][ordered]@{
+            ok = $true
+            providers = @()
+            error = $null
+        })
+        $without.Ok | Should -BeTrue
+        $without.CurrentProviders | Should -HaveCount 0
     }
 
     It 'accepts a precise sanitized failure response' {

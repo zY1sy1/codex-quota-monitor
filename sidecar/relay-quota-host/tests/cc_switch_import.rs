@@ -26,7 +26,8 @@ fn create_schema(connection: &Connection) {
                 app_type TEXT NOT NULL,
                 name TEXT NOT NULL,
                 settings_config TEXT NOT NULL,
-                meta TEXT NOT NULL
+                meta TEXT NOT NULL,
+                is_current BOOLEAN NOT NULL DEFAULT 0
              );
              CREATE TABLE provider_endpoints (
                 id INTEGER PRIMARY KEY,
@@ -327,6 +328,55 @@ fn sorts_deduplicates_and_caps_endpoint_candidates() {
         response.providers[0].endpoint_candidates[15],
         "https://relay-15.example"
     );
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn reports_current_providers_without_leaking_settings() {
+    let path = unique_fixture_path("current");
+    let connection = Connection::open(&path).expect("create current fixture");
+    create_schema(&connection);
+    insert_provider(
+        &connection,
+        "source-current-codex",
+        "codex",
+        "wakaka",
+        &usage_meta(true, "javascript", "({request:{},extractor:r=>r})"),
+    );
+    insert_provider(
+        &connection,
+        "source-current-claude",
+        "claude",
+        "OpenCode Go",
+        &usage_meta(true, "javascript", "({request:{},extractor:r=>r})"),
+    );
+    connection
+        .execute_batch(
+            "UPDATE providers SET is_current = 1
+             WHERE id IN ('source-current-codex','source-current-claude');",
+        )
+        .expect("mark current providers");
+    drop(connection);
+
+    let response = inspect_cc_switch_database(&path);
+    let serialized = serde_json::to_string(&response).expect("serialize response");
+
+    assert!(response.ok);
+    assert_eq!(response.current_providers.len(), 2);
+    assert_eq!(response.current_providers[0].app_type, "claude");
+    assert_eq!(
+        response.current_providers[0].provider_id,
+        "source-current-claude"
+    );
+    assert_eq!(response.current_providers[0].name, "OpenCode Go");
+    assert_eq!(response.current_providers[1].app_type, "codex");
+    assert_eq!(
+        response.current_providers[1].provider_id,
+        "source-current-codex"
+    );
+    assert!(serialized.contains("\"currentProviders\""));
+    assert!(!serialized.contains("FORBIDDEN_META_SECRET_78431"));
+    assert!(!serialized.contains("FORBIDDEN_SETTINGS_SECRET_91357"));
     fs::remove_file(path).expect("remove fixture");
 }
 

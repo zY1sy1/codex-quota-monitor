@@ -393,51 +393,32 @@ function Receive-RelayClientResponse {
     return $canonical
 }
 
-function Invoke-RelayScriptQuery {
+function Write-RelayScriptCommand {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][object]$Client,
         [Parameter(Mandatory)][object]$Provider,
-        [Parameter(Mandatory)][AllowNull()][object]$Secrets
+        [Parameter(Mandatory)][AllowNull()][object]$Secrets,
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
     )
-    $id = [Guid]::NewGuid().ToString('N')
-    $timeoutSeconds = [int](Get-RelayClientProperty $Provider 'TimeoutSeconds')
-    if ($timeoutSeconds -lt 2) { $timeoutSeconds = 2 }
-    if ($timeoutSeconds -gt 30) { $timeoutSeconds = 30 }
-    $deadlineMilliseconds = ($timeoutSeconds * 1000) + 2000
-    $gateTaken = $false
     $apiKey = [string](Get-RelayClientProperty $Secrets 'ApiKey')
     $accessToken = [string](Get-RelayClientProperty $Secrets 'AccessToken')
     $userId = [string](Get-RelayClientProperty $Secrets 'UserId')
+    $requestDefinition = $null
+    $command = $null
     $json = $null
     $line = $null
     try {
-        $gateTaken = $Client.Gate.Wait($deadlineMilliseconds)
-        if (-not $gateTaken) {
-            return New-RelayClientFailure -Id $id -Category 'Timeout' `
-                -Message 'Relay script host request timed out.'
-        }
-        if ($Client.Disposed) {
-            return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
-                -Message 'Relay script host is unavailable.'
-        }
-        $hasExited = $true
-        try { $hasExited = $Client.Process.HasExited } catch { $hasExited = $true }
-        if ($hasExited) {
-            return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
-                -Message 'Relay script host exited unexpectedly.'
-        }
-
         $providerKind = [string](Get-RelayClientProperty $Provider 'ProviderKind')
         if ($providerKind -notin @('Generic', 'Custom')) {
-            return New-RelayClientFailure -Id $id -Category 'RequestValidation' `
+            return New-RelayClientFailure -Id $Id -Category 'RequestValidation' `
                 -Message 'Relay provider kind is invalid.'
         }
-        $requestDefinition = $null
         if ($providerKind -ceq 'Generic') {
             $rawRequestDefinition = Get-RelayClientProperty $Provider 'RequestDefinition'
             if ($null -eq $rawRequestDefinition) {
-                return New-RelayClientFailure -Id $id -Category 'RequestValidation' `
+                return New-RelayClientFailure -Id $Id -Category 'RequestValidation' `
                     -Message 'Relay request definition is invalid.'
             }
             $requestDefinition = [ordered]@{
@@ -449,7 +430,7 @@ function Invoke-RelayScriptQuery {
             }
         }
         $command = [ordered]@{
-            id = $id
+            id = $Id
             operation = 'query'
             providerKind = $providerKind
             baseUrl = [string](Get-RelayClientProperty $Provider 'BaseUrl')
@@ -460,7 +441,7 @@ function Invoke-RelayScriptQuery {
                 accessToken = $accessToken
                 userId = $userId
             }
-            timeoutMs = [long]($timeoutSeconds * 1000)
+            timeoutMs = [long]($TimeoutSeconds * 1000)
             trustedDestination = Get-RelayClientProperty $Provider 'TrustedDestination'
         }
         $recordedCommand = [ordered]@{}
@@ -484,8 +465,108 @@ function Invoke-RelayScriptQuery {
             $Client.Input.Flush()
         }
         catch {
+            return New-RelayClientFailure -Id $Id -Category 'SidecarLifecycle' `
+                -Message 'Relay script host is unavailable.'
+        }
+        return [pscustomobject][ordered]@{ CommandId = $Id }
+    }
+    finally {
+        $apiKey = $null
+        $accessToken = $null
+        $userId = $null
+        $command = $null
+        $json = $null
+        $line = $null
+    }
+}
+
+function Start-RelayScriptQuery {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Client,
+        [Parameter(Mandatory)][object]$Provider,
+        [Parameter(Mandatory)][AllowNull()][object]$Secrets
+    )
+    $id = [Guid]::NewGuid().ToString('N')
+    $timeoutSeconds = [int](Get-RelayClientProperty $Provider 'TimeoutSeconds')
+    if ($timeoutSeconds -lt 2) { $timeoutSeconds = 2 }
+    if ($timeoutSeconds -gt 30) { $timeoutSeconds = 30 }
+    if (-not $Client.Gate.Wait(0)) {
+        return $null
+    }
+    if ($Client.Disposed) {
+        $null = $Client.Gate.Release()
+        return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
+            -Message 'Relay script host is unavailable.'
+    }
+    $hasExited = $true
+    try { $hasExited = $Client.Process.HasExited } catch { $hasExited = $true }
+    if ($hasExited) {
+        $null = $Client.Gate.Release()
+        return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
+            -Message 'Relay script host exited unexpectedly.'
+    }
+    $written = $null
+    try {
+        $written = Write-RelayScriptCommand `
+            -Client $Client -Provider $Provider -Secrets $Secrets `
+            -Id $id -TimeoutSeconds $timeoutSeconds
+    }
+    catch {
+        $null = $Client.Gate.Release()
+        return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
+            -Message 'Relay script host is unavailable.'
+    }
+    if ($null -eq $written.PSObject.Properties['CommandId']) {
+        $null = $Client.Gate.Release()
+        return $written
+    }
+    return [pscustomobject][ordered]@{
+        CommandId = $id
+        DeadlineUtc = [DateTimeOffset]::UtcNow.AddMilliseconds(
+            ($timeoutSeconds * 1000) + 2000
+        )
+    }
+}
+
+function Invoke-RelayScriptQuery {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Client,
+        [Parameter(Mandatory)][object]$Provider,
+        [Parameter(Mandatory)][AllowNull()][object]$Secrets
+    )
+    $id = [Guid]::NewGuid().ToString('N')
+    $timeoutSeconds = [int](Get-RelayClientProperty $Provider 'TimeoutSeconds')
+    if ($timeoutSeconds -lt 2) { $timeoutSeconds = 2 }
+    if ($timeoutSeconds -gt 30) { $timeoutSeconds = 30 }
+    $deadlineMilliseconds = ($timeoutSeconds * 1000) + 2000
+    $gateTaken = $false
+    $apiKey = [string](Get-RelayClientProperty $Secrets 'ApiKey')
+    $accessToken = [string](Get-RelayClientProperty $Secrets 'AccessToken')
+    $userId = [string](Get-RelayClientProperty $Secrets 'UserId')
+    try {
+        $gateTaken = $Client.Gate.Wait($deadlineMilliseconds)
+        if (-not $gateTaken) {
+            return New-RelayClientFailure -Id $id -Category 'Timeout' `
+                -Message 'Relay script host request timed out.'
+        }
+        if ($Client.Disposed) {
             return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
                 -Message 'Relay script host is unavailable.'
+        }
+        $hasExited = $true
+        try { $hasExited = $Client.Process.HasExited } catch { $hasExited = $true }
+        if ($hasExited) {
+            return New-RelayClientFailure -Id $id -Category 'SidecarLifecycle' `
+                -Message 'Relay script host exited unexpectedly.'
+        }
+
+        $written = Write-RelayScriptCommand `
+            -Client $Client -Provider $Provider -Secrets $Secrets `
+            -Id $id -TimeoutSeconds $timeoutSeconds
+        if ($null -eq $written.PSObject.Properties['CommandId']) {
+            return $written
         }
 
         $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -522,9 +603,6 @@ function Invoke-RelayScriptQuery {
         $apiKey = $null
         $accessToken = $null
         $userId = $null
-        $command = $null
-        $json = $null
-        $line = $null
         if ($gateTaken) {
             $null = $Client.Gate.Release()
         }

@@ -864,6 +864,22 @@ function New-MonitorInteractionController {
         }
     }.GetNewClosure()
 
+    $toggleTodaySpend = {
+        if ($state.Disposed) { return }
+        $relay = & $getField -InputObject $Settings -Name 'Relay'
+        if ($null -eq $relay) { return }
+        $current = [bool](& $getField -InputObject $relay -Name 'ShowTodaySpend')
+        $desired = -not $current
+        try {
+            & $setField -InputObject $relay -Name 'ShowTodaySpend' -Value $desired
+            & $SaveSettings $Settings
+        }
+        catch {
+            & $setField -InputObject $relay -Name 'ShowTodaySpend' -Value $current
+            throw
+        }
+    }.GetNewClosure()
+
     $refresh = {
         if (-not $state.Disposed) {
             & $RequestRefresh
@@ -1063,6 +1079,7 @@ function New-MonitorInteractionController {
         ManageRelays = $manageRelays
         PersistPlacement = $persistPlacement
         ToggleStartup = $toggleStartup
+        ToggleTodaySpend = $toggleTodaySpend
         Refresh = $refresh
         OpenUsage = $openUsage
         OpenLogs = $openLogs

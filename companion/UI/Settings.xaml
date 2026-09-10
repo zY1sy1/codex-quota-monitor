@@ -553,6 +553,25 @@
                                     Style="{StaticResource CommandButtonStyle}"
                                     AutomationProperties.Name="打开中转站管理器" />
                         </Grid>
+                        <Border Margin="0,20,0,0"
+                                Background="{DynamicResource SettingsSeparatorBrush}" />
+                        <Grid Margin="0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="显示今日消耗" Style="{StaticResource SettingTitleStyle}" />
+                                <TextBlock Text="在全览面板显示今天已消费的美刀总额（按钱包余额下降估算）"
+                                           MaxWidth="360"
+                                           Style="{StaticResource SettingDescriptionStyle}" />
+                            </StackPanel>
+                            <CheckBox x:Name="TodaySpendCheckBox"
+                                      Grid.Column="1"
+                                      VerticalAlignment="Center"
+                                      Style="{StaticResource SwitchCheckBoxStyle}"
+                                      AutomationProperties.Name="显示今日消耗" />
+                        </Grid>
                     </StackPanel>
                 </Grid>
             </ScrollViewer>

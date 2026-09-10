@@ -379,7 +379,7 @@ Describe 'monitor settings persistence' {
         $fileObject = $persisted | ConvertFrom-Json
 
         ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Relay,Startup'
-        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes'
+        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes,ShowTodaySpend'
         ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         ($fileObject.Window.Full.PSObject.Properties.Name -join ',') |
             Should -BeExactly 'Left,Top,Width,Height,Topmost,Visible'
@@ -402,7 +402,7 @@ Describe 'monitor settings persistence' {
         $persisted = [IO.File]::ReadAllText($path)
         $fileObject = $persisted | ConvertFrom-Json
         ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Relay,Startup'
-        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes'
+        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes,ShowTodaySpend'
         ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         ($fileObject.Window.Full.PSObject.Properties.Name -join ',') |
             Should -BeExactly 'Left,Top,Width,Height,Topmost,Visible'
@@ -567,7 +567,7 @@ $null = $mutex.WaitOne()
         $fileObject = $persisted | ConvertFrom-Json
         $fileObject.Window.Full.Left | Should -BeIn (100..103)
         ($fileObject.PSObject.Properties.Name -join ',') | Should -BeExactly 'SchemaVersion,Appearance,Window,Compact,Relay,Startup'
-        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes'
+        ($fileObject.Relay.PSObject.Properties.Name -join ',') | Should -BeExactly 'AutoQueryIntervalMinutes,ShowTodaySpend'
         ($fileObject.Window.PSObject.Properties.Name -join ',') | Should -BeExactly 'Full,CompactBar,Orb'
         $persisted | Should -Not -Match 'must-not-persist'
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $path) -File -Filter '*.tmp').Count | Should -Be 0
