@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+& (Join-Path $PSScriptRoot 'Build-NativeHelpers.ps1')
 . (Join-Path $PSScriptRoot 'Restore-TestDependencies.ps1')
 
 $testPaths = switch ($Suite) {

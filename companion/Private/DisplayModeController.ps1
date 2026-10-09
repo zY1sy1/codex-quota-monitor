@@ -81,6 +81,8 @@ function New-MonitorDisplayModeController {
         Visible = [bool](& $getField $fullWindowSettings 'Visible')
         Topmost = [bool](& $getField $fullWindowSettings 'Topmost')
         Snapshot = [object[]]@()
+        SnapshotReceived = $false
+        RenderedMode = $null
         FocusKey = [string](& $getField $compactSettings 'FocusMetric')
         Disposed = $false
     }
@@ -88,7 +90,7 @@ function New-MonitorDisplayModeController {
     if ($state.Theme -notin @('Light', 'Dark')) { $state.Theme = 'Dark' }
     if ($state.FullLayout -notin @('Overview', 'Tabs')) { $state.FullLayout = 'Overview' }
     if ([string]::IsNullOrWhiteSpace($state.FocusKey)) { $state.FocusKey = 'Auto' }
-    $observer = [pscustomobject]@{ Callback = $null }
+    $observer = [pscustomobject]@{ Callback = $null; PersistPlacement = $null }
     $notifyStateChanged = {
         if (-not $state.Disposed -and $observer.Callback -is [scriptblock]) {
             & $observer.Callback $state
@@ -98,23 +100,50 @@ function New-MonitorDisplayModeController {
     $hideViews = {
         foreach ($view in $views.Values) { & $view.Hide }
     }.GetNewClosure()
+    $renderView = {
+        param([Parameter(Mandatory)][ValidateSet('Full', 'CompactBar', 'Orb')][string]$Mode)
+        if ($state.Disposed) { return }
+        # Only the requested view is rendered. The 1 Hz snapshot call used to
+        # re-text all three views; hidden views are now refreshed by
+        # applyVisibility when they are shown again.
+        if ($Mode -eq 'Full') {
+            $officialRows = @($state.Snapshot | Where-Object {
+                [string](& $getField $_ 'SourceKind') -eq 'Official'
+            })
+            $relayRows = @($state.Snapshot | Where-Object {
+                [string](& $getField $_ 'SourceKind') -eq 'Relay'
+            })
+            & $FullView.RenderGroups -OfficialRows $officialRows -RelayRows $relayRows `
+                -State $null -FocusKey $state.FocusKey
+        }
+        else {
+            $pinnedKey = if ($state.FocusKey -eq 'Auto') { $null } else { $state.FocusKey }
+            $focus = & $getFocusRow -Rows $state.Snapshot -PinnedKey $pinnedKey
+            if ($Mode -eq 'CompactBar') {
+                & $CompactBarView.RenderFocus -Row $focus -PinnedKey $pinnedKey
+            }
+            else {
+                & $OrbView.RenderFocus -Row $focus -PinnedKey $pinnedKey
+            }
+        }
+        $state.RenderedMode = $Mode
+    }.GetNewClosure()
     $applyVisibility = {
         & $hideViews
-        if ($state.Visible) { & $views[$state.Mode].Show }
+        if ($state.Visible) {
+            & $views[$state.Mode].Show
+            if ($state.SnapshotReceived -and $state.RenderedMode -cne $state.Mode) {
+                & $renderView $state.Mode
+            }
+        }
     }.GetNewClosure()
     $renderSnapshot = {
-        $officialRows = @($state.Snapshot | Where-Object {
-            [string](& $getField $_ 'SourceKind') -eq 'Official'
-        })
-        $relayRows = @($state.Snapshot | Where-Object {
-            [string](& $getField $_ 'SourceKind') -eq 'Relay'
-        })
-        & $FullView.RenderGroups -OfficialRows $officialRows -RelayRows $relayRows `
-            -State $null -FocusKey $state.FocusKey
-        $pinnedKey = if ($state.FocusKey -eq 'Auto') { $null } else { $state.FocusKey }
-        $focus = & $getFocusRow -Rows $state.Snapshot -PinnedKey $pinnedKey
-        & $CompactBarView.RenderFocus -Row $focus -PinnedKey $pinnedKey
-        & $OrbView.RenderFocus -Row $focus -PinnedKey $pinnedKey
+        if (-not $state.Visible) {
+            # Nothing on screen; the next show re-renders from the snapshot.
+            $state.RenderedMode = $null
+            return
+        }
+        & $renderView $state.Mode
     }.GetNewClosure()
     $persist = { & $SaveSettings $Settings }.GetNewClosure()
 
@@ -122,6 +151,7 @@ function New-MonitorDisplayModeController {
         param([Parameter(Position = 0)][AllowEmptyCollection()][object[]]$Rows = @())
         if ($state.Disposed) { return }
         $state.Snapshot = [object[]]@($Rows | Where-Object { $null -ne $_ })
+        $state.SnapshotReceived = $true
         & $renderSnapshot
     }.GetNewClosure()
 
@@ -129,6 +159,19 @@ function New-MonitorDisplayModeController {
         param([Parameter(Mandatory, Position = 0)][ValidateSet('Full', 'CompactBar', 'Orb')][string]$Mode)
         if ($state.Disposed -or $state.Mode -eq $Mode) { return }
         $oldMode = $state.Mode
+        # Preserve the outgoing view's current position before its WPF tree
+        # is released. Update deferred placement for a later recreation.
+        $oldView = $views[$oldMode]
+        if ($null -ne $oldView.PSObject.Properties['Release']) {
+            $placement = & $oldView.GetPlacement
+            if ($null -ne $placement) {
+                & $observer.PersistPlacement -Mode $oldMode -Placement $placement
+                if ($null -ne $oldView.DeferredState.Placement) {
+                    $oldView.DeferredState.Placement.Arguments.Left = $placement.Left
+                    $oldView.DeferredState.Placement.Arguments.Top = $placement.Top
+                }
+            }
+        }
         $remember = [bool](& $getField $appearance 'RememberLastMode')
         $oldSetting = [string](& $getField $appearance 'DisplayMode')
         $state.Mode = $Mode
@@ -142,8 +185,13 @@ function New-MonitorDisplayModeController {
             $state.Mode = $oldMode
             if ($remember) { & $setField $appearance 'DisplayMode' $oldSetting }
             & $applyVisibility
+            $failedView = $views[$Mode]
+            if ($null -ne $failedView.PSObject.Properties['Release']) {
+                try { & $failedView.Release } catch { }
+            }
             throw
         }
+        if ($null -ne $oldView.PSObject.Properties['Release']) { & $oldView.Release }
     }.GetNewClosure()
 
     $setTheme = {
@@ -217,6 +265,7 @@ function New-MonitorDisplayModeController {
     $hideAll = {
         if ($state.Disposed -or -not $state.Visible) { return }
         $state.Visible = $false
+        $state.RenderedMode = $null
         & $setField $fullWindowSettings 'Visible' $false
         try { & $hideViews; & $persist }
         catch {
@@ -266,6 +315,7 @@ function New-MonitorDisplayModeController {
         if ($changed) { & $persist }
     }.GetNewClosure()
 
+    $observer.PersistPlacement = $persistPlacement
     $persistCurrentPlacement = {
         if ($state.Disposed) { return }
         $mode = [string]$state.Mode

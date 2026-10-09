@@ -124,7 +124,7 @@ Describe 'display mode controller' {
         }
     }
 
-    It 'renders one snapshot into all views and switches modes without refreshing data' {
+    It 'renders the visible view and uses the saved snapshot when switching modes' {
         $rows = @(
             New-TestDisplayRow -Key 'official:weekly' -SourceKind Official -ProgressValue 74
             New-TestDisplayRow -Key 'relay:one' -SourceKind Relay -ProgressValue 31
@@ -136,7 +136,10 @@ Describe 'display mode controller' {
         @($Views.Full.State.OfficialRows).Count | Should -Be 1
         @($Views.Full.State.RelayRows).Count | Should -Be 1
         $Views.CompactBar.State.FocusRow.Key | Should -BeExactly 'relay:one'
+        $Views.Orb.State.FocusRow | Should -BeNullOrEmpty
+        & $Controller.SetMode Orb
         $Views.Orb.State.FocusRow.Key | Should -BeExactly 'relay:one'
+        & $Controller.SetMode CompactBar
         $Views.Full.State.HideCalls | Should -BeGreaterThan 0
         $Views.CompactBar.State.ShowCalls | Should -BeGreaterThan 0
         $Controller.State.Mode | Should -BeExactly 'CompactBar'
@@ -153,6 +156,8 @@ Describe 'display mode controller' {
         & $Controller.SetTheme Light
         & $Controller.SetFullLayout Tabs
         & $Controller.SetFocusKey 'official:weekly'
+        & $Controller.SetMode CompactBar
+        & $Controller.SetMode Orb
         & $Controller.SetTopmost $false
         & $Controller.HideAll
 
@@ -176,6 +181,8 @@ Describe 'display mode controller' {
         )
         & $Controller.SetSnapshot $rows
         & $Controller.SetFocusKey 'relay:missing'
+        & $Controller.SetMode CompactBar
+        & $Controller.SetMode Orb
 
         $Views.CompactBar.State.FocusRow | Should -BeNullOrEmpty
         $Views.Orb.State.FocusRow | Should -BeNullOrEmpty

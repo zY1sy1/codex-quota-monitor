@@ -11,7 +11,8 @@ Describe 'Codex quota monitor production composition' {
         $manifest = Import-PowerShellDataFile -Path $ManifestPath
 
         $manifest.RootModule | Should -BeExactly 'CodexQuotaMonitor.psm1'
-        $manifest.ModuleVersion | Should -BeExactly '1.2.0'
+        $plugin = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.codex-plugin\plugin.json') -Raw | ConvertFrom-Json
+        $manifest.ModuleVersion | Should -BeExactly $plugin.version
         $manifest.PowerShellVersion | Should -BeExactly '7.4'
         [guid]$manifest.GUID | Should -Not -Be ([guid]::Empty)
         @($manifest.FunctionsToExport) | Should -Be @(
@@ -36,6 +37,7 @@ Describe 'Codex quota monitor production composition' {
         $relayCacheWrites = [Collections.Generic.List[object]]::new()
         $schedulerCreations = [Collections.Generic.List[object]]::new()
         $settingsSnapshots = [Collections.Generic.List[string]]::new()
+        $openSettingsCallbacks = [Collections.Generic.List[scriptblock]]::new()
         $ccSwitchDiscoveries = [Collections.Generic.List[object]]::new()
         $relayImportLinkReads = [Collections.Generic.List[string]]::new()
         $relayImportTransactions = [Collections.Generic.List[object]]::new()
@@ -182,6 +184,7 @@ Describe 'Codex quota monitor production composition' {
                 param($Path, $Cache)
                 $relayCacheWrites.Add($Cache) | Out-Null
             }.GetNewClosure()
+            NewDeferredView = { param($CreateView) & $CreateView }
             NewWindow = {
                 param([AllowNull()][scriptblock]$OnRefreshRequested)
                 $refreshCallbacks.Add($OnRefreshRequested) | Out-Null
@@ -255,6 +258,7 @@ Describe 'Codex quota monitor production composition' {
                 $OnManageRelays | Should -BeOfType ([scriptblock])
                 $OnOpenSettings | Should -BeOfType ([scriptblock])
                 & $OnManageRelays
+                $openSettingsCallbacks.Add($OnOpenSettings)
                 Write-Output -NoEnumerate $interaction
             }.GetNewClosure()
             NewSettingsView = {
@@ -302,6 +306,7 @@ Describe 'Codex quota monitor production composition' {
                 )
                 $DisplayController | Should -Be $displayController
                 $calls.Add('initialize-desktop') | Out-Null
+                & $openSettingsCallbacks[0]
             }.GetNewClosure()
         }
 
@@ -342,13 +347,13 @@ Describe 'Codex quota monitor production composition' {
 
         @($calls | Where-Object { $_ -notlike 'snapshot:*' -and $_ -ne 'dispose-display' }) |
             Should -Be @(
-                'new-relay-manager-view', 'new-cc-switch-import-view',
+                'new-display', 'new-relay-manager-view', 'new-cc-switch-import-view',
                 'new-cc-switch-import-controller', 'show-cc-switch-import',
-                'new-relay-manager-controller', 'new-display', 'show-relay-manager',
-                'new-settings-view', 'new-settings-controller',
-                'initialize-desktop', 'dispose-settings-controller',
-                'dispose-relay-manager-controller',
-                'dispose-cc-switch-import-controller', 'dispose-cc-switch-import-view'
+                'dispose-cc-switch-import-controller', 'dispose-cc-switch-import-view',
+                'new-relay-manager-controller', 'show-relay-manager',
+                'dispose-relay-manager-controller', 'dispose-relay-manager-view', 'initialize-desktop',
+                'new-settings-view', 'new-settings-controller', 'show-settings',
+                'dispose-settings-controller', 'dispose-settings-view'
             )
         @($calls | Where-Object { $_ -like 'snapshot:*' }).Count | Should -BeGreaterThan 0
         @($calls | Where-Object { $_ -eq 'dispose-display' }).Count | Should -Be 1
@@ -356,7 +361,7 @@ Describe 'Codex quota monitor production composition' {
         $refreshCallbacks[0] | Should -BeOfType ([scriptblock])
         [object]::ReferenceEquals($refreshCallbacks[0], $refreshCallbacks[1]) | Should -BeTrue
         [object]::ReferenceEquals($refreshCallbacks[1], $refreshCallbacks[2]) | Should -BeTrue
-        @($calls | Where-Object { $_ -eq 'dispose-relay-manager-view' }).Count | Should -Be 0
+        @($calls | Where-Object { $_ -eq 'dispose-relay-manager-view' }).Count | Should -Be 1
         $ccSwitchDiscoveries.Count | Should -Be 1
         $ccSwitchDiscoveries[0].ExecutablePath | Should -BeExactly (
             [IO.Path]::Combine($localAppData, 'CodexQuotaMonitor', 'app', 'Bin', 'relay-quota-host.exe')

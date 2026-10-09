@@ -1,3 +1,7 @@
+if (-not (Get-Command Initialize-MonitorNativeLibrary -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'NativeLibrary.ps1')
+}
+
 function Assert-MonitorTrayStaThread {
     [CmdletBinding()]
     param()
@@ -29,20 +33,7 @@ function Initialize-MonitorNativeIconMethods {
         return
     }
 
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-
-namespace CodexQuotaMonitor
-{
-    public static class NativeIconMethodsV1
-    {
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool DestroyIcon(IntPtr handle);
-    }
-}
-'@
+    Initialize-MonitorNativeLibrary
 }
 
 function Invoke-MonitorDestroyIconNative {

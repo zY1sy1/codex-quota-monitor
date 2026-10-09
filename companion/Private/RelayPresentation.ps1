@@ -332,6 +332,21 @@ function Get-CompactFocusRow {
                 return $row
             }
         }
+        # Official keys embed the window reset time
+        # ("codex|primary|300|<resetsAt>"), so a pin stops matching the moment
+        # the window rolls over. Fall back to the same metric family: rows
+        # whose key keeps the pinned key's prefix up to its last segment.
+        $separatorIndex = $PinnedKey.LastIndexOf('|')
+        if ($separatorIndex -gt 0) {
+            $prefix = $PinnedKey.Substring(0, $separatorIndex + 1)
+            foreach ($row in @($Rows)) {
+                $rowKey = [string](Get-ObjectField $row 'Key')
+                if ($rowKey.StartsWith($prefix, [StringComparison]::Ordinal) -and
+                    (Test-MonitorPresentationRowUsable $row)) {
+                    return $row
+                }
+            }
+        }
         return $null
     }
     $candidates = [Collections.Generic.List[object]]::new()

@@ -76,6 +76,7 @@ function Set-CompactBarThemeVisuals {
 
     $palette = Get-MonitorThemePalette -Theme $Theme
     $Controls.RootBorder.Background = ConvertTo-CompactBrush $palette.Surface
+    Set-MonitorWindowRenderingCompatibility -RootBorder $Controls.RootBorder -SurfaceColor $palette.Surface
     $Controls.RootBorder.BorderBrush = ConvertTo-CompactBrush $palette.Separator
     $Controls.MetricLabel.Foreground = ConvertTo-CompactBrush $palette.TextSecondary
     $Controls.MetricValue.Foreground = ConvertTo-CompactBrush $palette.TextPrimary

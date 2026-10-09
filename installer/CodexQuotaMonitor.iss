@@ -197,9 +197,11 @@ begin
   if WizardIsTaskSelected('launchafterinstall') then
   begin
     LauncherPath := ExpandConstant('{group}\Codex 额度监控.lnk');
-    if (not ShellExec('open', ExpandConstant('{sys}\explorer.exe'),
+    { With ewNoWait, ResultCode is not a process exit code. ShellExec's
+      Boolean result determines whether the shell accepted the launch. }
+    if not ShellExec('open', ExpandConstant('{sys}\explorer.exe'),
       QuoteArgument(LauncherPath), '', SW_SHOWNORMAL,
-      ewNoWait, ResultCode)) or (ResultCode <> 0) then
+      ewNoWait, ResultCode) then
       RaiseException('Codex Quota Monitor was installed but could not be launched.');
   end;
 end;

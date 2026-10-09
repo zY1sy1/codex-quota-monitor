@@ -67,6 +67,18 @@ if ($expectedRelayHash -notmatch '^[0-9A-F]{64}$' -or $actualRelayHash -cne $exp
     throw [IO.InvalidDataException]::new('The packaged relay host integrity check failed.')
 }
 
+$nativeAssembly = Join-Path $payloadPath 'Bin\CodexQuotaMonitor.Native.dll'
+$nativeManifestPath = Join-Path $payloadPath 'Bin\CodexQuotaMonitor.Native.json'
+if (-not (Test-Path -LiteralPath $nativeAssembly -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $nativeManifestPath -PathType Leaf)) {
+    throw [IO.InvalidDataException]::new('The precompiled native helpers are missing from the payload.')
+}
+$nativeManifest = [IO.File]::ReadAllText($nativeManifestPath) | ConvertFrom-Json
+if ($nativeManifest.SchemaVersion -ne 1 -or
+    $nativeManifest.AssemblySha256 -cne (Get-FileHash -LiteralPath $nativeAssembly -Algorithm SHA256).Hash) {
+    throw [IO.InvalidDataException]::new('The precompiled native helper integrity check failed.')
+}
+
 $forbidden = @(Get-ChildItem -LiteralPath $destinationFullPath -Recurse -Force | Where-Object {
         $_.Name -in @('.git', '.superpowers', 'tests', 'outputs', 'work') -or
         $_.Name -match '^(settings|health|relay-providers|relay-cache)\.json$' -or

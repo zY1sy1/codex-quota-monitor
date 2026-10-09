@@ -630,6 +630,24 @@ function New-QuotaWindowView {
         $focusButton = $Card.Resources['FocusButton']
         $focusDot = $Card.Resources['FocusDot']
 
+        # Cards are reused across theme changes. Recolor their contents once
+        # per theme rather than retaining the previous theme's foregrounds.
+        if ([string]$Card.Resources['AppliedTheme'] -cne $state.Theme) {
+            $label.Foreground = & $state.CreateBrush $state.Palette.TextPrimary
+            $remaining.Foreground = & $state.CreateBrush $state.Palette.TextPrimary
+            $secondary.Foreground = & $state.CreateBrush $state.Palette.TextSecondary
+            $countdown.Foreground = & $state.CreateBrush $state.Palette.Accent
+            $resetTime.Foreground = & $state.CreateBrush $state.Palette.TextSecondary
+            $progress.Foreground = & $state.CreateBrush $state.Palette.Accent
+            $progress.Background = & $state.CreateBrush $state.Palette.Track
+            $currentDot = $Card.Resources['InUseDot']
+            if ($null -ne $currentDot) {
+                $dotColor = if ($state.Palette.Contains('Success')) { $state.Palette.Success } else { $state.Palette.Accent }
+                $currentDot.Fill = & $state.CreateBrush $dotColor
+            }
+            $Card.Resources['AppliedTheme'] = $state.Theme
+        }
+
         $labelText = [string](& $state.GetPresentationField $Row -Name 'Label')
         if ([string]$label.Text -cne $labelText) {
             $label.Text = $labelText
@@ -737,6 +755,10 @@ function New-QuotaWindowView {
 
         if ($Rows.Count -eq 0) {
             if ($Panel.Children.Count -eq 1 -and $Panel.Children[0].Tag -eq 'EmptyQuotaState') {
+                $empty = $Panel.Children[0]
+                if ([string]$empty.Foreground.ToString() -cne $state.Palette.TextSecondary) {
+                    $empty.Foreground = & $state.CreateBrush $state.Palette.TextSecondary
+                }
                 return
             }
             for ($index = $Panel.Children.Count - 1; $index -ge 0; $index--) {

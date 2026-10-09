@@ -147,6 +147,8 @@ function Publish-MonitorApplication {
                 'UI'
                 'Bin\relay-quota-host.exe'
                 'Bin\relay-quota-host.sha256'
+                'Bin\CodexQuotaMonitor.Native.dll'
+                'Bin\CodexQuotaMonitor.Native.json'
                 'Presets\relay-usage.json'
                 'ThirdPartyNotices.txt'
             )) {

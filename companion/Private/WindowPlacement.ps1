@@ -337,11 +337,18 @@ function Initialize-MonitorDesktopPresentation {
                     }
                 }
             )
-            & $SetPlacement -Window $definition[1].Window `
-                -Left (Get-WindowPlacementField -InputObject $node -Name 'Left') `
-                -Top (Get-WindowPlacementField -InputObject $node -Name 'Top') `
-                -WorkAreas $workAreas `
-                -FallbackPositions $fallbackPositions | Out-Null
+            $placementArguments = @{
+                Left = Get-WindowPlacementField -InputObject $node -Name 'Left'
+                Top = Get-WindowPlacementField -InputObject $node -Name 'Top'
+                WorkAreas = $workAreas
+                FallbackPositions = $fallbackPositions
+            }
+            if ($null -ne $definition[1].PSObject.Properties['ConfigurePlacement']) {
+                & $definition[1].ConfigurePlacement -Action $SetPlacement -Arguments $placementArguments
+            }
+            else {
+                & $SetPlacement -Window $definition[1].Window @placementArguments | Out-Null
+            }
         }
         & $TrayView.SetVisible $true | Out-Null
         & $DisplayController.ApplyVisibility | Out-Null

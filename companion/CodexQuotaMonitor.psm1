@@ -22,6 +22,7 @@ $privateFiles = @(
     'WpfView.ps1'
     'CompactBarView.ps1'
     'QuotaOrbView.ps1'
+    'DeferredView.ps1'
     'DisplayModeController.ps1'
     'RelayManagerView.ps1'
     'CcSwitchUsageImport.ps1'
@@ -71,7 +72,7 @@ function Invoke-CodexQuotaMonitorRuntime {
         [int]$RunForSeconds = 0,
 
         [ValidateRange(25, 1000)]
-        [int]$TickMilliseconds = 100,
+        [int]$TickMilliseconds = 250,
 
         [ValidateRange(1, 300)]
         [int]$RequestTimeoutSeconds = 10,
@@ -113,6 +114,8 @@ function Invoke-CodexQuotaMonitorRuntime {
         RequestExpired = ${function:Test-RequestExpired}
         ReconnectDelay = ${function:Get-ReconnectDelaySeconds}
         PresentationRows = ${function:ConvertTo-QuotaPresentationRow}
+        FormatCountdown = ${function:Format-ResetCountdown}
+        QuotaUnixSeconds = ${function:ConvertTo-ValidQuotaUnixSeconds}
         Severity = ${function:Get-QuotaSeverity}
         Tooltip = ${function:Get-TrayTooltip}
         ReadRelayProviders = ${function:Read-RelayProviderStore}
@@ -155,9 +158,11 @@ function Invoke-CodexQuotaMonitorRuntime {
         NewCompactBar = ${function:New-CompactBarView}
         NewOrb = ${function:New-QuotaOrbView}
         NewDisplay = ${function:New-MonitorDisplayModeController}
+        NewDeferredView = ${function:New-DeferredMonitorView}
         NewRelayManager = ${function:New-RelayManagerView}
         NewCcSwitchImportView = ${function:New-CcSwitchImportView}
         NewCcSwitchImportController = ${function:New-CcSwitchImportController}
+        ConvertCcSwitchCandidate = ${function:ConvertTo-CcSwitchRelayImportCandidate}
         NewRelayManagerController = ${function:New-RelayManagerController}
         NewSettingsView = ${function:New-SettingsView}
         NewSettingsController = ${function:New-SettingsController}
@@ -233,8 +238,12 @@ function Invoke-CodexQuotaMonitorRuntime {
         RelayPendingQuery = $null
         RelayRows = @()
         CombinedRows = @()
+        CombinedDataSignature = $null
+        CombinedCountdownRefs = @()
         CcSwitchCurrentProviders = @()
+        CcSwitchDatabaseStamp = $null
         NextCcSwitchCurrentReadAt = [DateTimeOffset]::MinValue
+        NextCcSwitchForcedReadAt = [DateTimeOffset]::MinValue
         WindowView = $null
         CompactBarView = $null
         OrbView = $null
@@ -264,6 +273,7 @@ function Invoke-CodexQuotaMonitorRuntime {
         LastPlanType = $null
         LastSuccessAt = $null
         LastHealthSignature = $null
+        LastPublishedSessionStatus = $null
         NextUiRefreshAt = [DateTimeOffset]::MinValue
         StartedAt = [DateTimeOffset]::UtcNow
         Deadline = if ($RunForSeconds -gt 0) {
@@ -369,6 +379,7 @@ function Invoke-CodexQuotaMonitorRuntime {
         $writeHealthFunction = $runtime.Functions.WriteHealth
         & $writeHealthFunction -Path $runtime.Paths.Health -Health $health
         $runtime.LastHealthSignature = $signature
+        $runtime.LastPublishedSessionStatus = [string]$runtime.Session.Status
     }.GetNewClosure()
 
     $stopTransport = {
@@ -531,8 +542,82 @@ function Invoke-CodexQuotaMonitorRuntime {
         $runtime.RelayCache = $cache
     }.GetNewClosure()
 
+    $buildCombinedDataSignature = {
+        param([DateTimeOffset]$Now)
+
+        # Signature of every raw input the row builders read, minus the clock
+        # (the local date is kept for the daily-spend rollover). Direct
+        # property access keeps it cheap; a missing property yields the same
+        # $null the object-field readers would see.
+        $parts = [Collections.Generic.List[string]]::new()
+        $parts.Add('d|' + $Now.ToLocalTime().ToString('yyyy-MM-dd'))
+        $showTodaySpend = $false
+        try { $showTodaySpend = [bool]$runtime.Settings.Relay.ShowTodaySpend } catch { }
+        $parts.Add('s|' + [string]$showTodaySpend)
+        $spend = $runtime.DailySpend
+        if ($null -ne $spend) {
+            try {
+                $parts.Add('ds|' + [string]$spend.Date)
+                foreach ($providerKey in @($spend.Providers.Keys)) {
+                    $parts.Add('dp|' + [string]$providerKey + '|' + [string]$spend.Providers[$providerKey])
+                }
+            }
+            catch { $parts.Add('ds|?') }
+        }
+        $windows = @(
+            if ($runtime.Session.Status -eq 'Live') {
+                $runtime.Session.QuotaWindows
+            }
+            else {
+                $runtime.LastQuotaWindows
+            }
+        )
+        foreach ($window in $windows) {
+            if ($null -eq $window) { continue }
+            $parts.Add('w|' + [string]$window.Key + '|' + [string]$window.WindowDurationMins + '|' +
+                [string]$window.LimitName + '|' + [string]$window.RemainingPercent + '|' +
+                [string]$window.ResetsAt)
+        }
+        foreach ($provider in @($runtime.RelayProviders)) {
+            $providerId = [string]$provider.Id
+            $parts.Add('p|' + $providerId + '|' + [string]$provider.Enabled + '|' + [string]$provider.Name)
+            $state = $runtime.RelayStates[$providerId]
+            if ($null -eq $state) { continue }
+            $parts.Add('st|' + [string]$state.Status + '|' + [string]$state.LastErrorCategory + '|' +
+                [string]$state.LastSuccessAt)
+            foreach ($result in @($state.Results)) {
+                if ($null -eq $result) { continue }
+                $parts.Add('r|' + [string]$result.PlanName + '|' + [string]$result.Unit + '|' +
+                    [string]$result.Remaining + '|' + [string]$result.Total + '|' + [string]$result.Used + '|' +
+                    [string]$result.IsValid + '|' + [string]$result.Extra + '|' + [string]$result.InvalidMessage)
+            }
+        }
+        foreach ($current in @($runtime.CcSwitchCurrentProviders)) {
+            if ($null -eq $current) { continue }
+            $parts.Add('c|' + [string]$current.AppType + '|' + [string]$current.Name + '|' +
+                [string]$current.ProviderId)
+        }
+        return ($parts -join "`n")
+    }.GetNewClosure()
+
     $refreshCombinedPresentation = {
         param([DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
+
+        if ((& $buildCombinedDataSignature $Now) -ceq $runtime.CombinedDataSignature) {
+            # Underlying data is unchanged: the official countdowns are the
+            # only fields that move at the 1 s cadence, so refresh those in
+            # place instead of rebuilding every row.
+            foreach ($countdownRef in @($runtime.CombinedCountdownRefs)) {
+                if ($null -eq $countdownRef) { continue }
+                $countdown = & $runtime.Functions.FormatCountdown `
+                    -ResetsAt ([long]$countdownRef.ResetsAt) -Now $Now
+                $property = $countdownRef.Row.PSObject.Properties['Countdown']
+                if ($null -ne $property) {
+                    $property.Value = [string]$countdown
+                }
+            }
+            return
+        }
 
         $relayRows = [Collections.Generic.List[object]]::new()
         $relayPresentationFunction = $runtime.Functions.RelayPresentationRows
@@ -588,6 +673,29 @@ function Invoke-CodexQuotaMonitorRuntime {
         $runtime.CombinedRows = @(& $mergeFunction `
             -OfficialRows $officialRows -RelayRows $runtime.RelayRows `
             -CurrentProviders $runtime.CcSwitchCurrentProviders)
+
+        # Remember which merged row belongs to which official reset time, so
+        # the signature-unchanged fast path can re-text just its countdown.
+        # The signature is stored after the daily-spend resolver has run, so
+        # the next tick compares against the post-mutation inputs.
+        $countdownRefs = [Collections.Generic.List[object]]::new()
+        foreach ($window in $displayWindows) {
+            if ($null -eq $window) { continue }
+            $resetsAt = & $runtime.Functions.QuotaUnixSeconds -Value $window.ResetsAt
+            if ($null -eq $resetsAt) { continue }
+            $windowKey = [string]$window.Key
+            foreach ($row in @($runtime.CombinedRows)) {
+                if ([string]$row.Key -ceq $windowKey) {
+                    $countdownRefs.Add([pscustomobject]@{
+                        Row = $row
+                        ResetsAt = [long]$resetsAt
+                    })
+                    break
+                }
+            }
+        }
+        $runtime.CombinedCountdownRefs = [object[]]$countdownRefs.ToArray()
+        $runtime.CombinedDataSignature = & $buildCombinedDataSignature $Now
     }.GetNewClosure()
 
     $applyRelayOutcome = {
@@ -936,9 +1044,9 @@ function Invoke-CodexQuotaMonitorRuntime {
         param([DateTimeOffset]$Now = [DateTimeOffset]::UtcNow)
 
         # Recompute the combined presentation exactly once per UI tick (1 Hz).
-        # The 100 ms relay tick pulls data and updates state, but the rows can
-        # only be consumed at the UI refresh cadence below, so recomputing here
-        # keeps the reset countdown fresh without the 10x idle recompute churn.
+        # The sub-second relay tick pulls data and updates state, but the rows
+        # can only be consumed at the UI refresh cadence below, so recomputing
+        # here keeps the reset countdown fresh without the idle recompute churn.
         & $refreshCombinedPresentation $Now
 
         if ($Headless -or $null -eq $runtime.DisplayController -or $null -eq $runtime.TrayView) {
@@ -999,10 +1107,31 @@ function Invoke-CodexQuotaMonitorRuntime {
                 if ($null -ne $readCurrentFunction -and $null -ne $dbPathFunction) {
                     $databasePath = & $dbPathFunction
                     if (-not [string]::IsNullOrWhiteSpace($databasePath)) {
-                        $runtime.CcSwitchCurrentProviders = [object[]]@(
-                            & $readCurrentFunction -ExecutablePath $runtime.Paths.RelayHost `
-                                -DatabasePath $databasePath
-                        )
+                        # Spawning the 8 MB relay host every minute was idle
+                        # churn; only read when the database (or a WAL
+                        # sidecar) actually changed, with a periodic safety
+                        # read in case timestamps are unreliable.
+                        $stampParts = foreach ($suffix in @('', '-wal', '-shm')) {
+                            $candidate = $databasePath + $suffix
+                            if ([IO.File]::Exists($candidate)) {
+                                $info = [IO.FileInfo]::new($candidate)
+                                '{0}:{1}' -f $info.LastWriteTimeUtc.Ticks, $info.Length
+                            }
+                            else {
+                                'none'
+                            }
+                        }
+                        $databaseStamp = $stampParts -join '|'
+                        $changed = $databaseStamp -cne $runtime.CcSwitchDatabaseStamp
+                        $forced = $now -ge $runtime.NextCcSwitchForcedReadAt
+                        if ($changed -or $forced) {
+                            $runtime.CcSwitchCurrentProviders = [object[]]@(
+                                & $readCurrentFunction -ExecutablePath $runtime.Paths.RelayHost `
+                                    -DatabasePath $databasePath
+                            )
+                            $runtime.CcSwitchDatabaseStamp = $databaseStamp
+                            $runtime.NextCcSwitchForcedReadAt = $now.AddSeconds(600)
+                        }
                     }
                 }
             }
@@ -1145,8 +1274,14 @@ function Invoke-CodexQuotaMonitorRuntime {
         if ($now -ge $runtime.NextUiRefreshAt) {
             $runtime.NextUiRefreshAt = $now.AddSeconds(1)
             & $refreshUi $now
+            # The health signature tracks presentation state, which only moves
+            # at this cadence; recomputing it on every relay tick was idle
+            # churn with no observable benefit.
+            & $publishHealth
         }
-        & $publishHealth
+        if ([string]$runtime.Session.Status -cne $runtime.LastPublishedSessionStatus) {
+            & $publishHealth
+        }
     }.GetNewClosure()
     $runtime | Add-Member -NotePropertyName Tick -NotePropertyValue $tick
 
@@ -1201,20 +1336,19 @@ function Invoke-CodexQuotaMonitorRuntime {
         }.GetNewClosure()
 
         if (-not $Headless) {
-            $newWindowFunction = $functions.NewWindow
-            $runtime.WindowView = & $newWindowFunction -OnRefreshRequested $requestRefreshAction
-            $newCompactBarFunction = $functions.NewCompactBar
-            $runtime.CompactBarView = & $newCompactBarFunction
-            $newOrbFunction = $functions.NewOrb
-            $runtime.OrbView = & $newOrbFunction
+            $newDeferredViewFunction = $functions.NewDeferredView
+            $runtime.WindowView = & $newDeferredViewFunction -CreateView ({
+                & $runtime.Functions.NewWindow -OnRefreshRequested $requestRefreshAction
+            }.GetNewClosure())
+            $runtime.CompactBarView = & $newDeferredViewFunction -CreateView ({
+                & $runtime.Functions.NewCompactBar
+            }.GetNewClosure())
+            $runtime.OrbView = & $newDeferredViewFunction -CreateView ({
+                & $runtime.Functions.NewOrb
+            }.GetNewClosure())
             $newTrayFunction = $functions.NewTray
             $runtime.TrayView = & $newTrayFunction -Visible:$false
 
-            $newRelayManagerFunction = $functions.NewRelayManager
-            $runtime.RelayManagerView = & $newRelayManagerFunction
-
-            $newCcSwitchImportViewFunction = $functions.NewCcSwitchImportView
-            $runtime.CcSwitchImportView = & $newCcSwitchImportViewFunction
             $discoverCcSwitchFunction = $functions.DiscoverCcSwitch
             $readRelayImportLinksFunction = $functions.ReadRelayImportLinks
             $defaultCcSwitchDatabasePathFunction = ${function:Get-DefaultCcSwitchDatabasePath}
@@ -1225,13 +1359,6 @@ function Invoke-CodexQuotaMonitorRuntime {
             $readRelayImportLinksAction = {
                 & $readRelayImportLinksFunction -Path $paths.RelayImportLinks
             }.GetNewClosure()
-            $newCcSwitchImportControllerFunction = $functions.NewCcSwitchImportController
-            $runtime.CcSwitchImportController = & $newCcSwitchImportControllerFunction `
-                -View $runtime.CcSwitchImportView `
-                -Discover $ccSwitchDiscoveryAction `
-                -ReadLinks $readRelayImportLinksAction `
-                -ConvertCandidate ${function:ConvertTo-CcSwitchRelayImportCandidate}
-
             $writeRelayImportTransactionFunction = $functions.WriteRelayImportTransaction
             $writeRelayStateAction = {
                 param($Document, $Mutation)
@@ -1243,7 +1370,28 @@ function Invoke-CodexQuotaMonitorRuntime {
             }.GetNewClosure()
             $importProviderAction = {
                 param($Providers)
-                & $runtime.CcSwitchImportController.Show -Providers $Providers
+                if ($null -ne $runtime.CcSwitchImportController) { return $null }
+                try {
+                    $newCcSwitchImportViewFunction = $runtime.Functions.NewCcSwitchImportView
+                    $runtime.CcSwitchImportView = & $newCcSwitchImportViewFunction
+                    $newCcSwitchImportControllerFunction = $runtime.Functions.NewCcSwitchImportController
+                    $runtime.CcSwitchImportController = & $newCcSwitchImportControllerFunction `
+                        -View $runtime.CcSwitchImportView `
+                        -Discover $ccSwitchDiscoveryAction `
+                        -ReadLinks $readRelayImportLinksAction `
+                        -ConvertCandidate $runtime.Functions.ConvertCcSwitchCandidate
+                    & $runtime.CcSwitchImportController.Show -Providers $Providers
+                }
+                finally {
+                    if ($null -ne $runtime.CcSwitchImportController) {
+                        try { & $runtime.CcSwitchImportController.Dispose } catch { }
+                    }
+                    if ($null -ne $runtime.CcSwitchImportView) {
+                        try { & $runtime.CcSwitchImportView.Dispose } catch { }
+                    }
+                    $runtime.CcSwitchImportController = $null
+                    $runtime.CcSwitchImportView = $null
+                }
             }.GetNewClosure()
             $protectRelaySecretFunction = $functions.ProtectRelaySecret
             $protectRelaySecretAction = {
@@ -1427,19 +1575,6 @@ function Invoke-CodexQuotaMonitorRuntime {
                     [Windows.MessageBoxImage]::Warning
                 ) -eq [Windows.MessageBoxResult]::Yes
             }
-            $newRelayManagerControllerFunction = $functions.NewRelayManagerController
-            $runtime.RelayManagerController = & $newRelayManagerControllerFunction `
-                -View $runtime.RelayManagerView `
-                -Providers $runtime.RelayProviders `
-                -WriteRelayState $writeRelayStateAction `
-                -ImportProvider $importProviderAction `
-                -ProtectSecret $protectRelaySecretAction `
-                -UnprotectSecret $unprotectRelaySecretAction `
-                -QueryProvider $queryRelayDraftAction `
-                -ApplyProviders $applyRelayProvidersAction `
-                -RemoveProviderArtifacts $removeRelayProviderArtifactsAction `
-                -ConfirmDelete $confirmRelayDeleteAction
-
             $saveSettingsFunction = $functions.WriteSettings
             $saveSettingsAction = {
                 param($Settings)
@@ -1463,14 +1598,37 @@ function Invoke-CodexQuotaMonitorRuntime {
                 Start-Process -FilePath $Target | Out-Null
             }
             $manageRelaysAction = {
-                if ($null -ne $runtime.RelayManagerController) {
+                if ($null -ne $runtime.RelayManagerController) { return }
+                try {
+                    $newRelayManagerFunction = $runtime.Functions.NewRelayManager
+                    $runtime.RelayManagerView = & $newRelayManagerFunction
+                    $newRelayManagerControllerFunction = $runtime.Functions.NewRelayManagerController
+                    $runtime.RelayManagerController = & $newRelayManagerControllerFunction `
+                        -View $runtime.RelayManagerView `
+                        -Providers $runtime.RelayProviders `
+                        -WriteRelayState $writeRelayStateAction `
+                        -ImportProvider $importProviderAction `
+                        -ProtectSecret $protectRelaySecretAction `
+                        -UnprotectSecret $unprotectRelaySecretAction `
+                        -QueryProvider $queryRelayDraftAction `
+                        -ApplyProviders $applyRelayProvidersAction `
+                        -RemoveProviderArtifacts $removeRelayProviderArtifactsAction `
+                        -ConfirmDelete $confirmRelayDeleteAction
                     & $runtime.RelayManagerController.Show
+                }
+                finally {
+                    if ($null -ne $runtime.RelayManagerController) {
+                        try { & $runtime.RelayManagerController.Dispose } catch { }
+                    }
+                    if ($null -ne $runtime.RelayManagerView) {
+                        try { & $runtime.RelayManagerView.Dispose } catch { }
+                    }
+                    $runtime.RelayManagerController = $null
+                    $runtime.RelayManagerView = $null
                 }
             }.GetNewClosure()
             $openSettingsAction = {
-                if ($null -ne $runtime.SettingsController) {
-                    & $runtime.SettingsController.Show
-                }
+                & $runtime.ShowSettings
             }.GetNewClosure()
 
             $newDisplayFunction = $functions.NewDisplay
@@ -1498,32 +1656,50 @@ function Invoke-CodexQuotaMonitorRuntime {
                 -OnManageRelays $manageRelaysAction `
                 -OnOpenSettings $openSettingsAction
 
-            $newSettingsViewFunction = $functions.NewSettingsView
-            $runtime.SettingsView = & $newSettingsViewFunction
-            $settingsSnapshotAction = {
-                [pscustomobject][ordered]@{
-                    Mode = [string]$runtime.DisplayController.State.Mode
-                    Theme = [string]$runtime.DisplayController.State.Theme
-                    FullLayout = [string]$runtime.DisplayController.State.FullLayout
-                    Topmost = [bool]$runtime.DisplayController.State.Topmost
-                    Startup = [bool]$runtime.Settings.Startup
-                    ShowTodaySpend = [bool]$runtime.Settings.Relay.ShowTodaySpend
-                    Relays = [object[]]@($runtime.RelayProviders)
+            $showSettingsAction = {
+                if ($null -ne $runtime.SettingsController) { return }
+                try {
+                    $newSettingsViewFunction = $runtime.Functions.NewSettingsView
+                    $runtime.SettingsView = & $newSettingsViewFunction
+                    $settingsRuntime = $runtime
+                    $settingsSnapshotAction = {
+                        [pscustomobject][ordered]@{
+                            Mode = [string]$settingsRuntime.DisplayController.State.Mode
+                            Theme = [string]$settingsRuntime.DisplayController.State.Theme
+                            FullLayout = [string]$settingsRuntime.DisplayController.State.FullLayout
+                            Topmost = [bool]$settingsRuntime.DisplayController.State.Topmost
+                            Startup = [bool]$settingsRuntime.Settings.Startup
+                            ShowTodaySpend = [bool]$settingsRuntime.Settings.Relay.ShowTodaySpend
+                            Relays = [object[]]@($settingsRuntime.RelayProviders)
+                        }
+                    }.GetNewClosure()
+                    $newSettingsControllerFunction = $runtime.Functions.NewSettingsController
+                    $runtime.SettingsController = & $newSettingsControllerFunction `
+                        -View $runtime.SettingsView `
+                        -GetSnapshot $settingsSnapshotAction `
+                        -SetDisplayMode $runtime.Interaction.SetDisplayMode `
+                        -SetTheme $runtime.Interaction.SetTheme `
+                        -SetFullLayout $runtime.Interaction.SetFullLayout `
+                        -ToggleTopmost $runtime.Interaction.ToggleTopmost `
+                        -ToggleStartup $runtime.Interaction.ToggleStartup `
+                        -ToggleTodaySpend $runtime.Interaction.ToggleTodaySpend `
+                        -RequestRefresh $runtime.Interaction.Refresh `
+                        -ManageRelays $manageRelaysAction `
+                        -MoveRelay $moveRelayProviderAction
+                    & $runtime.SettingsController.Show
+                }
+                finally {
+                    if ($null -ne $runtime.SettingsController) {
+                        try { & $runtime.SettingsController.Dispose } catch { }
+                    }
+                    if ($null -ne $runtime.SettingsView) {
+                        try { & $runtime.SettingsView.Dispose } catch { }
+                    }
+                    $runtime.SettingsController = $null
+                    $runtime.SettingsView = $null
                 }
             }.GetNewClosure()
-            $newSettingsControllerFunction = $functions.NewSettingsController
-            $runtime.SettingsController = & $newSettingsControllerFunction `
-                -View $runtime.SettingsView `
-                -GetSnapshot $settingsSnapshotAction `
-                -SetDisplayMode $runtime.Interaction.SetDisplayMode `
-                -SetTheme $runtime.Interaction.SetTheme `
-                -SetFullLayout $runtime.Interaction.SetFullLayout `
-                -ToggleTopmost $runtime.Interaction.ToggleTopmost `
-                -ToggleStartup $runtime.Interaction.ToggleStartup `
-                -ToggleTodaySpend $runtime.Interaction.ToggleTodaySpend `
-                -RequestRefresh $runtime.Interaction.Refresh `
-                -ManageRelays $manageRelaysAction `
-                -MoveRelay $moveRelayProviderAction
+            $runtime | Add-Member -NotePropertyName ShowSettings -NotePropertyValue $showSettingsAction
 
             $initializeDesktopFunction = $functions.InitializeDesktop
             & $initializeDesktopFunction `

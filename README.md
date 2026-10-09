@@ -18,6 +18,16 @@ Codex Quota Monitor 是一个面向 Windows 当前用户的个人 Codex 插件�
 
 若只使用 API key、Amazon Bedrock，或者 Codex 尚未登录 ChatGPT，程序仍可运行并报告状态，但不会显示 ChatGPT 订阅额度。
 
+Windows 10（2004 / build 19041 起，包含 22H2）与 Windows 11 均使用 WPF 和 Segoe UI，不依赖 Windows 11 专属的 Mica 或圆角窗口 API。关闭系统透明效果、使用高对比度模式或没有 GPU 加速时，悬浮窗改用不透明背景并去掉阴影。
+
+### 常驻内存
+
+启动时只创建当前显示模式的窗口；切换模式后释放上一个窗口，并保留位置、主题和焦点设置。设置、中转站管理和 CC Switch 导入窗口仅在打开时创建，关闭后释放。额度卡片继续复用，切换主题会同步更新背景、文字、进度条和状态圆点。
+
+进程通信与原生窗口辅助代码随应用预编译为 `Bin\CodexQuotaMonitor.Native.dll`，运行时不再编译 C# 或加载 Roslyn 编译器。开发者修改 `native\*.cs` 后运行 `build\Build-NativeHelpers.ps1`；测试和安装包构建会自动验证、更新该 DLL。接收者无需安装编译器或另一个 .NET 运行时。
+
+评估优化效果时应同时查看专用工作集与私有提交内存；共享库计入的总工作集会随系统内存压力波动。应用不通过定时强制 GC 或清空工作集降低显示数字。
+
 ## 安装
 
 在插件或仓库根目录打开 PowerShell 7，运行：

@@ -8,6 +8,8 @@ CodexQuotaMonitor-Setup-<version>-x64.exe
 
 目标环境为 Windows 10（build 19041 或更高）与 Windows 11 x64。安装范围是当前用户，默认目录为 `%LOCALAPPDATA%\Programs\CodexQuotaMonitor`，不需要管理员权限，也不会触发 UAC。安装包内置私有 PowerShell 7.6.4 x64；它只由本应用的快捷方式调用，不写入 `PATH`，不注册为系统 Shell，也不修改用户已有的 PowerShell 或执行策略。
 
+安装包同时包含预编译的 `CodexQuotaMonitor.Native.dll`。C# 编译器只在构建电脑上使用，不会在接收者的常驻监视器进程中加载。Windows 10 关闭透明效果或缺少 GPU 加速时自动使用不透明背景。
+
 ## 接收者安装
 
 1. 接收者先自行安装 Codex，并使用自己的账户登录。

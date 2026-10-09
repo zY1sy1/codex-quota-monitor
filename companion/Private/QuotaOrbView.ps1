@@ -153,6 +153,7 @@ function Set-QuotaOrbThemeVisuals {
 
     $palette = Get-MonitorThemePalette -Theme $Theme
     $Controls.RootBorder.Background = ConvertTo-QuotaOrbBrush $palette.Surface
+    Set-MonitorWindowRenderingCompatibility -RootBorder $Controls.RootBorder -SurfaceColor $palette.Surface
     $Controls.RingTrack.Stroke = ConvertTo-QuotaOrbBrush $palette.Separator
     $Controls.RingValue.Stroke = ConvertTo-QuotaOrbBrush $palette.Accent
     $Controls.MetricText.Foreground = ConvertTo-QuotaOrbBrush $palette.TextPrimary

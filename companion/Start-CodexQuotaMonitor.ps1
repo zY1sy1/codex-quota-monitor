@@ -20,7 +20,7 @@ param(
     [int] $RunForSeconds = 0,
 
     [ValidateRange(25, 1000)]
-    [int] $TickMilliseconds = 100,
+    [int] $TickMilliseconds = 250,
 
     [ValidateRange(1, 300)]
     [int] $RequestTimeoutSeconds = 10,

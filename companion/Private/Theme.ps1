@@ -1,3 +1,7 @@
+if (-not (Get-Command Initialize-MonitorNativeLibrary -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'NativeLibrary.ps1')
+}
+
 function Get-MonitorThemePalette {
     [CmdletBinding()]
     param(
@@ -107,6 +111,41 @@ function ConvertTo-MonitorThemeBrush {
     [Windows.Media.BrushConverter]::new().ConvertFromString($Color)
 }
 
+function Set-MonitorWindowRenderingCompatibility {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$RootBorder,
+        [Parameter(Mandatory)][string]$SurfaceColor,
+        [AllowNull()][Nullable[int]]$RenderingTier = $null,
+        [AllowNull()][Nullable[bool]]$TransparencyEnabled = $null,
+        [AllowNull()][Nullable[bool]]$HighContrast = $null
+    )
+
+    if ($null -eq $RenderingTier) { $RenderingTier = [Windows.Media.RenderCapability]::Tier -shr 16 }
+    if ($null -eq $HighContrast) { $HighContrast = [Windows.SystemParameters]::HighContrast }
+    if ($null -eq $TransparencyEnabled) {
+        $TransparencyEnabled = $true
+        $personalization = $null
+        try {
+            $personalization = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+            )
+            if ($null -ne $personalization) {
+                $TransparencyEnabled = $personalization.GetValue('EnableTransparency', 1) -ne 0
+            }
+        }
+        catch { }
+        finally { if ($null -ne $personalization) { $personalization.Dispose() } }
+    }
+    # Windows 10, remote desktops and machines without GPU acceleration use
+    # a readable opaque surface without the software-rendered shadow cost.
+    if ($RenderingTier -eq 0 -or -not $TransparencyEnabled -or $HighContrast) {
+        $opaqueColor = if ($SurfaceColor.Length -eq 9) { '#FF' + $SurfaceColor.Substring(3) } else { $SurfaceColor }
+        $RootBorder.Background = ConvertTo-MonitorThemeBrush $opaqueColor
+        $RootBorder.Effect = $null
+    }
+}
+
 function Set-MonitorWindowTheme {
     [CmdletBinding()]
     param(
@@ -121,6 +160,7 @@ function Set-MonitorWindowTheme {
     $Window.Resources['QuotaFocusHoverBrush'] = ConvertTo-MonitorThemeBrush $palette.AccentSoft
     $Window.Resources['QuotaFocusPressedBrush'] = ConvertTo-MonitorThemeBrush $palette.AccentPressed
     $Controls.RootBorder.Background = ConvertTo-MonitorThemeBrush $palette.Surface
+    Set-MonitorWindowRenderingCompatibility -RootBorder $Controls.RootBorder -SurfaceColor $palette.Surface
     $Controls.RootBorder.BorderBrush = ConvertTo-MonitorThemeBrush $palette.Separator
     $Controls.TitleText.Foreground = ConvertTo-MonitorThemeBrush $palette.TextPrimary
     $Controls.FreshnessText.Foreground = ConvertTo-MonitorThemeBrush $palette.TextSecondary
@@ -159,53 +199,7 @@ function Enable-MonitorWindowBlur {
             return [bool](& $ApplyDwm $WindowHandle)
         }
         if (-not ('CodexQuotaMonitor.Theme.NativeMethods' -as [type])) {
-            Add-Type -TypeDefinition @'
-namespace CodexQuotaMonitor.Theme {
-    using System;
-    using System.Runtime.InteropServices;
-
-    public static class NativeMethods {
-        [StructLayout(LayoutKind.Sequential)]
-        private struct AccentPolicy {
-            public int AccentState;
-            public int AccentFlags;
-            public int GradientColor;
-            public int AnimationId;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct WindowCompositionAttributeData {
-            public int Attribute;
-            public IntPtr Data;
-            public int SizeOfData;
-        }
-
-        [DllImport("user32.dll")]
-        private static extern int SetWindowCompositionAttribute(
-            IntPtr hwnd,
-            ref WindowCompositionAttributeData data
-        );
-
-        public static bool EnableBlur(IntPtr hwnd) {
-            AccentPolicy policy = new AccentPolicy { AccentState = 3 };
-            int size = Marshal.SizeOf(policy);
-            IntPtr pointer = Marshal.AllocHGlobal(size);
-            try {
-                Marshal.StructureToPtr(policy, pointer, false);
-                WindowCompositionAttributeData data = new WindowCompositionAttributeData {
-                    Attribute = 19,
-                    Data = pointer,
-                    SizeOfData = size
-                };
-                return SetWindowCompositionAttribute(hwnd, ref data) != 0;
-            }
-            finally {
-                Marshal.FreeHGlobal(pointer);
-            }
-        }
-    }
-}
-'@
+            Initialize-MonitorNativeLibrary
         }
         return [CodexQuotaMonitor.Theme.NativeMethods]::EnableBlur($WindowHandle)
     }

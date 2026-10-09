@@ -57,6 +57,19 @@ BeforeAll {
 }
 
 Describe 'quota monitor theme composition' {
+    It 'uses an opaque surface without a shadow when acceleration or transparency is unavailable' -ForEach @(
+        @{ Tier = 0; Transparency = $true; Contrast = $false }
+        @{ Tier = 2; Transparency = $false; Contrast = $false }
+        @{ Tier = 2; Transparency = $true; Contrast = $true }
+    ) {
+        $border = [Windows.Controls.Border]::new()
+        $border.Effect = [Windows.Media.Effects.DropShadowEffect]::new()
+        Set-MonitorWindowRenderingCompatibility -RootBorder $border -SurfaceColor '#CC323A4C' `
+            -RenderingTier $Tier -TransparencyEnabled $Transparency -HighContrast $Contrast
+        $border.Background.Color.ToString() | Should -BeExactly '#FF323A4C'
+        $border.Effect | Should -BeNullOrEmpty
+    }
+
     It 'returns the exact shared palette contract for both themes' -ForEach @(
         @{ Theme = 'Light' }
         @{ Theme = 'Dark' }

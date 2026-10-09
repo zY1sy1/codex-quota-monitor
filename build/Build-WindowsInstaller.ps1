@@ -209,6 +209,7 @@ $pluginManifestPath = Join-Path $repoRoot '.codex-plugin\plugin.json'
 $pluginManifest = Get-Content -LiteralPath $pluginManifestPath -Raw | ConvertFrom-Json
 $version = ConvertTo-InstallerVersion -Version ([string]$pluginManifest.version)
 $gitState = Get-InstallerGitState -RepoRoot $repoRoot
+& (Join-Path $PSScriptRoot 'Build-NativeHelpers.ps1')
 Assert-InstallerBuildConfiguration -Configuration $Configuration -Dirty:$gitState.Dirty
 
 $outputsRoot = Join-Path $repoRoot 'outputs'

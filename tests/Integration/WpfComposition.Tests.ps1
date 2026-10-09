@@ -58,6 +58,23 @@ BeforeAll {
 }
 
 Describe 'WPF floating window composition' {
+    It 'recolors existing card contents when switching themes in both directions' {
+        $script:View = New-QuotaWindowView -XamlPath $XamlPath
+        & $View.Render -PresentationRows @((New-TestPresentationRow))
+        $card = $View.Controls.OfficialRows.Children[0]
+        foreach ($theme in @('Light', 'Dark')) {
+            & $View.SetTheme $theme
+            [object]::ReferenceEquals($card, $View.Controls.OfficialRows.Children[0]) | Should -BeTrue
+            $palette = Get-MonitorThemePalette -Theme $theme
+            $card.Resources['Label'].Foreground.ToString() | Should -BeExactly $palette.TextPrimary
+            $card.Resources['Remaining'].Foreground.ToString() | Should -BeExactly $palette.TextPrimary
+            $card.Resources['Secondary'].Foreground.ToString() | Should -BeExactly $palette.TextSecondary
+            $card.Resources['ResetTime'].Foreground.ToString() | Should -BeExactly $palette.TextSecondary
+            $card.Resources['Countdown'].Foreground.ToString() | Should -BeExactly $palette.Accent
+            $card.Resources['Progress'].Foreground.ToString() | Should -BeExactly $palette.Accent
+            $card.Resources['Progress'].Background.ToString() | Should -BeExactly $palette.Track
+        }
+    }
     BeforeEach {
         $script:View = $null
     }

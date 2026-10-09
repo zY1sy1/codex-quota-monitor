@@ -47,5 +47,7 @@ Describe 'Inno Setup installer contract' {
         $source | Should -Match 'ShellExec\(\s*''open'''
         $source | Should -Match '\{sys\}\\explorer\.exe'
         $source | Should -Match 'launchafterinstall'
+        $source | Should -Match 'if not ShellExec'
+        $source | Should -Not -Match 'ewNoWait, ResultCode\)\) or \(ResultCode <> 0\)'
     }
 }
