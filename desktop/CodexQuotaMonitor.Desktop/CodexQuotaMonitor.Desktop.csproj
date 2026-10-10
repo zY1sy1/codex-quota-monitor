@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>CodexQuotaMonitor</AssemblyName>
+    <ApplicationIcon>../../assets/codex-quota-monitor-white-blue.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../CodexQuotaMonitor.Core/CodexQuotaMonitor.Core.csproj" />
+    <Compile Include="../../native/WindowComposition.cs" Link="Native/WindowComposition.cs" />
+    <None Include="../../companion/UI/*.xaml" Link="UI/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../companion/Presets/relay-usage.json" Link="Presets/relay-usage.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../companion/Bin/relay-quota-host.exe" Link="Bin/relay-quota-host.exe" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../companion/Bin/relay-quota-host.sha256" Link="Bin/relay-quota-host.sha256" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../companion/ThirdPartyNotices.txt" Link="ThirdPartyNotices.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../assets/codex-quota-monitor-white-blue.ico" Link="CodexQuotaMonitor.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

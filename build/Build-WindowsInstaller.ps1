@@ -247,6 +247,7 @@ if (-not $SkipRustTests) {
     if ($LASTEXITCODE -ne 0) { throw 'cargo test failed.' }
 }
 
+& (Join-Path $PSScriptRoot 'Build-Desktop.ps1') | Out-Null
 $staging = & (Join-Path $PSScriptRoot 'New-InstallerPayload.ps1') `
     -RepoRoot $repoRoot `
     -RuntimeRoot $runtime.RuntimeRoot `

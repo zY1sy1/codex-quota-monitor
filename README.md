@@ -22,6 +22,12 @@ Windows 10（2004 / build 19041 起，包含 22H2）与 Windows 11 均使用 WPF
 
 ### 常驻内存
 
+本分支将常驻程序迁移为 C# + WPF，直接启动 `Desktop\CodexQuotaMonitor.exe`。额度查询继续使用既有 Rust 服务。托盘采用 Windows 原生接口，常驻进程不加载 PowerShell、WinForms 或 Roslyn；PowerShell 仅用于构建、安装和维护脚本。完整窗口、迷你条、额度球、明暗主题、设置、独立查询间隔、今日消耗和 CC Switch 导入使用原有数据格式。
+
+开发者需 .NET SDK 8 或更高版本，运行 `pwsh -NoProfile -File .\build\Build-Desktop.ps1` 生成包含 .NET 运行时的独立程序。接收者无需另外安装 .NET。安装包构建会自动包含 C# 程序；尚未构建程序时保留脚本回退路径，`-Legacy` 可显式运行原有版本用于回归和内存对比。
+
+运行 `pwsh -NoProfile -File .\scripts\Start-DesktopPreview.ps1 -Demo` 可使用仓库 `outputs\desktop\preview-state` 下的演示数据预览，使用独立实例，便于与安装版对比。去掉 `-Demo` 会读取本机 Codex 官方额度，设置仍写入预览目录。行为验证见 `build\Test-Desktop.ps1`；公平内存对比见 `build\Measure-DesktopMemory.ps1`。
+
 启动时只创建当前显示模式的窗口；切换模式后释放上一个窗口，并保留位置、主题和焦点设置。设置、中转站管理和 CC Switch 导入窗口仅在打开时创建，关闭后释放。额度卡片继续复用，切换主题会同步更新背景、文字、进度条和状态圆点。
 
 进程通信与原生窗口辅助代码随应用预编译为 `Bin\CodexQuotaMonitor.Native.dll`，运行时不再编译 C# 或加载 Roslyn 编译器。开发者修改 `native\*.cs` 后运行 `build\Build-NativeHelpers.ps1`；测试和安装包构建会自动验证、更新该 DLL。接收者无需安装编译器或另一个 .NET 运行时。

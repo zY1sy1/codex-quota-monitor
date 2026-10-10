@@ -3,3 +3,6 @@
 /.tools/
 /.worktrees/
 /sidecar/relay-quota-host/target/
+/desktop/**/bin/
+/desktop/**/obj/
+/companion/Desktop/

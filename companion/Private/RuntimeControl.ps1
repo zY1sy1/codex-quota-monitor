@@ -172,6 +172,14 @@ function New-MonitorRuntimeStartInfo {
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $desktopExecutable = Join-Path $Paths.App 'Desktop\CodexQuotaMonitor.exe'
+    if (Test-Path -LiteralPath $desktopExecutable -PathType Leaf) {
+        $startInfo.FileName = $desktopExecutable
+        foreach ($argument in @('--data-root', $Paths.Root, '--instance-prefix', $InstancePrefix)) {
+            $startInfo.ArgumentList.Add([string]$argument)
+        }
+        return $startInfo
+    }
     foreach ($argument in @(
             '-NoLogo'
             '-NoProfile'

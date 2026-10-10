@@ -1,11 +1,17 @@
 Option Explicit
 
-Dim shell, pwshPath, entryScript, command
+Dim shell, pwshPath, entryScript, command, fileSystem, desktopPath
 If WScript.Arguments.Count <> 2 Then WScript.Quit 64
 
 pwshPath = WScript.Arguments(0)
 entryScript = WScript.Arguments(1)
-command = QuoteArgument(pwshPath) & " -NoLogo -NoProfile -NonInteractive -Sta -WindowStyle Hidden -File " & QuoteArgument(entryScript)
+Set fileSystem = CreateObject("Scripting.FileSystemObject")
+desktopPath = fileSystem.BuildPath(fileSystem.GetParentFolderName(entryScript), "Desktop\CodexQuotaMonitor.exe")
+If fileSystem.FileExists(desktopPath) Then
+    command = QuoteArgument(desktopPath)
+Else
+    command = QuoteArgument(pwshPath) & " -NoLogo -NoProfile -NonInteractive -Sta -WindowStyle Hidden -File " & QuoteArgument(entryScript)
+End If
 
 Set shell = CreateObject("WScript.Shell")
 shell.Run command, 0, False
