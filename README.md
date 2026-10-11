@@ -24,6 +24,8 @@ Windows 10（2004 / build 19041 起，包含 22H2）与 Windows 11 均使用 WPF
 
 本分支将常驻程序迁移为 C# + WPF，直接启动 `Desktop\CodexQuotaMonitor.exe`。额度查询继续使用既有 Rust 服务。托盘采用 Windows 原生接口，常驻进程不加载 PowerShell、WinForms 或 Roslyn；PowerShell 仅用于构建、安装和维护脚本。完整窗口、迷你条、额度球、明暗主题、设置、独立查询间隔、今日消耗和 CC Switch 导入使用原有数据格式。
 
+C# 程序同样支持 Windows 10 x64（2004 / build 19041 起，包括 22H2）和 Windows 11 x64；启动条件与安装器一致。程序包含 Windows 10 兼容性声明和多屏 DPI 声明；关闭透明效果、启用高对比度、没有 GPU 加速或模糊接口不可用时，悬浮窗自动使用不透明背景并关闭阴影。
+
 开发者需 .NET SDK 8 或更高版本，运行 `pwsh -NoProfile -File .\build\Build-Desktop.ps1` 生成包含 .NET 运行时的独立程序。接收者无需另外安装 .NET。安装包构建会自动包含 C# 程序；尚未构建程序时保留脚本回退路径，`-Legacy` 可显式运行原有版本用于回归和内存对比。
 
 运行 `pwsh -NoProfile -File .\scripts\Start-DesktopPreview.ps1 -Demo` 可使用仓库 `outputs\desktop\preview-state` 下的演示数据预览，使用独立实例，便于与安装版对比。去掉 `-Demo` 会读取本机 Codex 官方额度，设置仍写入预览目录。行为验证见 `build\Test-Desktop.ps1`；公平内存对比见 `build\Measure-DesktopMemory.ps1`。

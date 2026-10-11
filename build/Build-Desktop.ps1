@@ -33,6 +33,8 @@ foreach ($license in @('LICENSE.txt', 'ThirdPartyNotices.txt')) {
     SchemaVersion = 1
     Runtime = 'CSharpWpf'
     TargetFramework = 'net8.0-windows'
+    MinimumWindowsVersion = '10.0.19041'
+    SupportedOperatingSystems = @('Windows 10 x64 (2004 and later, including 22H2)', 'Windows 11 x64')
     SelfContained = -not [bool]$FrameworkDependent
     ExecutableSha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
 } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))

@@ -22,6 +22,12 @@ public static class SmokeTests
                 if (!window.IsVisible || window.ActualWidth <= 0 || window.ActualHeight <= 0) throw new InvalidOperationException("The quota window was not laid out.");
                 if (mode == "Full" && window.Get<StackPanel>("OfficialRows").Children.Count != 2) throw new InvalidOperationException("Official quotas were not rendered in the UI.");
                 var path = Path.Combine(directory, mode + "-" + theme + ".png"); ViewTools.Snapshot(window, path); captures.Add(path);
+                runtime.CurrentView!.ApplySurface(false);
+                var surface = window.Get<Border>("RootBorder");
+                if (surface.Background is not System.Windows.Media.SolidColorBrush brush || brush.Color.A != 255 || surface.Effect is not null)
+                    throw new InvalidOperationException("The opaque compatibility surface was not applied.");
+                var fallbackPath = Path.Combine(directory, mode + "-" + theme + "-opaque.png"); ViewTools.Snapshot(window, fallbackPath); captures.Add(fallbackPath);
+                runtime.CurrentView.ApplyTheme();
             }
             var settings = new SettingsView(runtime); settings.Window.Show();
             foreach (var page in new[] { "Appearance", "Behavior", "Relay" })

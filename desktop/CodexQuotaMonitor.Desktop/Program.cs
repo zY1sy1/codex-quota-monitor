@@ -61,6 +61,11 @@ public static class Program
         try
         {
             options = LaunchOptions.Parse(arguments);
+            if (!WindowsCompatibility.IsSupported(OperatingSystem.IsWindows(), Environment.OSVersion.Version))
+            {
+                if (!options.Headless) MessageBox.Show(WindowsCompatibility.Requirement, "Codex 额度监视器", MessageBoxButton.OK, MessageBoxImage.Information);
+                return 2;
+            }
             using var instance = new MonitorInstance(options.Prefix);
             if (!instance.Primary) { if (options.Exit) instance.Exit.Set(); else instance.Activate.Set(); return 0; }
             if (options.Exit) return 0;

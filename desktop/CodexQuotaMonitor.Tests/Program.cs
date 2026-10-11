@@ -23,7 +23,7 @@ public static class Program
         root = args.FirstOrDefault() ?? throw new ArgumentException("Repository root required."); testRoot = Path.Combine(root, "outputs", "desktop", "tests", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(testRoot);
         try
         {
-            CoreTests(); TransportTests().GetAwaiter().GetResult(); RelayHostTest(); RuntimeTests();
+            CoreTests(); WindowsCompatibilityChecks.Run(root, Test); TransportTests().GetAwaiter().GetResult(); RelayHostTest(); RuntimeTests();
             JsonFiles.Write(Path.Combine(testRoot, "result.json"), new JsonObject { ["Passed"] = true, ["Count"] = count });
             Console.WriteLine($"{count} checks passed. Results: {testRoot}"); return 0;
         }

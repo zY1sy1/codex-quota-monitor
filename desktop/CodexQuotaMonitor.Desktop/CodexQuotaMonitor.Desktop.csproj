@@ -8,6 +8,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>CodexQuotaMonitor</AssemblyName>
     <ApplicationIcon>../../assets/codex-quota-monitor-white-blue.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>

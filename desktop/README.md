@@ -1,5 +1,7 @@
 # C# desktop runtime
 
+Supported systems: Windows 10 x64, version 2004 / build 19041 or later (including 22H2), and Windows 11 x64. The executable declares Windows 10 compatibility and per-monitor DPI awareness, checks the same minimum build as the installer, and includes .NET 8 in the self-contained distribution. Blur is optional: software rendering, disabled transparency, high contrast or an unavailable composition API use an opaque surface without a shadow. No Windows 11-only Mica or window-corner API is required.
+
 `CodexQuotaMonitor.Core` contains settings and provider compatibility, quota normalization, presentation, daily wallet consumption and bounded JSONL transport. `CodexQuotaMonitor.Desktop` owns the WPF views, native Windows tray, single-instance events, DPAPI, scheduling and lifecycle. It reuses `companion/UI/*.xaml`, the existing Rust relay host and the original data filenames. `CodexQuotaMonitor.Tests` runs behavioral checks without additional test-framework packages.
 
 Build from the canonical Git root with .NET SDK 8 or newer:

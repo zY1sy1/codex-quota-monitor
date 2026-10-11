@@ -82,14 +82,16 @@ public sealed class QuotaView : IDisposable
     private DisplayRow? focused;
     private IReadOnlyList<DisplayRow> rows = Array.Empty<DisplayRow>();
     private Palette palette;
+    private readonly System.Windows.Media.Effects.Effect? shadow;
     public int RenderedOfficialCount => Window.Find<StackPanel>(runtime.Settings.Layout == "Tabs" ? "OfficialTabRows" : "OfficialRows")?.Children.OfType<Border>().Count() ?? (focused?.Official == true ? 1 : 0);
     public QuotaView(MonitorRuntime runtime)
     {
         this.runtime = runtime; palette = new(runtime.Settings.Theme);
         Window = ViewTools.Load(runtime.Settings.Mode switch { "CompactBar" => "CompactBar", "Orb" => "QuotaOrb", _ => "MainWindow" });
+        shadow = Window.Get<Border>("RootBorder").Effect;
         Window.Topmost = runtime.Settings.Topmost;
         Window.Closing += Closing;
-        Window.SourceInitialized += (_, _) => { if (!SystemParameters.HighContrast) CodexQuotaMonitor.Theme.NativeMethods.EnableBlur(new WindowInteropHelper(Window).Handle); };
+        Window.SourceInitialized += (_, _) => ApplyTheme();
         Window.Click("CloseButton", runtime.Hide); Window.Click("HideButton", runtime.Hide);
         Window.Click("PinButton", runtime.ToggleTopmost); Window.Click("ThemeButton", () => runtime.SetTheme(runtime.Settings.Theme == "Dark" ? "Light" : "Dark"));
         Window.Click("ModeButton", () => runtime.SetMode(runtime.Settings.Mode switch { "Full" => "CompactBar", "CompactBar" => "Orb", _ => "Full" }));
@@ -117,9 +119,13 @@ public sealed class QuotaView : IDisposable
         Window.Resources["QuotaFocusHoverBrush"] = ViewTools.Brush(runtime.Settings.Theme == "Light" ? "#244DADB3" : "#2458C2C7");
         Window.Resources["QuotaFocusPressedBrush"] = ViewTools.Brush(runtime.Settings.Theme == "Light" ? "#3D4DADB3" : "#3D58C2C7");
         var root = Window.Get<Border>("RootBorder"); root.Background = palette.Surface; root.BorderBrush = palette.Separator;
-        bool transparent = true; using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) transparent = key?.GetValue("EnableTransparency", 1) is not int value || value != 0;
-        if (SystemParameters.HighContrast || (RenderCapability.Tier >> 16) == 0 || !transparent)
-        { var color = ((SolidColorBrush)palette.Surface).Color; color.A = 255; root.Background = new SolidColorBrush(color); root.Effect = null; }
+        bool transparent = true;
+        try { using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"); transparent = key?.GetValue("EnableTransparency", 1) is not int value || value != 0; }
+        catch (System.Security.SecurityException) { transparent = false; }
+        catch (UnauthorizedAccessException) { transparent = false; }
+        var tier = RenderCapability.Tier >> 16;
+        var blur = tier > 0 && transparent && !SystemParameters.HighContrast && WindowsCompatibility.TryEnableBlur(new WindowInteropHelper(Window).Handle);
+        ApplySurface(WindowsCompatibility.UseTransparency(tier, transparent, SystemParameters.HighContrast, blur));
         foreach (var control in ViewTools.Children(Window))
         {
             if (control is TextBlock text) text.Foreground = palette.Primary;
@@ -127,6 +133,12 @@ public sealed class QuotaView : IDisposable
             if (control is Expander expander) expander.Foreground = palette.Primary;
         }
         Render(rows);
+    }
+    public void ApplySurface(bool transparent)
+    {
+        var root = Window.Get<Border>("RootBorder");
+        if (transparent) { root.Background = palette.Surface; root.Effect = shadow; }
+        else { var color = ((SolidColorBrush)palette.Surface).Color; color.A = 255; root.Background = ViewTools.Brush(color.ToString()); root.Effect = null; }
     }
     public void Render(IReadOnlyList<DisplayRow> snapshot)
     {
