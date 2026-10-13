@@ -239,8 +239,8 @@ public sealed class QuotaCard
         this.row = row; Element.Background = palette.Strong; Element.BorderBrush = pinned ? palette.Accent : palette.Separator;
         Element.Opacity = row.Stale ? .78 : 1; Element.ToolTip = $"{row.Source} · {row.Label}\n{row.Value}\n{row.Detail}";
         label.Text = row.Official ? row.Label : row.Source + (row.Label == row.Source ? "" : " · " + row.Label); label.Foreground = palette.Secondary;
-        value.Text = row.DisplayValue; value.Foreground = palette.Primary; value.TextAlignment = row.Official ? TextAlignment.Left : TextAlignment.Center;
-        detail.Text = row.Detail; detail.Foreground = palette.Secondary; detail.TextAlignment = row.Official ? TextAlignment.Left : TextAlignment.Center;
+        value.Text = row.DisplayValue; value.Foreground = palette.Primary; value.TextAlignment = TextAlignment.Left;
+        detail.Text = row.Detail; detail.Foreground = palette.Secondary; detail.TextAlignment = TextAlignment.Left;
         ViewTools.Visible(detail, row.Detail.Length > 0); ViewTools.Visible(current, row.Current); current.Background = palette.Accent;
         progress.Value = row.Progress ?? 0; progress.Foreground = palette.Severity(row.Progress); progress.Background = palette.Track; ViewTools.Visible(progress, row.Progress.HasValue);
         focus.Foreground = pinned ? palette.Accent : palette.Secondary; countdown.Foreground = palette.Accent; reset.Foreground = palette.Secondary;
