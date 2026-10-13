@@ -71,7 +71,7 @@ public sealed class RelayState
     public JsonObject? Cache(string providerId) => UpdatedAt is DateTimeOffset date && Results.Count > 0
         ? new JsonObject { ["ProviderId"] = providerId, ["UpdatedAt"] = date.ToUniversalTime().ToString("o"), ["Results"] = Results.DeepClone() } : null;
 
-    public IEnumerable<DisplayRow> Rows(RelayProvider provider)
+    public IEnumerable<DisplayRow> Rows(RelayProvider provider, double? dailySpend = null)
     {
         if (!provider.Enabled) yield break;
         if (Results.Count == 0)
@@ -79,6 +79,7 @@ public sealed class RelayState
             yield return new($"relay:{provider.Id}:status", provider.Id, provider.Name, provider.Name, "--", Quota.StatusText(Status), null, State: Status);
             yield break;
         }
+        var spendShown = false;
         for (var i = 0; i < Results.Count; i++)
         {
             var result = Results[i];
@@ -90,6 +91,13 @@ public sealed class RelayState
                 : used.HasValue && total is > 0 ? Math.Clamp((total.Value - used.Value) / total.Value * 100, 0, 100) : unit == "%" ? remaining : null;
             var detail = Status != "Live" ? Quota.StatusText(Status) : result.Field("Extra").Text(result.Field("InvalidMessage").Text());
             if (detail.Length > 256) detail = detail[..256];
+            if (!spendShown && dailySpend is double consumedToday && result.Field("IsValid").Bool() &&
+                unit.Equals("USD", StringComparison.OrdinalIgnoreCase) && result.Field("Total") is null && remaining is >= 0)
+            {
+                var spendText = "今日消耗 " + Amount(consumedToday, "USD").Replace(" USD", "");
+                detail = string.IsNullOrWhiteSpace(detail) ? spendText : detail + "\n" + spendText;
+                spendShown = true;
+            }
             yield return new($"relay:{provider.Id}:{i}", provider.Id, provider.Name, plan.Length > 0 ? plan : provider.Name,
                 value, detail, progress, Stale: Status != "Live", State: Status);
         }

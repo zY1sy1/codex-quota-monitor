@@ -27,6 +27,8 @@ The executable does not host PowerShell, load WinForms, compile scripts or force
 
 Only the active quota mode is instantiated. Settings, relay management and import windows are created when opened and released when closed. Quota cards are retained by stable row keys and countdowns update existing controls. JSONL records are bounded before parsing, pending requests are removed on response, cancellation or timeout, and shutting down kills only child processes owned by this runtime. Named mutex and activate/exit events interoperate with the existing maintenance scripts.
 
+When enabled in settings, daily USD wallet spending appears as a short line beneath the balance on the same card. It does not create another card or focus metric; an existing focus on the removed daily-spending card moves to its wallet. Daily spending remains an estimate based on the day's peak balance minus the latest balance.
+
 Data formats: settings schema 1/2/3, relay providers schema 1/2, cache and daily spending schema 1. Older relay scripts retain their full Custom rules during migration. CC Switch is read by the existing inspector; unsafe or dynamic rules require an explicit Custom choice, and imported drafts must pass a test before saving. If settings or provider files are invalid, their original contents are preserved and the C# runtime refuses to overwrite them.
 
 Short memory comparisons use two equivalent official quota windows, the full dark UI, the same fake App Server and a 30-second warmup. Compare the private working set and private committed bytes; total working sets include shared framework and driver pages. These short runs do not establish day-long stability or cover all GPU and mixed-DPI configurations.

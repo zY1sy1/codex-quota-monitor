@@ -265,9 +265,11 @@ public sealed class MonitorRuntime : IDisposable
         var rows = Quota.Official(Windows, OfficialStatus);
         foreach (var provider in Providers) if (RelayStates.TryGetValue(provider.Id, out var state))
         {
-            rows.AddRange(state.Rows(provider));
-            if (provider.Enabled && Settings.TodaySpend && spend.Get(provider.Id, state.Results, DateTimeOffset.UtcNow) is double consumed)
-                rows.Add(new($"relay:{provider.Id}:daily", provider.Id, provider.Name, "今日消耗", RelayState.Amount(consumed, "USD"), "今日钱包余额减少量", null, State: state.Status));
+            var consumed = Settings.TodaySpend ? spend.Get(provider.Id, state.Results, DateTimeOffset.UtcNow) : null;
+            var providerRows = state.Rows(provider, consumed).ToList();
+            rows.AddRange(providerRows);
+            if (Settings.Focus == $"relay:{provider.Id}:daily" && providerRows.FirstOrDefault(r => r.Detail.Contains("今日消耗 ", StringComparison.Ordinal)) is DisplayRow wallet)
+            { Settings.Focus = wallet.Key; SaveSettings(); }
         }
         var names = currentProviders.Where(p => p.Field("appType").Text().Equals("codex", StringComparison.OrdinalIgnoreCase)).ToList();
         var official = names.Any(p => p.Field("providerId").Text().Equals("default", StringComparison.OrdinalIgnoreCase) || p.Field("name").Text().Equals("default", StringComparison.OrdinalIgnoreCase) || p.Field("name").Text().Contains("official", StringComparison.OrdinalIgnoreCase));
