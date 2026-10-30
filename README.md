@@ -1,5 +1,7 @@
 # Codex Quota Monitor
 
+2026-10-31 仓库整理：最新 C#／WPF 实现已汇入主线，功能与验证入口见 [同步记录](docs/repository-sync-20261031.md)。
+
 Codex Quota Monitor 是一个面向 Windows 当前用户的个人 Codex 插件。它通过本机 Codex App Server 读取当前登录账户返回的额度窗口，并在桌面悬浮窗和系统托盘中显示：
 
 - 5 小时额度、周额度，以及 Codex 返回的其他额度窗口；
